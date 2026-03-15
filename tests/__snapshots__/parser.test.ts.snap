@@ -1,0 +1,67 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`T-SQL Parser should build AST for a basic SELECT 1`] = `
+{
+  "body": [
+    {
+      "columns": [
+        {
+          "alias": undefined,
+          "name": "Name",
+          "tablePrefix": undefined,
+          "type": "Column",
+        },
+        {
+          "alias": undefined,
+          "name": "Age",
+          "tablePrefix": undefined,
+          "type": "Column",
+        },
+      ],
+      "distinct": false,
+      "from": {
+        "alias": undefined,
+        "joins": [],
+        "table": "Users",
+      },
+      "groupBy": null,
+      "having": null,
+      "orderBy": null,
+      "top": null,
+      "type": "SelectStatement",
+      "where": "Id = 1",
+    },
+  ],
+  "type": "Program",
+}
+`;
+
+exports[`T-SQL Parser should handle T-SQL TOP clause 1`] = `
+{
+  "body": [
+    {
+      "columns": [
+        {
+          "alias": undefined,
+          "name": "*",
+          "tablePrefix": undefined,
+          "type": "Column",
+        },
+      ],
+      "distinct": false,
+      "from": {
+        "alias": undefined,
+        "joins": [],
+        "table": "Logs",
+      },
+      "groupBy": null,
+      "having": null,
+      "orderBy": null,
+      "top": "10",
+      "type": "SelectStatement",
+      "where": null,
+    },
+  ],
+  "type": "Program",
+}
+`;
