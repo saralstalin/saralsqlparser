@@ -13,10 +13,10 @@
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "allowJs": true,
-    "isolatedModules": true, /* Fixes the hybrid module warning */
-    "baseUrl": ".",
+    "isolatedModules": true,
+    "types": ["jest", "node"],
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["./src/*"]
     }
   },
   "include": ["src/**/*", "tests/**/*"],

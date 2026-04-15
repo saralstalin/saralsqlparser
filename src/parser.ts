@@ -11,17 +11,29 @@ export interface JoinNode {
 
 export interface ColumnNode {
     type: 'Column';
-    tablePrefix?: string; // e.g., 'o'
-    name: string;        // e.g., 'OrderName'
-    alias?: string;       // e.g., 'OrderAlias'
+    expression: string; // Add this
+    tablePrefix?: string;
+    name: string;
+    alias?: string;
 }
 
+export interface IfNode {
+    type: 'IfStatement';
+    condition: string;
+    thenBranch: Statement | Statement[];
+    elseBranch?: Statement | Statement[];
+}
+
+export interface BlockNode {
+    type: 'BlockStatement';
+    body: Statement[];
+}
 
 // Add this near your other type definitions
 export type QueryStatement = SelectNode | SetOperatorNode;
 
 // Update your Statement union to include Insert
-export type Statement = QueryStatement | InsertNode | UpdateNode | DeleteNode | DeclareNode | SetNode | CreateNode;
+export type Statement = QueryStatement | InsertNode | UpdateNode | DeleteNode | DeclareNode | SetNode | CreateNode | IfNode | BlockNode | WithNode | { type: 'PrintStatement', value: string };
 
 export interface Program {
     type: 'Program';
@@ -121,6 +133,54 @@ export interface CreateNode {
     isTableType?: boolean; // For CREATE TYPE ... AS TABLE
 }
 
+export interface CTENode {
+    name: string;
+    columns?: string[];
+    query: QueryStatement;
+}
+
+export interface WithNode {
+    type: 'WithStatement';
+    ctes: CTENode[];
+    body: Statement;
+}
+
+enum Precedence {
+    LOWEST,
+    OR,
+    AND,
+    COMPARE, // =, <>, <, >, <=, >=
+    SUM,     // +, -
+    PRODUCT, // *, /, %
+    PREFIX,  // -X, NOT X
+    CALL     // Function calls
+}
+
+// Precedence mapping for operators
+const PRECEDENCE_MAP: Record<string, Precedence> = {
+    'or': Precedence.OR,
+    'and': Precedence.AND,
+    'not': Precedence.AND,     // Infix NOT (NOT IN, NOT LIKE)
+    'is': Precedence.COMPARE,  // IS NULL
+    'in': Precedence.COMPARE,
+    'between': Precedence.COMPARE,
+    'like': Precedence.COMPARE,
+    '=': Precedence.COMPARE,
+    '<>': Precedence.COMPARE,
+    '!=': Precedence.COMPARE,
+    '<': Precedence.COMPARE,
+    '>': Precedence.COMPARE,
+    '>=': Precedence.COMPARE,
+    '<=': Precedence.COMPARE,
+    '+': Precedence.SUM,
+    '-': Precedence.SUM,
+    '*': Precedence.PRODUCT,
+    '/': Precedence.PRODUCT,
+    '(': Precedence.CALL
+};
+
+
+
 export class Parser {
     private tokens: Token[] = [];
     private pos = 0;
@@ -138,29 +198,61 @@ export class Parser {
 
     private consume() { return this.tokens[this.pos++]; }
 
+    /**
+     * Ensures the current token is of a specific type and consumes it.
+     * If not, it throws a helpful error.
+     */
+    private match(type: TokenType): Token {
+        const token = this.peek();
+        if (!token || token.type !== type) {
+            throw new Error(`Expected token type ${TokenType[type]} at line ${token?.line}, but found ${token?.value}`);
+        }
+        return this.consume();
+    }
+
+    /**
+     * Ensures the current token has a specific value (case-insensitive) and consumes it.
+     * Perfect for keywords like 'AND' in the BETWEEN clause.
+     */
+    private matchValue(value: string): Token {
+        const token = this.peek();
+        if (!token || token.value.toLowerCase() !== value.toLowerCase()) {
+            throw new Error(`Expected '${value}' at line ${token?.line}, but found '${token?.value}'`);
+        }
+        return this.consume();
+    }
+
     public parse(): Program {
         const statements: Statement[] = [];
         while (this.pos < this.tokens.length) {
             try {
-                // Explicitly type stmt here
-                let stmt: Statement = this.parseStatement();
+                // 1. Allow the variable to be null initially
+                let stmt: Statement | null = this.parseStatement();
 
-                // Only look for set operators if the current statement is a SELECT or another SetOperator
-                if (stmt.type === 'SelectStatement' || stmt.type === 'SetOperator') {
-                    while (this.pos < this.tokens.length) {
-                        const nextVal = this.peek()?.value.toLowerCase();
-                        if (['union', 'except', 'intersect'].includes(nextVal)) {
-                            // TypeScript now knows stmt is a QueryStatement here
-                            stmt = this.parseSetOperation(stmt as QueryStatement);
-                        } else {
-                            break;
+                // 2. Only proceed if we actually got a statement
+                if (stmt) {
+                    // Check for SET operators (UNION, EXCEPT, INTERSECT)
+                    if (stmt.type === 'SelectStatement' || stmt.type === 'SetOperator') {
+                        while (this.pos < this.tokens.length) {
+                            const nextVal = this.peek()?.value.toLowerCase();
+                            if (nextVal && ['union', 'except', 'intersect'].includes(nextVal)) {
+                                // We cast to QueryStatement because we verified the type above
+                                stmt = this.parseSetOperation(stmt as QueryStatement);
+                            } else {
+                                break;
+                            }
                         }
                     }
+
+                    // Now that we've processed potential SET operations, push the final stmt
+                    statements.push(stmt);
                 }
 
-                statements.push(stmt);
+                // Consume optional semicolon regardless of whether stmt was null
                 if (this.peek()?.type === TokenType.Semicolon) this.consume();
+
             } catch (e) {
+                console.error(e);
                 this.resync();
             }
         }
@@ -168,116 +260,199 @@ export class Parser {
     }
 
     private parseSetOperation(left: QueryStatement): SetOperatorNode {
-        let operatorVal = this.consume().value.toUpperCase();
+        const operatorToken = this.consume(); // UNION, EXCEPT, INTERSECT
+        let type = operatorToken.value.toUpperCase();
 
-        if (operatorVal === 'UNION' && this.peek()?.value.toLowerCase() === 'all') {
+        // Handle UNION ALL
+        if (type === 'UNION' && this.peek()?.value.toLowerCase() === 'all') {
             this.consume();
-            operatorVal = 'UNION ALL';
+            type = 'UNION ALL';
         }
 
-        // We expect the right side to be another SELECT or UNION
-        const right = this.parseStatement();
+        const right = this.parseSelect();
 
-        // Type Guard: Ensure 'right' is not an INSERT
-        if (right.type === 'InsertStatement') {
-            throw new Error(`Syntax error: ${operatorVal} cannot be followed by an INSERT statement.`);
-        }
-
-        return {
+        const node: SetOperatorNode = {
             type: 'SetOperator',
-            operator: operatorVal as any,
-            left,
-            right: right as QueryStatement
+            operator: type as 'UNION' | 'UNION ALL' | 'EXCEPT' | 'INTERSECT',
+            left: left,
+            right: right
         };
-    }
 
-    private parseStatement(): Statement {
-        const token = this.peek();
-        if (!token) throw new Error("Unexpected EOF");
-
-        const val = token.value.toLowerCase();
-
-        switch (val) {
-            case 'select': return this.parseSelect();
-            case 'insert': return this.parseInsert();
-            case 'update': return this.parseUpdate();
-            case 'delete': return this.parseDelete();
-            case 'declare': return this.parseDeclare();
-            case 'set': return this.parseSet();
-            case 'create': return this.parseCreate();
-            case 'go':
-                this.consume();
-                return { type: 'BatchSeparator' } as any;
-            default:
-                throw new Error(`Parser stuck at token: "${token.value}" (Type: ${token.type}) at pos ${this.pos}`);
+        // Check for chained operations (e.g., SELECT... UNION SELECT... UNION SELECT...)
+        const next = this.peek()?.value.toLowerCase();
+        if (next && ['union', 'except', 'intersect'].includes(next)) {
+            return this.parseSetOperation(node);
         }
+
+        return node;
     }
 
-    private parseSelect(stopTokens: string[] = []): SelectNode {
+    private parseStatement(): Statement | null {
+        const token = this.peek();
+        if (!token) return null;
+
+        let stmt: Statement | null = null;
+
+        try {
+            switch (token.value.toLowerCase()) {
+                case 'select':
+                    // Parse the initial SELECT
+                    stmt = this.parseSelect();
+
+                    // After a SELECT, check if it's followed by a SET operator
+                    // This allows combining SELECTs via UNION, EXCEPT, INTERSECT
+                    let next = this.peek()?.value.toLowerCase();
+                    while (next && ['union', 'except', 'intersect'].includes(next)) {
+                        stmt = this.parseSetOperation(stmt as QueryStatement);
+                        next = this.peek()?.value.toLowerCase();
+                    }
+                    break;
+
+                case 'insert':
+                    stmt = this.parseInsert();
+                    break;
+
+                case 'update':
+                    stmt = this.parseUpdate();
+                    break;
+
+                case 'delete':
+                    stmt = this.parseDelete();
+                    break;
+
+                case 'declare':
+                    stmt = this.parseDeclare();
+                    break;
+
+                case 'set':
+                    stmt = this.parseSet();
+                    break;
+
+                case 'create':
+                    stmt = this.parseCreate();
+                    break;
+                case 'if':
+                    stmt = this.parseIf();
+                    break;
+                case 'begin':
+                    stmt = this.parseBlock();
+                    break;
+                // Add 'with' to your switch case:
+                case 'with':
+                    stmt = this.parseWith();
+                    break;
+                case 'print':
+                    this.consume(); // consume 'PRINT'
+                    const message = this.parseExpression();
+                    return { type: 'PrintStatement', value: message } as any;
+
+                default:
+                    // Handle batch separators or unknown tokens
+                    if (token.value.toLowerCase() === 'go') {
+                        this.consume();
+                        return null;
+                    }
+                    throw new Error(`Unexpected token: ${token.value}`);
+            }
+        } catch (e) {
+            console.error(e);
+            this.resync();
+            return null;
+        }
+
+        // Consume optional semicolon
+        if (this.peek()?.type === TokenType.Semicolon) {
+            this.consume();
+        }
+
+        return stmt;
+    }
+
+
+    // Inside parser.ts
+    private parseSelect(): SelectNode {
         this.consume(); // Consume 'SELECT'
 
         let top = null;
         let distinct = false;
 
+        // 1. Handle DISTINCT or ALL keywords
         const nextVal = this.peek()?.value.toLowerCase();
         if (nextVal === 'distinct') {
             this.consume();
             distinct = true;
         } else if (nextVal === 'all') {
-            this.consume(); // ALL is the default behavior
+            this.consume(); // Consume 'ALL', distinct remains false (default)
         }
 
+        // 2. Handle TOP clause
         if (this.peek()?.value.toLowerCase() === 'top') {
-            this.consume(); // TOP
+            this.consume();
             if (this.peek()?.type === TokenType.OpenParen) {
                 this.consume(); // (
                 top = this.consume().value;
-                this.consume(); // )
+                this.match(TokenType.CloseParen);
             } else {
+                // Support 'TOP 10' without parentheses
                 top = this.peek()?.type === TokenType.Number ? this.consume().value : null;
             }
         }
 
+        // 3. Parse Column List
         const columns = this.parseList(() => this.parseColumn());
 
+        // 4. Parse FROM Clause
         let from: TableReference | null = null;
         if (this.peek()?.value.toLowerCase() === 'from') {
-            this.consume(); // FROM
+            this.consume();
             from = this.parseTableReference();
         }
 
+        // 5. Parse WHERE Clause
         let where = null;
         if (this.peek()?.value.toLowerCase() === 'where') {
-            this.consume(); // WHERE
-            where = this.parseExpression(stopTokens);
+            this.consume();
+            // Pratt parser naturally stops at GROUP, ORDER, etc.
+            where = this.parseExpression();
         }
 
+        // 6. Parse GROUP BY Clause
         let groupBy: string[] | null = null;
         if (this.peek()?.value.toLowerCase() === 'group') {
-            this.consume(); // GROUP
-            if (this.peek()?.value.toLowerCase() === 'by') {
-                this.consume(); // BY
-                groupBy = this.parseGroupBy();
-            }
+            this.consume();
+            this.matchValue('by');
+            groupBy = this.parseGroupBy();
         }
 
+        // 7. Parse HAVING Clause
         let having: string | null = null;
         if (this.peek()?.value.toLowerCase() === 'having') {
-            this.consume(); // HAVING
-            having = this.parseExpression(stopTokens);
+            this.consume();
+            having = this.parseExpression();
         }
 
+        // 8. Parse ORDER BY Clause
         let orderBy: OrderByNode[] | null = null;
         if (this.peek()?.value.toLowerCase() === 'order') {
-            this.consume(); // ORDER
-            if (this.peek()?.value.toLowerCase() === 'by') {
-                this.consume(); // BY
-                orderBy = this.parseOrderBy();
-            }
+            this.consume();
+            this.matchValue('by');
+            orderBy = this.parseOrderBy();
         }
 
-        return { type: 'SelectStatement', distinct, top, columns, from, where, groupBy, having, orderBy };
+        return {
+            type: 'SelectStatement',
+            distinct,
+            top,
+            columns,
+            from,
+            where,
+            groupBy,
+            having,
+            orderBy
+        };
     }
+
+
 
     private parseInsert(): InsertNode {
         this.consume(); // INSERT
@@ -310,7 +485,8 @@ export class Parser {
             this.consume(); // VALUES
             values = this.parseList(() => {
                 this.consume(); // (
-                const row = this.parseList(() => this.parseExpression([',', ')']));
+                //const row = this.parseList(() => this.parseExpression([',', ')']));
+                const row = this.parseList(() => this.parseExpression());
                 this.consume(); // )
                 return row;
             });
@@ -354,7 +530,8 @@ export class Parser {
 
             if (this.consume().value !== '=') throw new Error("Expected '=' in assignment");
 
-            const val = this.parseExpression([',', 'from', 'where']);
+            //const val = this.parseExpression([',', 'from', 'where']);
+            const val = this.parseExpression();
             return { column: col, value: val };
         });
 
@@ -457,7 +634,8 @@ export class Parser {
             let initialValue: string | undefined = undefined;
             if (this.peek()?.value === '=') {
                 this.consume(); // =
-                initialValue = this.parseExpression([',', ';', 'go']);
+                //initialValue = this.parseExpression([',', ';', 'go']);
+                initialValue = this.parseExpression();
             }
 
             return { name, dataType, initialValue };
@@ -471,22 +649,20 @@ export class Parser {
 
     private parseSet(): SetNode {
         this.consume(); // SET
-
-        // 1. Variable Name
         const variable = this.consume().value;
+
+        // If it doesn't start with @, it might be a session option (SET NOCOUNT ON)
         if (!variable.startsWith('@')) {
-            // Technically T-SQL SET can set options like SET NOCOUNT ON,
-            // but for now, we'll focus on variable assignment.
+            const optionValue = this.consume().value; // ON/OFF
+            return {
+                type: 'SetStatement',
+                variable, // e.g., "NOCOUNT"
+                value: optionValue // e.g., "ON"
+            };
         }
 
-        // 2. The Equals Operator
-        if (this.peek()?.value !== '=') {
-            throw new Error(`Expected '=' after variable ${variable} in SET statement`);
-        }
-        this.consume(); // =
-
-        // 3. The Expression
-        const value = this.parseExpression([';', 'go', 'select', 'insert', 'update', 'delete']);
+        this.matchValue('=');
+        const value = this.parseExpression();
 
         return {
             type: 'SetStatement',
@@ -547,7 +723,8 @@ export class Parser {
                 } else if (upperCurrent === 'DEFAULT') {
                     // For DEFAULT, we capture the subsequent expression
                     constraints.push(current);
-                    current = this.parseExpression([',', ')']);
+                    //current = this.parseExpression([',', ')']);
+                    current = this.parseExpression();
                 }
 
                 constraints.push(current);
@@ -580,15 +757,21 @@ export class Parser {
                 if (this.peek()?.value.toUpperCase() === 'TABLE') {
                     this.consume(); // TABLE
                     const columns = this.parseTableColumns();
-                    return { type: 'CreateStatement', objectType: 'TYPE', name, columns, isTableType: true };
+                    return {
+                        type: 'CreateStatement',
+                        objectType: 'TYPE',
+                        name,
+                        columns,
+                        isTableType: true
+                    };
                 }
             }
         }
 
-        // Standard Name Parsing
+        // Standard Multipart Name Parsing (e.g., [dbo].[MyProc])
         let name = this.consume().value;
         while (this.peek()?.value === '.') {
-            this.consume();
+            this.consume(); // .
             name += '.' + this.consume().value;
         }
 
@@ -597,16 +780,15 @@ export class Parser {
             return { type: 'CreateStatement', objectType: 'TABLE', name, columns };
         }
 
-        // 2. Handle Parameters (Fix for @ID error)
+        // 2. Handle Parameters for Procedures/Functions
         let parameters: ParameterDefinition[] = [];
         const isProcOrFunc = ['PROCEDURE', 'PROC', 'FUNCTION'].includes(objectType);
 
         if (isProcOrFunc) {
-            // T-SQL parameters can be wrapped in parens or just listed
             const hasParens = this.peek()?.value === '(';
             if (hasParens) this.consume();
 
-            // Peek to see if a variable (@Name) follows
+            // Check for variable start (@)
             if (this.peek()?.value.startsWith('@')) {
                 parameters = this.parseList(() => {
                     const pName = this.consume().value; // @ID
@@ -624,20 +806,31 @@ export class Parser {
             if (hasParens && this.peek()?.value === ')') this.consume();
         }
 
-        // 3. Crucial: Consume the 'AS' keyword before parsing the body
+        // 3. Consume the 'AS' keyword before the body
         if (this.peek()?.value.toUpperCase() === 'AS') {
             this.consume();
         }
 
-        // 4. Handle the Body
+        // 4. Handle the Body (Single Statement for View, Batch for Proc)
         let body: Statement | Statement[] | undefined;
         if (objectType === 'VIEW') {
-            body = this.parseSelect();
+            const selectStmt = this.parseSelect();
+            // Views only support a single SelectStatement (or QueryStatement)
+            body = selectStmt;
         } else {
             const statements: Statement[] = [];
-            // Parse until the end of tokens or a batch separator
+            // Parse until the end of the batch or the end of tokens
             while (this.pos < this.tokens.length && this.peek()?.value.toLowerCase() !== 'go') {
-                statements.push(this.parseStatement());
+                const stmt = this.parseStatement();
+
+                // TS FIX: Only push to Statement[] if stmt is not null
+                if (stmt) {
+                    statements.push(stmt);
+                } else {
+                    // If parseStatement returned null (e.g., hit GO or error), 
+                    // we break if we aren't moving forward to prevent infinite loops.
+                    if (this.pos >= this.tokens.length || this.peek()?.value.toLowerCase() === 'go') break;
+                }
             }
             body = statements;
         }
@@ -652,74 +845,182 @@ export class Parser {
     }
 
     private parseColumn(): ColumnNode {
-        let tablePrefix: string | undefined = undefined;
-        let name = "";
         let alias: string | undefined = undefined;
+        let expression: string;
+        let tablePrefix: string | undefined = undefined;
+        let name: string;
 
-        // 1. Assignment Alias (e.g., SELECT Alias = o.Name)
+        // Claude Review Fix (Issue #5): Comprehensive list of keywords that 
+        // cannot be used as implicit aliases.
+        const STOP_KEYWORDS = [
+            'from', 'where', 'group', 'order', 'having',
+            'union', 'all', 'except', 'intersect',
+            'join', 'on', 'apply', 'into', 'outer', 'values'
+        ];
+
+        // 1. Handle T-SQL Assignment Style (Alias = Expression)
         if (this.peek()?.type === TokenType.Identifier && this.peek(1)?.value === '=') {
             alias = this.consume().value;
             this.consume(); // =
-        }
-
-        // 2. Parse the Column and Prefix
-        let firstPart = this.consume().value;
-
-        if (this.peek()?.value === '.') {
-            this.consume(); // .
-            tablePrefix = firstPart;
-            name = this.consume().value; // The actual column name
+            expression = this.parseExpression();
         } else {
-            name = firstPart;
-        }
+            // 2. Handle Standard Style (Expression [AS] Alias)
+            expression = this.parseExpression();
 
-        // 3. Handle Functions (e.g., SUM(Sales))
-        if (this.peek()?.type === TokenType.OpenParen) {
-            name += this.consume().value; // (
-            name += this.parseExpression();
-            if (this.peek()?.type === TokenType.CloseParen) {
-                name += this.consume().value; // )
-            }
-        }
+            const nextToken = this.peek();
+            const nextVal = nextToken?.value.toLowerCase();
 
-        // 4. Handle Post-Expression Alias (AS or Implicit)
-        if (!alias) {
-            const next = this.peek();
-            if (next?.value.toLowerCase() === 'as') {
+            if (nextVal === 'as') {
                 this.consume();
                 alias = this.consume().value;
-            } else if (next?.type === TokenType.Identifier &&
-                !['from', 'where', 'group', 'join', 'on'].includes(next.value.toLowerCase())) {
+            } else if (
+                nextToken &&
+                nextToken.type !== TokenType.Semicolon &&
+                nextToken.type !== TokenType.Comma &&
+                nextToken.type === TokenType.Identifier &&
+                !STOP_KEYWORDS.includes(nextVal!)
+            ) {
+                // Implicit alias: Only consume if it's an Identifier AND not a reserved keyword
                 alias = this.consume().value;
             }
         }
 
-        return { type: 'Column', tablePrefix, name, alias };
+        // 3. Extract tablePrefix and name for backward compatibility
+        if (expression.includes('.')) {
+            const parts = expression.split('.');
+            // Handle cases like dbo.Table.Column
+            tablePrefix = parts.slice(0, -1).join('.');
+            name = parts[parts.length - 1];
+        } else {
+            name = expression;
+        }
+
+        return {
+            type: 'Column',
+            expression,
+            name,
+            tablePrefix,
+            alias
+        };
     }
 
 
     private parseTableReference(): TableReference {
-        let table = this.consume().value;
+        let table: string;
+        let alias: string | undefined = undefined;
 
-        // Handle multipart identifiers (e.g., Sales.Data)
-        while (this.peek()?.value === '.') {
-            this.consume(); // .
-            table += '.' + this.consume().value;
+        // 1. Handle Derived Tables (Subqueries)
+        if (this.peek()?.type === TokenType.OpenParen && this.peek(1)?.value.toLowerCase() === 'select') {
+            this.consume(); // (
+            const subquery = this.parseSelect();
+            this.match(TokenType.CloseParen);
+            // Stringify the subquery object to store it in the table string field
+            table = `(${JSON.stringify(subquery)})`;
+        } else {
+            // 2. Handle Standard Table Names (Multipart: dbo.Users or [Sales].[Orders])
+            table = this.consume().value;
+            while (this.peek()?.value === '.') {
+                this.consume(); // .
+                table += '.' + this.consume().value;
+            }
         }
 
-        let alias: string | undefined;
-        if (this.peek()?.value.toLowerCase() === 'as') {
+        // 3. Handle Alias for the base source
+        let nextToken = this.peek();
+        let nextVal = nextToken?.value.toLowerCase();
+        if (nextVal === 'as') {
             this.consume();
             alias = this.consume().value;
-        } else if (this.peek()?.type === TokenType.Identifier &&
-            !['join', 'inner', 'left', 'right', 'cross', 'where', 'group', 'order'].includes(this.peek()?.value.toLowerCase())) {
-            // Handle implicit alias (e.g., FROM Sales s)
+        } else if (
+            nextToken &&
+            nextToken.type === TokenType.Identifier &&
+            !['inner', 'left', 'right', 'full', 'cross', 'join', 'where', 'group', 'order', 'union', 'all', 'on', 'apply'].includes(nextVal!)
+        ) {
             alias = this.consume().value;
         }
 
         const joins: JoinNode[] = [];
-        while (this.isJoinToken(this.peek()?.value)) {
-            joins.push(this.parseJoin());
+
+        // 4. Handle JOIN and APPLY sequences
+        while (this.pos < this.tokens.length) {
+            const currentToken = this.peek();
+            if (!currentToken) break;
+
+            const typeMatch = currentToken.value.toLowerCase();
+            if (!['inner', 'left', 'right', 'full', 'cross', 'join', 'outer'].includes(typeMatch)) break;
+
+            let joinType = '';
+
+            // Handle complex Join prefixes (LEFT OUTER, etc.)
+            if (['left', 'right', 'full'].includes(typeMatch)) {
+                joinType += this.consume().value.toUpperCase() + ' ';
+                if (this.peek()?.value.toLowerCase() === 'outer') {
+                    joinType += this.consume().value.toUpperCase() + ' ';
+                }
+            } else if (['inner', 'cross', 'outer'].includes(typeMatch)) {
+                joinType += this.consume().value.toUpperCase() + ' ';
+            }
+
+            const actionToken = this.peek();
+            const action = actionToken?.value.toLowerCase();
+
+            if (action === 'join') {
+                joinType += 'JOIN';
+                this.consume(); // JOIN
+
+                let joinTable: string;
+                // RECURSION: Check if Join target is a subquery
+                if (this.peek()?.type === TokenType.OpenParen && this.peek(1)?.value.toLowerCase() === 'select') {
+                    this.consume(); // (
+                    const sub = this.parseSelect();
+                    this.match(TokenType.CloseParen);
+                    joinTable = `(${JSON.stringify(sub)})`;
+                } else {
+                    joinTable = this.consume().value;
+                    while (this.peek()?.value === '.') {
+                        this.consume();
+                        joinTable += '.' + this.consume().value;
+                    }
+                }
+
+                // Join Alias
+                let joinAlias: string | undefined = undefined;
+                const postJoinVal = this.peek()?.value.toLowerCase();
+                if (postJoinVal === 'as') {
+                    this.consume();
+                    joinAlias = this.consume().value;
+                } else if (this.peek()?.type === TokenType.Identifier && !['on', 'inner', 'left', 'right', 'cross'].includes(postJoinVal!)) {
+                    joinAlias = this.consume().value;
+                }
+
+                this.matchValue('on');
+                const onCondition = this.parseExpression();
+
+                joins.push({
+                    type: joinType.trim(),
+                    table: joinTable,
+                    alias: joinAlias,
+                    on: onCondition
+                });
+            } else if (action === 'apply') {
+                joinType += 'APPLY';
+                this.consume(); // APPLY
+
+                // APPLY usually targets a function or a subquery
+                const applyExpr = this.parseExpression();
+                joins.push({
+                    type: joinType.trim(),
+                    table: applyExpr,
+                    on: null
+                });
+            } else {
+                // Standalone JOIN (e.g., just "JOIN Table ON...")
+                if (typeMatch === 'join') {
+                    this.consume();
+                    // ... logic similar to JOIN above ...
+                }
+                break;
+            }
         }
 
         return { table, alias, joins };
@@ -784,106 +1085,213 @@ export class Parser {
         };
     }
 
-    private parseExpression(additionalStopTokens: string[] = []): string {
-        let expr = "";
-        const baseStopTokens = ['select', 'from', 'where', 'join', 'go', ';', 'inner', 'left', 'right', 'order', 'group', 'having', 'union'];
-        const stopTokens = [...baseStopTokens, ...additionalStopTokens];
+    private parseExpression(precedence: Precedence = Precedence.LOWEST): string {
+        let left = this.parsePrefix();
 
         while (this.pos < this.tokens.length) {
-            const token = this.peek();
-            if (!token) break;
+            const nextToken = this.peek();
+            if (!nextToken || nextToken.type === TokenType.Semicolon) break;
 
-            const val = token.value.toLowerCase();
+            const op = nextToken.value.toLowerCase();
+            const nextPrecedence = PRECEDENCE_MAP[op] ?? Precedence.LOWEST;
 
-            // 1. Stop if we hit a base keyword or a context-specific stop token (like ')')
-            if (stopTokens.includes(val)) break;
+            if (nextPrecedence <= precedence) break;
+            this.consume();
 
-            // 2. Subquery Detection: Check for '(' followed by 'SELECT'
-            if (token.type === TokenType.OpenParen) {
-                const nextToken = this.peek(1);
-                if (nextToken?.value.toLowerCase() === 'select') {
-                    this.consume(); // Consume '('
+            // 1. Handle "IS NULL" / "IS NOT NULL" (Claude Issue #6)
+            if (op === 'is') {
+                let right = this.consume().value.toUpperCase(); // Expect NULL or NOT
+                if (right === 'NOT') {
+                    right += ' ' + this.consume().value.toUpperCase(); // Expect NULL
+                }
+                left = `${left} IS ${right}`;
+            }
+            // 2. Handle "NOT IN" / "NOT LIKE" (Claude Issue #7)
+            else if (op === 'not') {
+                const innerOp = this.consume().value.toLowerCase(); // in, like, between
 
-                    // Recursively parse the nested SELECT, telling it to stop at ')'
-                    const subquery = this.parseSelect([')']);
-
-                    // Add a space before the subquery if needed
-                    if (expr.length > 0 && !expr.endsWith(" ")) {
-                        expr += " ";
+                // Re-use the existing logic for IN/BETWEEN by delegating or duplicating
+                if (innerOp === 'in') {
+                    this.match(TokenType.OpenParen);
+                    let innerContent: string;
+                    if (this.peek()?.value.toLowerCase() === 'select') {
+                        const subquery = this.parseSelect();
+                        innerContent = JSON.stringify(subquery);
+                    } else {
+                        const items: string[] = [];
+                        while (this.peek()?.type !== TokenType.CloseParen) {
+                            items.push(this.parseExpression(Precedence.LOWEST));
+                            if (this.peek()?.value === ',') this.consume();
+                            else break;
+                        }
+                        innerContent = items.join(', ');
                     }
-
-                    expr += "(" + JSON.stringify(subquery) + ")";
-
-                    // Consume the matching ')' for this subquery
-                    if (this.peek()?.value === ')') {
-                        this.consume();
-                    }
-                    continue; // Move to the next token after the subquery
+                    this.match(TokenType.CloseParen);
+                    left = `${left} NOT IN (${innerContent})`;
+                } else if (innerOp === 'between') {
+                    const start = this.parseExpression(nextPrecedence);
+                    this.matchValue('and');
+                    const end = this.parseExpression(nextPrecedence);
+                    left = `${left} NOT BETWEEN ${start} AND ${end}`;
+                } else {
+                    // For "NOT LIKE" etc.
+                    const right = this.parseExpression(nextPrecedence);
+                    left = `${left} NOT ${innerOp.toUpperCase()} ${right}`;
                 }
             }
-
-            const currentToken = this.consume();
-            const currentVal = currentToken.value;
-
-            // 3. Spacing and Reconstruction Logic
-            if (expr.length > 0) {
-                const lastChar = expr[expr.length - 1];
-                // Split to find the last meaningful word/variable
-                const lastWord = expr.split(/[ \(\),]/).filter(Boolean).pop()?.toLowerCase() || "";
-                const isLastVariable = lastWord.startsWith('@');
-
-                const isOperator = ['=', '>', '<', '>=', '<=', '!=', '<>', '+', '-', '*', '/'].includes(currentVal);
-                const isLastOperator = ['=', '>', '<', '!', '=', '+', '-', '*', '/'].includes(lastChar);
-                const isPunctuation = ['(', ')', '[', ']', ',', '.'].includes(currentVal) || ['(', '[', '.'].includes(lastChar);
-                const isQuote = currentVal === "'" || lastChar === "'";
-                const isWord = /[a-zA-Z]/.test(currentVal) && currentVal.length > 1;
-                const isLastWord = /[a-zA-Z]/.test(lastChar);
-
-                let needsSpace = false;
-
-                // Standard word spacing
-                if (isWord && isLastWord && !isLastOperator) needsSpace = true;
-
-                // Updated Operator Rule: 
-                // Space before operators if following a word, variable, or a closing parenthesis (Fixes SUM(Sales) >)
-                if (isOperator && (isLastWord || isLastVariable || lastChar === ')') && !isLastOperator && !isQuote) {
-                    needsSpace = true;
-                }
-
-                // Space after operators if not followed by punctuation
-                if (!isOperator && isLastOperator && !isPunctuation && currentVal !== '-') {
-                    needsSpace = true;
-                }
-
-                // T-SQL Keyword specific spacing
-                if (currentVal.toUpperCase() === 'AND' || expr.trim().endsWith('AND')) needsSpace = true;
-                if (lastWord === 'in' || lastWord === 'between') needsSpace = true;
-                if (lastChar === ',') needsSpace = true;
-
-                // Handle space before '(' for keywords like IN
-                if (currentVal === '(' && lastWord === 'in') needsSpace = true;
-
-                if (needsSpace && !expr.endsWith(" ")) {
-                    expr += " ";
-                }
+            // 3. Existing BETWEEN logic
+            else if (op === 'between') {
+                const start = this.parseExpression(nextPrecedence);
+                this.matchValue('and');
+                const end = this.parseExpression(nextPrecedence);
+                left = `${left} BETWEEN ${start} AND ${end}`;
             }
-
-            expr += currentVal;
+            // 4. Existing IN logic
+            else if (op === 'in') {
+                this.match(TokenType.OpenParen);
+                let innerContent: string;
+                if (this.peek()?.value.toLowerCase() === 'select') {
+                    const subquery = this.parseSelect();
+                    innerContent = JSON.stringify(subquery);
+                } else {
+                    const items: string[] = [];
+                    while (this.peek()?.type !== TokenType.CloseParen) {
+                        items.push(this.parseExpression(Precedence.LOWEST));
+                        if (this.peek()?.value === ',') this.consume();
+                        else break;
+                    }
+                    innerContent = items.join(', ');
+                }
+                this.match(TokenType.CloseParen);
+                left = `${left} IN (${innerContent})`;
+            }
+            // 5. Standard Infix
+            else {
+                const right = this.parseExpression(nextPrecedence);
+                left = `${left} ${op.toUpperCase()} ${right}`;
+            }
         }
-        return expr.trim();
+        return left;
+    }
+
+    private parsePrefix(): string {
+        const token = this.consume();
+        let value = token.value;
+
+        switch (token.type) {
+            case TokenType.Number:
+            case TokenType.Variable:
+            case TokenType.String:
+                return value;
+
+            case TokenType.TempTable:
+                return value;
+
+            case TokenType.Operator:
+                // Support for SELECT *
+                if (value === '*') return value;
+
+                // Support for unary operators like - or NOT
+                if (value.toLowerCase() === 'not' || value === '-') {
+                    const right = this.parseExpression(Precedence.PREFIX);
+                    return `${value.toUpperCase()} ${right}`;
+                }
+                return value;
+
+            case TokenType.Identifier:
+                // 1. Handle Multipart Identifiers (e.g., dbo.Users, u.Name)
+                while (this.peek()?.value === '.') {
+                    this.consume(); // consume '.'
+                    const next = this.consume();
+                    value += '.' + next.value;
+                }
+
+                // 2. Handle Function Calls (e.g., SUM(Sales), GETDATE())
+                if (this.peek()?.type === TokenType.OpenParen) {
+                    this.consume(); // consume '('
+
+                    // Handle subqueries inside function calls if necessary
+                    if (this.peek()?.value.toLowerCase() === 'select') {
+                        const subquery = this.parseSelect();
+                        value += `(${JSON.stringify(subquery)})`;
+                    } else {
+                        // Standard function arguments
+                        const args: string[] = [];
+                        while (this.peek() && this.peek()?.type !== TokenType.CloseParen) {
+                            args.push(this.parseExpression(Precedence.LOWEST));
+                            if (this.peek()?.value === ',') {
+                                this.consume(); // consume ','
+                            } else {
+                                break;
+                            }
+                        }
+                        value += `(${args.join(', ')})`;
+                    }
+                    this.match(TokenType.CloseParen);
+                }
+                return value;
+
+            case TokenType.OpenParen:
+                // 3. Step 6: Handle Parenthesized Scalar Subqueries or Grouped Expressions
+                let result: string;
+                if (this.peek()?.value.toLowerCase() === 'select') {
+                    const subquery = this.parseSelect();
+                    result = JSON.stringify(subquery);
+                } else {
+                    result = this.parseExpression(Precedence.LOWEST);
+                }
+                this.match(TokenType.CloseParen);
+                return `(${result})`;
+
+            case TokenType.Keyword:
+                const val = value.toLowerCase();
+                if (val === 'null') return 'NULL';
+
+                // Handle CASE Expressions (Step 5)
+                if (val === 'case') {
+                    let caseExpr = 'CASE';
+                    if (this.peek()?.value.toLowerCase() !== 'when') {
+                        caseExpr += ' ' + this.parseExpression(Precedence.LOWEST);
+                    }
+                    while (this.peek()?.value.toLowerCase() === 'when') {
+                        this.consume(); // WHEN
+                        const condition = this.parseExpression(Precedence.LOWEST);
+                        this.matchValue('then');
+                        const branchResult = this.parseExpression(Precedence.LOWEST);
+                        caseExpr += ` WHEN ${condition} THEN ${branchResult}`;
+                    }
+                    if (this.peek()?.value.toLowerCase() === 'else') {
+                        this.consume(); // ELSE
+                        const elseResult = this.parseExpression(Precedence.LOWEST);
+                        caseExpr += ` ELSE ${elseResult}`;
+                    }
+                    this.matchValue('end');
+                    return `${caseExpr} END`;
+                }
+
+                // 4. Step 6: Handle EXISTS Subqueries
+                if (val === 'exists') {
+                    this.match(TokenType.OpenParen);
+                    const subquery = this.parseSelect();
+                    this.match(TokenType.CloseParen);
+                    return `EXISTS (${JSON.stringify(subquery)})`;
+                }
+                return value;
+
+            default:
+                throw new Error(`Unexpected token at line ${token.line}: ${token.value}`);
+        }
     }
 
     private parseGroupBy(): string[] {
         return this.parseList(() => {
-            let column = this.consume().value;
-
-            // Handle multipart identifiers (e.g., Sales.Region)
+            let identifier = this.consume().value;
+            // Support multipart in GROUP BY (e.g., u.Category)
             while (this.peek()?.value === '.') {
                 this.consume(); // .
-                column += '.' + this.consume().value;
+                identifier += '.' + this.consume().value;
             }
-
-            return column;
+            return identifier;
         });
     }
 
@@ -919,6 +1327,92 @@ export class Parser {
             list.push(parserFn());
         }
         return list;
+    }
+
+    private parseIf(): IfNode {
+        this.consume(); // IF
+        const condition = this.parseExpression();
+
+        // Parse the 'THEN' branch (T-SQL doesn't use a 'THEN' keyword)
+        const thenBranch = this.parseStatement();
+
+        let elseBranch: Statement | Statement[] | undefined = undefined;
+        if (this.peek()?.value.toLowerCase() === 'else') {
+            this.consume(); // ELSE
+            elseBranch = this.parseStatement() ?? undefined;
+        }
+
+        return {
+            type: 'IfStatement',
+            condition,
+            thenBranch: thenBranch!,
+            elseBranch
+        };
+    }
+
+    private parseBlock(): BlockNode {
+        this.consume(); // BEGIN
+        const body: Statement[] = [];
+
+        // Crucial: Check for 'end' only at the statement boundary
+        while (this.pos < this.tokens.length && this.peek()?.value.toLowerCase() !== 'end') {
+            const stmt = this.parseStatement();
+            if (stmt) body.push(stmt);
+        }
+
+        this.matchValue('end');
+        return { type: 'BlockStatement', body };
+    }
+
+    private parseWith(): WithNode {
+        this.consume(); // WITH
+
+        const ctes: CTENode[] = [];
+
+        // 1. Parse one or more CTE definitions
+        while (true) {
+            const name = this.consume().value;
+            let columns: string[] | undefined = undefined;
+
+            // Optional column list: WITH MyCTE (Col1, Col2)
+            if (this.peek()?.type === TokenType.OpenParen) {
+                this.consume();
+                columns = this.parseList(() => this.consume().value);
+                this.match(TokenType.CloseParen);
+            }
+
+            this.matchValue('as');
+            this.match(TokenType.OpenParen);
+
+            // CTEs are queries (SELECT or UNION of SELECTs)
+            const query = this.parseSelect() as QueryStatement;
+
+            this.match(TokenType.CloseParen);
+
+            ctes.push({ name, columns, query });
+
+            // Check for multiple CTEs: WITH CTE1 AS (...), CTE2 AS (...)
+            if (this.peek()?.value === ',') {
+                this.consume(); // Consume comma and continue loop
+            } else {
+                break;
+            }
+        }
+
+        // 2. Fixed Body Logic (Claude Issue #3)
+        // T-SQL allows WITH to precede SELECT, INSERT, UPDATE, or DELETE.
+        // parseStatement handles all of these and correctly returns the specific Node.
+        const body = this.parseStatement();
+
+        if (!body) {
+            throw new Error("A Common Table Expression (CTE) must be followed by a query or DML statement.");
+        }
+
+        return {
+            type: 'WithStatement',
+            ctes,
+            body
+        };
     }
 
     private resync() {

@@ -7,12 +7,14 @@ exports[`T-SQL Parser should build AST for a basic SELECT 1`] = `
       "columns": [
         {
           "alias": undefined,
+          "expression": "Name",
           "name": "Name",
           "tablePrefix": undefined,
           "type": "Column",
         },
         {
           "alias": undefined,
+          "expression": "Age",
           "name": "Age",
           "tablePrefix": undefined,
           "type": "Column",
@@ -43,6 +45,7 @@ exports[`T-SQL Parser should handle T-SQL TOP clause 1`] = `
       "columns": [
         {
           "alias": undefined,
+          "expression": "*",
           "name": "*",
           "tablePrefix": undefined,
           "type": "Column",

@@ -9,7 +9,8 @@ export enum TokenType {
     OpenParen,
     CloseParen,
     Semicolon,
-    EOF
+    EOF,
+    Comma,
 }
 
 export interface Token {

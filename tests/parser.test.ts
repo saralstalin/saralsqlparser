@@ -1,5 +1,5 @@
 import { Lexer } from '../src/lexer';
-import { Parser, SelectNode, InsertNode, UpdateNode, DeleteNode, DeclareNode, SetNode, CreateNode } from '../src/parser';
+import { Parser, SelectNode, InsertNode, UpdateNode, DeleteNode, DeclareNode, SetNode, CreateNode, SetOperatorNode, IfNode, BlockNode, WithNode } from '../src/parser';
 
 describe('T-SQL Parser', () => {
     const parse = (sql: string) => {
@@ -36,7 +36,7 @@ describe('T-SQL Parser', () => {
         if (stmt.from) {
             expect(stmt.from.table).toBe('Employees');
             expect(stmt.from.joins.length).toBe(1);
-            expect(stmt.from.joins[0].type).toBe('inner_join');
+            expect(stmt.from.joins[0].type).toBe('INNER JOIN');
         } else {
             throw new Error("Parser failed to identify the FROM clause");
         }
@@ -138,12 +138,32 @@ describe('T-SQL Parser', () => {
         const ast = parse(sql);
         const stmt = ast.body[0] as SelectNode;
 
-        // Assignment style
-        expect(stmt.columns[0]).toEqual({ type: 'Column', name: 'UserID', alias: 'ID' });
-        // AS style
-        expect(stmt.columns[1]).toEqual({ type: 'Column', name: 'Name', alias: 'UserName' });
-        // No alias
-        expect(stmt.columns[2]).toEqual({ type: 'Column', name: 'Email', alias: undefined });
+        // Assignment style: ID = UserID
+        expect(stmt.columns[0]).toEqual({
+            type: 'Column',
+            name: 'UserID',
+            alias: 'ID',
+            expression: 'UserID',
+            tablePrefix: undefined
+        });
+
+        // AS style: Name AS UserName
+        expect(stmt.columns[1]).toEqual({
+            type: 'Column',
+            name: 'Name',
+            alias: 'UserName',
+            expression: 'Name',
+            tablePrefix: undefined
+        });
+
+        // No alias: Email
+        expect(stmt.columns[2]).toEqual({
+            type: 'Column',
+            name: 'Email',
+            alias: undefined,
+            expression: 'Email',
+            tablePrefix: undefined
+        });
     });
 
     test('should handle table aliases and correctly identify clause boundaries', () => {
@@ -179,7 +199,7 @@ describe('T-SQL Parser', () => {
         const ast = parse(sql);
         const stmt = ast.body[0] as SelectNode;
 
-        expect(stmt.where).toBe('ID IN ( 1, 2, 3, 4, 5)');
+        expect(stmt.where).toBe('ID IN (1, 2, 3, 4, 5)');
     });
 
     test('should handle BETWEEN clause for ranges', () => {
@@ -195,15 +215,13 @@ describe('T-SQL Parser', () => {
         const ast = parse(sql);
         const stmt = ast.body[0] as SelectNode;
 
-        expect(stmt.where).toBe('CategoryID IN ( 10, 20) AND Price BETWEEN 100 AND 500');
+        expect(stmt.where).toBe('CategoryID IN (10, 20) AND Price BETWEEN 100 AND 500');
     });
 
     test('should handle subquery inside IN clause', () => {
         const sql = `SELECT Name FROM Users WHERE ID IN (SELECT UserID FROM Orders WHERE Status = 1)`;
         const ast = parse(sql);
         const stmt = ast.body[0] as SelectNode;
-        //console.log(JSON.stringify(stmt, null, 2))
-        // This will test if your parser can go 'Inception' mode
         expect(stmt.where).toContain('SelectStatement');
     });
 
@@ -261,7 +279,7 @@ describe('T-SQL Parser', () => {
     `;
         const ast2 = parse(sql2);
 
-        console.log(JSON.stringify(ast2, null, 2))
+        //console.log(JSON.stringify(ast2, null, 2))
 
         const deleteNode = ast2.body[0] as DeleteNode;
         expect(deleteNode.target).toBe('u');
@@ -285,7 +303,7 @@ describe('T-SQL Parser', () => {
         const ast = parse(sql);
 
         const node = ast.body[0] as SetNode;
-        console.log(JSON.stringify(node, null, 2))
+        //console.log(JSON.stringify(node, null, 2))
         expect(node.type).toBe('SetStatement');
         expect(node.variable).toBe('@Counter');
         expect(node.value).toBe('@Counter + 1');
@@ -296,9 +314,9 @@ describe('T-SQL Parser', () => {
         const ast = parse(sql);
 
         const node = ast.body[0] as CreateNode;
-        console.log(JSON.stringify(node, null, 2))
+        //console.log(JSON.stringify(node, null, 2))
         expect(node.type).toBe('CreateStatement');
-       
+
         expect(node.objectType).toBe('TABLE');
         expect(node.name).toBe('[dbo].[Users]');
         expect(node.columns?.[0].constraints).toContain('PRIMARY KEY');
@@ -317,5 +335,201 @@ describe('T-SQL Parser', () => {
         const ast2 = parse(sql2);
         const procNode = ast2.body[0] as CreateNode;
         expect(procNode.parameters?.[0].name).toBe('@ID');
+    });
+
+    test('Step 1: should naturally stop at commas without explicit stop-tokens', () => {
+        const sql = `SET @A = 1 + 2, @B = 3`;
+        const ast = parse(sql);
+        const stmt = ast.body[0] as SetNode;
+        // Changed from '(1 + 2)' to '1 + 2' to match flat reconstruction
+        expect(stmt.value).toBe('1 + 2');
+    });
+
+    test('Step 1: should handle nested parentheses correctly', () => {
+        const sql = `SET @Val = (1 + 2) * 3`;
+        const ast = parse(sql);
+        const stmt = ast.body[0] as SetNode;
+        // Changed to reflect exact input reconstruction
+        expect(stmt.value).toBe('(1 + 2) * 3');
+    });
+
+    test('Step 3: should handle complex Join types and APPLY', () => {
+        const sql = `
+        SELECT u.Name, p.Amount 
+        FROM Users u
+        LEFT OUTER JOIN Payments AS p ON u.ID = p.UserID
+        CROSS APPLY dbo.fn_GetDetails(u.ID)
+    `;
+        const ast = parse(sql);
+        const stmt = ast.body[0] as SelectNode;
+
+        expect(stmt.from?.joins[0].type).toBe('LEFT OUTER JOIN');
+        expect(stmt.from?.joins[0].alias).toBe('p');
+        expect(stmt.from?.joins[1].type).toBe('CROSS APPLY');
+        expect(stmt.from?.joins[1].table).toContain('fn_GetDetails');
+    });
+
+    test('Step 4: should handle derived tables (subqueries) in the FROM clause', () => {
+        const sql = `
+        SELECT Derived.Name 
+        FROM (SELECT Name FROM Users WHERE Status = 1) AS Derived
+        INNER JOIN (SELECT UserID FROM Orders) o ON Derived.ID = o.UserID
+    `;
+        const ast = parse(sql);
+        const stmt = ast.body[0] as SelectNode;
+
+        // Verify the main table source is a subquery
+        expect(stmt.from?.table).toContain('SelectStatement');
+        expect(stmt.from?.alias).toBe('Derived');
+
+        // Verify the Join target is also a subquery
+        expect(stmt.from?.joins[0].table).toContain('SelectStatement');
+        expect(stmt.from?.joins[0].alias).toBe('o');
+    });
+
+    test('Step 5: should handle CASE expressions in SELECT and WHERE', () => {
+        const sql = `
+        SELECT 
+            CASE WHEN Status = 1 THEN 'Active' ELSE 'Inactive' END AS StatusDesc,
+            CASE CategoryID WHEN 1 THEN 'Electronics' END
+        FROM Products
+        WHERE CASE WHEN Price > 100 THEN 1 ELSE 0 END = 1
+    `;
+        const ast = parse(sql);
+        const stmt = ast.body[0] as SelectNode;
+
+        // Verify first CASE
+        expect(stmt.columns[0].expression).toContain('CASE WHEN Status = 1 THEN \'Active\' ELSE \'Inactive\' END');
+        expect(stmt.columns[0].alias).toBe('StatusDesc');
+
+        // Verify second CASE (Simple format)
+        expect(stmt.columns[1].expression).toBe('CASE CategoryID WHEN 1 THEN \'Electronics\' END');
+
+        // Verify CASE in WHERE
+        expect(stmt.where).toContain('CASE WHEN Price > 100 THEN 1 ELSE 0 END = 1');
+    });
+
+    test('Step 6: should handle EXISTS and scalar subqueries', () => {
+        const sql = `
+        SELECT Name, (SELECT TOP 1 OrderDate FROM Orders WHERE UserID = u.ID) as LastOrder
+        FROM Users u
+        WHERE EXISTS (SELECT 1 FROM Orders o WHERE o.UserID = u.ID)
+    `;
+        const ast = parse(sql);
+        const stmt = ast.body[0] as SelectNode;
+
+        // Verify scalar subquery in columns
+        expect(stmt.columns[1].expression).toContain('SelectStatement');
+        expect(stmt.columns[1].alias).toBe('LastOrder');
+
+        // Verify EXISTS subquery in WHERE
+        expect(stmt.where).toContain('EXISTS');
+        expect(stmt.where).toContain('SelectStatement');
+    });
+
+    test('Step 7: should handle chained UNION ALL and EXCEPT', () => {
+        const sql = `
+        SELECT Name FROM Users
+        UNION ALL
+        SELECT Name FROM Admins
+        EXCEPT
+        SELECT Name FROM Blacklist
+    `;
+        const ast = parse(sql);
+        const setNode = ast.body[0] as SetOperatorNode;
+
+        // The top node should be the last operation (EXCEPT) due to left-recursion
+        expect(setNode.operator).toBe('EXCEPT');
+        expect((setNode.left as SetOperatorNode).operator).toBe('UNION ALL');
+    });
+
+    test('Step 8: should handle DECLARE and SET statements', () => {
+        const sql = `
+        DECLARE @ID INT = 10, @Name VARCHAR(50);
+        SET @ID = @ID + 1;
+        SELECT @Name = Name FROM Users WHERE ID = @ID;
+    `;
+        const ast = parse(sql);
+
+        // Verify DECLARE - checking .variables instead of .declarations
+        const decl = ast.body[0] as DeclareNode;
+        expect(decl.variables.length).toBe(2);
+        expect(decl.variables[0].name).toBe('@ID');
+        expect(decl.variables[0].initialValue).toBe('10');
+        expect(decl.variables[1].dataType).toBe('VARCHAR(50)');
+
+        // Verify SET
+        const setStmt = ast.body[1] as SetNode;
+        expect(setStmt.variable).toBe('@ID');
+        expect(setStmt.value).toBe('@ID + 1');
+    });
+
+    test('Step 9: should handle IF...ELSE logic with BEGIN...END blocks', () => {
+        const sql = `
+        IF @Status = 1
+        BEGIN
+            UPDATE Products SET Price = Price * 1.1 WHERE ID = @ID;
+            SELECT 'Price Increased' AS Note;
+        END
+        ELSE
+            PRINT 'No Change';
+    `;
+        const ast = parse(sql);
+        const ifStmt = ast.body[0] as IfNode;
+
+        expect(ifStmt.type).toBe('IfStatement');
+        expect(ifStmt.condition).toBe('@Status = 1');
+
+        // Verify BEGIN...END block
+        const thenBlock = ifStmt.thenBranch as BlockNode;
+        expect(thenBlock.type).toBe('BlockStatement');
+        expect(thenBlock.body.length).toBe(2);
+
+        // Verify ELSE branch
+        expect(ifStmt.elseBranch).toBeDefined();
+    });
+
+    test('Step 10: should handle multiple Common Table Expressions (CTE)', () => {
+        const sql = `
+        WITH Sales_CTE (SalesPersonID, TotalSales) AS (
+            SELECT SalesPersonID, SUM(TotalDue)
+            FROM SalesOrderHeader
+            GROUP BY SalesPersonID
+        ),
+        Target_CTE AS (
+            SELECT 100000 AS SalesTarget
+        )
+        SELECT * FROM Sales_CTE
+        JOIN Target_CTE ON Sales_CTE.TotalSales > Target_CTE.SalesTarget;
+    `;
+        const ast = parse(sql);
+        const withStmt = ast.body[0] as WithNode;
+
+        expect(withStmt.type).toBe('WithStatement');
+        expect(withStmt.ctes.length).toBe(2);
+        expect(withStmt.ctes[0].name).toBe('Sales_CTE');
+        expect(withStmt.ctes[0].columns).toContain('TotalSales');
+
+        // Verify the main query body
+        const mainSelect = withStmt.body as SelectNode;
+        expect(mainSelect.from?.table).toBe('Sales_CTE');
+    });
+
+    test('Claude Review: should handle IS NULL, NOT IN, and CASE inside Blocks', () => {
+        const sql = `
+        BEGIN
+            SELECT Name FROM Users 
+            WHERE DeletedAt IS NOT NULL 
+            AND ID NOT IN (1, 2, 3)
+            AND Category = CASE WHEN 1=1 THEN 'A' END;
+        END
+    `;
+        const ast = parse(sql);
+        const block = ast.body[0] as BlockNode;
+        const select = block.body[0] as SelectNode;
+
+        expect(select.where).toContain('DeletedAt IS NOT NULL');
+        expect(select.where).toContain('ID NOT IN (1, 2, 3)');
+        expect(block.body.length).toBe(1); // Proves CASE END didn't break the block
     });
 });
