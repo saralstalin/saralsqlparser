@@ -124,7 +124,7 @@ export class Lexer {
         // 8. Punctuation
         if (char === '(') return { type: TokenType.OpenParen, value: this.consume(), line: startLine, col: startCol };
         if (char === ')') return { type: TokenType.CloseParen, value: this.consume(), line: startLine, col: startCol };
-        if (char === ',') return { type: TokenType.Operator, value: this.consume(), line: startLine, col: startCol };
+        if (char === ',') return { type: TokenType.Comma, value: this.consume(), line: startLine, col: startCol };
         if (char === '.') return { type: TokenType.Operator, value: this.consume(), line: startLine, col: startCol };
         if (char === ';') return { type: TokenType.Semicolon, value: this.consume(), line: startLine, col: startCol };
 

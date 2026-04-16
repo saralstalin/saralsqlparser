@@ -7,14 +7,22 @@ exports[`T-SQL Parser should build AST for a basic SELECT 1`] = `
       "columns": [
         {
           "alias": undefined,
-          "expression": "Name",
+          "expression": {
+            "name": "Name",
+            "tablePrefix": undefined,
+            "type": "Identifier",
+          },
           "name": "Name",
           "tablePrefix": undefined,
           "type": "Column",
         },
         {
           "alias": undefined,
-          "expression": "Age",
+          "expression": {
+            "name": "Age",
+            "tablePrefix": undefined,
+            "type": "Identifier",
+          },
           "name": "Age",
           "tablePrefix": undefined,
           "type": "Column",
@@ -31,38 +39,20 @@ exports[`T-SQL Parser should build AST for a basic SELECT 1`] = `
       "orderBy": null,
       "top": null,
       "type": "SelectStatement",
-      "where": "Id = 1",
-    },
-  ],
-  "type": "Program",
-}
-`;
-
-exports[`T-SQL Parser should handle T-SQL TOP clause 1`] = `
-{
-  "body": [
-    {
-      "columns": [
-        {
-          "alias": undefined,
-          "expression": "*",
-          "name": "*",
+      "where": {
+        "left": {
+          "name": "Id",
           "tablePrefix": undefined,
-          "type": "Column",
+          "type": "Identifier",
         },
-      ],
-      "distinct": false,
-      "from": {
-        "alias": undefined,
-        "joins": [],
-        "table": "Logs",
+        "operator": "=",
+        "right": {
+          "type": "Literal",
+          "value": 1,
+          "variant": "number",
+        },
+        "type": "BinaryExpression",
       },
-      "groupBy": null,
-      "having": null,
-      "orderBy": null,
-      "top": "10",
-      "type": "SelectStatement",
-      "where": null,
     },
   ],
   "type": "Program",
