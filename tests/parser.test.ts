@@ -58,7 +58,7 @@ function toSql(expr: any): string {
             return `${toSql(expr.left)} ${expr.isNot ? 'NOT ' : ''}IN (${innerIn})`;
 
         case 'BetweenExpression':
-            return `${toSql(expr.left)} ${expr.isNot ? 'NOT ' : ''}BETWEEN ${toSql(expr.start)} AND ${toSql(expr.end)}`;
+            return `${toSql(expr.left)} ${expr.isNot ? 'NOT ' : ''}BETWEEN ${toSql(expr.lowerBound)} AND ${toSql(expr.upperBound)}`;
 
         case 'CaseExpression':
             let res = 'CASE';
@@ -503,5 +503,93 @@ describe('T-SQL Parser - Deep Expression Validation', () => {
         expect(val.left.type).toBe('UnaryExpression');
         expect(val.left.operator).toBe('-');
         expect(val.right.type).toBe('GroupingExpression');
+    });
+
+
+    test('Should resolve 3-part identifiers', () => {
+        const sql = 'SELECT [DB].[Schema].[Table] FROM T';
+        const parser = new Parser(new Lexer(sql));
+        const ast = parser.parse();
+
+        const select = ast.body[0] as SelectNode;
+        const identifier = select.columns[0].expression as any;
+
+        expect(identifier.type).toBe('Identifier');
+        expect(identifier.parts).toEqual(['[DB]', '[Schema]', '[Table]']);
+        expect(identifier.name).toBe('[DB].[Schema].[Table]');
+    });
+
+    test('Should handle mixed bracketed and standard segments', () => {
+        const sql = 'SELECT dbo.[Users] FROM T';
+        const parser = new Parser(new Lexer(sql));
+        const ast = parser.parse();
+
+        const identifier = (ast.body[0] as any).columns[0].expression;
+        expect(identifier.name).toBe('dbo.[Users]');
+    });
+
+    test('Should maintain correct offsets for the whole multipart string', () => {
+        const sql = 'SELECT   dbo.Table';
+        const parser = new Parser(new Lexer(sql));
+        const ast = parser.parse();
+        const identifier = (ast.body[0] as any).columns[0].expression;
+
+        // "SELECT" (6) + 3 spaces = index 9
+        expect(identifier.start).toBe(9);
+        // index 9 + "dbo.Table" (9 chars) = index 18
+        expect(identifier.end).toBe(18);
+    });
+
+
+    describe('Node Location Accuracy', () => {
+        const getSqlFragment = (sql: string, node: { start: number, end: number }) => {
+            return sql.substring(node.start, node.end);
+        };
+
+        test('SELECT statement should span from SELECT to the end of WHERE', () => {
+            const sql = "SELECT Name, Age FROM Users WHERE ID = 10;";
+            const ast = parse(sql);
+            const stmt = ast.body[0] as SelectNode;
+
+            expect(getSqlFragment(sql, stmt)).toBe("SELECT Name, Age FROM Users WHERE ID = 10");
+        });
+
+        test('Column nodes should have precise bounds', () => {
+            const sql = "SELECT FirstName AS Name FROM Users";
+            const ast = parse(sql);
+            const stmt = ast.body[0] as SelectNode;
+            const col = stmt.columns[0];
+
+            // Should include the alias but not the trailing FROM
+            expect(getSqlFragment(sql, col)).toBe("FirstName AS Name");
+        });
+
+        test('UPDATE statement location spanning', () => {
+            const sql = "UPDATE Users SET Active = 1 FROM Profile WHERE PId = 1";
+            const ast = parse(sql);
+            const stmt = ast.body[0] as UpdateNode;
+
+            expect(getSqlFragment(sql, stmt)).toBe("UPDATE Users SET Active = 1 FROM Profile WHERE PId = 1");
+        });
+
+        test('BETWEEN expression location bounds', () => {
+            const sql = "SELECT x FROM T WHERE Y BETWEEN 1 AND 10";
+            const ast = parse(sql);
+            const stmt = ast.body[0] as SelectNode;
+            const between = stmt.where as any;
+
+            // Should capture 'Y BETWEEN 1 AND 10'
+            expect(getSqlFragment(sql, between)).toBe("Y BETWEEN 1 AND 10");
+        });
+
+        test('JOIN sequence should expand TableReference bounds', () => {
+            const sql = "SELECT * FROM T1 INNER JOIN T2 ON T1.id = T2.id";
+            const ast = parse(sql);
+            const stmt = ast.body[0] as SelectNode;
+            const from = stmt.from!;
+
+            // The FROM node should span from 'FROM' keyword to the end of the ON clause
+            expect(getSqlFragment(sql, from)).toBe("FROM T1 INNER JOIN T2 ON T1.id = T2.id");
+        });
     });
 });
