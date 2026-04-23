@@ -107,7 +107,7 @@ export interface InsertNode extends NodeLocation {
     type: 'InsertStatement';
     table: string;
     columns: string[] | null;
-    values: Expression | null;
+    values: Expression[][] | null;
     selectQuery: SelectNode | SetOperatorNode | null;
 }
 
@@ -115,14 +115,14 @@ export interface UpdateNode extends NodeLocation {
     type: 'UpdateStatement';
     target: string;        // The table or alias being updated
     assignments: { column: string, value: Expression }[];
-    from: TableReference | null;
+    from: TableReference[] | null;
     where: Expression | null;
 }
 
 export interface DeleteNode extends NodeLocation {
     type: 'DeleteStatement';
     target: string;         // The table or alias being deleted from
-    from: TableReference | null;
+    from: TableReference[] | null;
     where: Expression | null;
 }
 
@@ -526,7 +526,7 @@ export class Parser {
         let from: TableReference[] | null = null;
         if (this.peekKeyword('FROM')) {
             // We use parseList to handle: FROM Table1 WITH(NOLOCK), Table2
-            from = this.parseList(() => this.parseFrom());
+            from = this.parseFrom();
             endOffset = from[from.length - 1].end;
         }
 
@@ -616,45 +616,53 @@ export class Parser {
             this.consume();
         }
 
-        // 1. Gold Standard: Use the Multipart Identifier resolver
+        // 1. Resolve Table Name
         const tableNode = this.parseMultipartIdentifier();
 
+        // 2. Parse Column List: (Col1, Col2...)
         let columns: string[] | null = null;
         if (this.peek()?.type === TokenType.OpenParen) {
             this.consume(); // (
+            // parseList handles the commas, we just consume the values
             columns = this.parseList(() => this.consume().value);
             this.match(TokenType.CloseParen);
         }
 
-        let values: Expression | null = null;
-        let selectQuery: SelectNode | SetOperatorNode | null = null;
+        let values: Expression[][] | null = null; // Changed to 2D Array
+        let selectQuery: QueryStatement | null = null;
         let endOffset = tableNode.end;
 
         const nextVal = this.peek()?.value;
 
-        // 2. Handle VALUES Clause
+        // 3. Handle VALUES Clause (Multi-row support)
         if (nextVal === 'VALUES') {
             this.consume(); // VALUES
-            this.match(TokenType.OpenParen);
 
-            values = this.parseExpression();
+            // Use parseList to handle multiple rows: VALUES (...), (...), (...)
+            values = this.parseList(() => {
+                this.match(TokenType.OpenParen);
 
-            const closeParen = this.match(TokenType.CloseParen);
-            endOffset = closeParen.offset + closeParen.value.length;
+                // Inside the row, parse the list of expressions/columns
+                const rowValues = this.parseList(() => this.parseExpression(Precedence.LOWEST));
+
+                const closeParen = this.match(TokenType.CloseParen);
+                endOffset = closeParen.offset + closeParen.value.length;
+
+                return rowValues;
+            });
         }
-        // 3. Handle INSERT INTO ... SELECT
+        // 4. Handle INSERT INTO ... SELECT
         else if (nextVal === 'SELECT') {
             const query = this.parseSelect() as QueryStatement;
             selectQuery = query;
             endOffset = query.end;
         }
 
-        // 4. Return with full NodeLocation (start/end)
         return {
             type: 'InsertStatement',
             table: tableNode.name,
             columns: columns,
-            values: values,
+            values: values, // Now returns Expression[][]
             selectQuery: selectQuery,
             start: startToken.offset,
             end: endOffset
@@ -680,7 +688,7 @@ export class Parser {
             };
         });
 
-        let from: TableReference | null = null;
+        let from: TableReference[] | null = null;
         if (this.peekKeyword('FROM')) {
             from = this.parseFrom();
         }
@@ -708,11 +716,22 @@ export class Parser {
         };
     }
 
-    private parseFrom(): TableReference {
+    private parseFrom(): TableReference[] {
+        // Consume the FROM keyword once
         const fromToken = this.matchKeyword('FROM');
+
+        // Parse the list of table sources (T1, T2, etc.)
+        // We pass a starting offset so the first TableReference knows it "owns" the FROM keyword range
+        return this.parseList(() => this.parseTableSource(fromToken.offset));
+    }
+
+    private parseTableSource(forcedStart?: number): TableReference {
         let source: Expression;
         let alias: string | null = null;
         let hints: string[] | undefined;
+
+        const startToken = this.peek()!;
+        const startOffset = forcedStart ?? startToken.offset;
 
         // 1. Handle Subquery vs Table Reference
         const next = this.peek();
@@ -737,7 +756,7 @@ export class Parser {
         const stopKeywords = [
             'INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS', 'JOIN',
             'WHERE', 'GROUP', 'ORDER', 'UNION', 'ALL', 'ON',
-            'APPLY', 'OUTER', 'EXCEPT', 'INTERSECT', 'WITH' // Added 'with' to stopKeywords for alias
+            'APPLY', 'OUTER', 'EXCEPT', 'INTERSECT', 'WITH'
         ];
 
         let endOffset = source.end;
@@ -758,22 +777,17 @@ export class Parser {
             endOffset = aliasNode.end;
         }
 
-        // --- NEW: Parse Table Hints (T-SQL specific) ---
-        // Hints only apply to physical tables, not subqueries
+        // 3. Parse Table Hints
         if (source.type === 'Identifier') {
             const nextToken = this.peek();
-            // Check for WITH (NOLOCK) or legacy (NOLOCK)
-            if (nextToken?.value === 'WITH' ||
-                (nextToken?.type === TokenType.OpenParen && alias)) {
+            if (nextToken?.value === 'WITH' || (nextToken?.type === TokenType.OpenParen && alias)) {
                 hints = this.parseTableHints();
-                // Update endOffset to include the hint range
                 const lastHintToken = this.tokens[this.pos - 1];
                 endOffset = lastHintToken.offset + lastHintToken.value.length;
             }
         }
-        // -----------------------------------------------
 
-        // 3. Parse Join Sequence
+        // 4. Parse Join Sequence
         const joins: JoinNode[] = [];
         while (this.isJoinToken(this.peek())) {
             const join = this.parseJoin();
@@ -781,23 +795,21 @@ export class Parser {
             endOffset = join.end;
         }
 
-        // 4. Resolve the table value for the AST
-        let tableValue: string | SubqueryExpression;
+        // 5. Finalize Table Value
+        let tableValue: any;
         if (source.type === 'SubqueryExpression') {
             tableValue = source;
-        } else if (source.type === 'Identifier') {
-            tableValue = (source as any).name;
         } else {
-            tableValue = this.stringifyExpression(source);
+            tableValue = (source as any).name || this.stringifyExpression(source);
         }
 
         return {
             type: 'TableReference',
-            table: tableValue as any,
+            table: tableValue,
             alias: alias || undefined,
-            hints, // Added to return object
+            hints,
             joins,
-            start: fromToken.offset,
+            start: startOffset,
             end: endOffset
         };
     }
@@ -946,9 +958,9 @@ export class Parser {
             this.consume();
         }
 
-        // Gold Standard: Capture the target name explicitly
+        // Capture the target name explicitly
         const targetNode = this.parseMultipartIdentifier();
-        const target = targetNode.name; // This will capture 'u'
+        const target = targetNode.name;
         let endOffset = targetNode.end;
 
         // Check if another FROM follows (DELETE u FROM ...)
@@ -956,12 +968,12 @@ export class Parser {
             this.consume();
         }
 
-        let from: TableReference | null = null;
+        let from: TableReference[] | null = null;
         const next = this.peek()?.value;
         // Only parseFrom if we aren't hitting a WHERE or statement end
         if (next && !['WHERE', ';', 'GO'].includes(next)) {
             from = this.parseFrom();
-            endOffset = from.end;
+            endOffset = from[0].end;
         }
 
         let where: Expression | null = null;
@@ -1034,41 +1046,59 @@ export class Parser {
     }
 
     private parseSet(): SetNode {
-        const startToken = this.consume(); // SET
+        const startToken = this.matchKeyword('SET');
+        const next = this.peek();
 
-        // Capture the variable/option token
-        const varToken = this.consume();
-        const variable = varToken.value;
+        // 1. Handle Variable Assignment (e.g., SET @Var = 1)
+        if (next?.type === TokenType.Variable) {
+            const variableToken = this.consume();
+            const variable = variableToken.value;
 
-        // 1. Handle T-SQL Session Options (e.g., SET NOCOUNT ON)
-        if (!variable.startsWith('@')) {
-            const valToken = this.consume(); // ON, OFF, etc.
+            this.match(TokenType.Operator); // Consume '='
+            const value = this.parseExpression();
 
             return {
                 type: 'SetStatement',
                 variable,
-                value: {
-                    type: 'Literal',
-                    value: valToken.value,
-                    variant: 'string',
-                    start: valToken.offset,
-                    end: valToken.offset + valToken.value.length
-                },
+                value,
                 start: startToken.offset,
-                end: valToken.offset + valToken.value.length
+                end: value.end
             };
         }
 
-        // 2. Handle Variable Assignment (e.g., SET @Var = 1)
-        this.matchValue('=');
-        const value = this.parseExpression();
+        // 2. Handle Multi-token Session Options (e.g., SET NOCOUNT ON, SET TRANSACTION ISOLATION LEVEL...)
+        const optionParts: string[] = [];
+        const firstOptionToken = this.peek();
+
+        // We consume tokens until we hit a statement terminator or a major structural keyword
+        while (this.pos < this.tokens.length) {
+            const token = this.peek();
+            if (!token || token.type === TokenType.Semicolon) break;
+
+            // Safety break: if we hit a major command, we've likely missed a semicolon
+            if (token.type === TokenType.Keyword &&
+                ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'DECLARE', 'GO', 'BEGIN', 'IF'].includes(token.value)) {
+                break;
+            }
+
+            optionParts.push(this.consume().value);
+        }
+
+        const lastToken = this.tokens[this.pos - 1];
+        const fullOption = optionParts.join(' ');
 
         return {
             type: 'SetStatement',
-            variable,
-            value,
+            variable: fullOption, // Store the full option string here for now
+            value: {
+                type: 'Literal',
+                value: fullOption,
+                variant: 'string',
+                start: firstOptionToken?.offset ?? startToken.offset,
+                end: lastToken ? (lastToken.offset + lastToken.value.length) : startToken.offset
+            },
             start: startToken.offset,
-            end: value.end // Use the end of the expression
+            end: lastToken ? (lastToken.offset + lastToken.value.length) : startToken.offset
         };
     }
 
@@ -1350,7 +1380,7 @@ export class Parser {
     private isJoinToken(token: Token | undefined): boolean {
         if (!token) return false;
         const val = token.value;
-        return ['JOIN', 'INNER', 'LEFT', 'RIGHT', 'CROSS', 'FULL'].includes(val);
+        return ['JOIN', 'INNER', 'OUTER', 'LEFT', 'RIGHT', 'CROSS', 'FULL'].includes(val);
     }
 
     private parseExpression(precedence: Precedence = Precedence.LOWEST): Expression {

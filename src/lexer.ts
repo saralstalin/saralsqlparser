@@ -35,7 +35,7 @@ export class Lexer {
         'BETWEEN', 'LIKE', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'EXISTS',
         'OVER', 'PARTITION', 'PROCEDURE', 'PROC', 'FUNCTION', 'VIEW', 'TABLE', 
         'TYPE', 'AS', 'GO', 'ON', 'JOIN', 'INNER', 'LEFT', 'RIGHT', 'CROSS', 
-        'OUTER', 'ASC', 'DESC', 'WITH', 'IF',  'BEGIN',  'PRINT'
+        'OUTER', 'ASC', 'DESC', 'WITH', 'IF',  'BEGIN',  'PRINT', 'OUTPUT', 'OUT'
     ]);
 
     constructor(private input: string) { }

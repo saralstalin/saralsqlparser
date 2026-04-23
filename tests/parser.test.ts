@@ -258,7 +258,7 @@ describe('T-SQL Parser', () => {
         const sql = `UPDATE u SET x = 1 FROM Users u JOIN T2 ON u.id = T2.id`;
         const node = parse(sql).body[0] as UpdateNode;
         expect(node.target).toBe('u');
-        expect(node.from?.joins.length).toBe(1);
+        expect(node.from?.[0].joins.length).toBe(1);
     });
 
     // 25. DELETE Standard
@@ -420,8 +420,8 @@ describe('T-SQL Parser - Advanced Expression & Structural Integrity', () => {
         const updateNode = ast.body[0] as UpdateNode;
 
         // Verifies parseFrom is used for UPDATE as well
-        expect(updateNode.from?.table).toBe('Users');
-        expect(updateNode.from?.alias).toBe('u');
+        expect(updateNode.from?.[0].table).toBe('Users');
+        expect(updateNode.from?.[0].alias).toBe('u');
     });
 });
 
@@ -717,6 +717,90 @@ describe('T-SQL Parser - Deep Expression Validation', () => {
 
             // The fragment must match the SQL input exactly
             expect(getSqlFragment(sql, from)).toBe("FROM T1 WITH (NOLOCK) JOIN T2 WITH(NOLOCK) ON T1.id = T2.id");
+        });
+    });
+
+    describe('T-SQL Parser - Architectural Improvements', () => {
+
+        test('should handle multi-row and multi-column INSERT (2D Values)', () => {
+            const sql = "INSERT INTO Users (ID, Name) VALUES (1, 'Alice'), (2, 'Bob');";
+            const ast = parse(sql);
+            const insert = ast.body[0] as any;
+
+            expect(insert.type).toBe('InsertStatement');
+            expect(insert.columns).toEqual(['ID', 'Name']);
+
+            // Validate 2D structure: Expression[][]
+            expect(insert.values.length).toBe(2); // 2 rows
+            expect(insert.values[0].length).toBe(2); // 2 columns in row 1
+            expect(insert.values[1].length).toBe(2); // 2 columns in row 2
+
+            expect(insert.values[0][0].value).toBe(1);
+            expect(insert.values[1][1].value).toBe('Bob');
+        });
+
+        test('should handle complex Session SET options', () => {
+            const sql = "SET TRANSACTION ISOLATION LEVEL READ COMMITTED;";
+            const ast = parse(sql);
+            const setStmt = ast.body[0] as any;
+
+            expect(setStmt.type).toBe('SetStatement');
+            // Now captures the entire multi-token string
+            expect(setStmt.variable).toBe('TRANSACTION ISOLATION LEVEL READ COMMITTED');
+        });
+
+        test('should handle ANSI comma-separated FROM sources', () => {
+            const sql = "SELECT * FROM Users u, Orders o WHERE u.ID = o.UserID";
+            const ast = parse(sql);
+            const select = ast.body[0] as any;
+
+            // Verify the TableReference[] array
+            expect(Array.isArray(select.from)).toBe(true);
+            expect(select.from.length).toBe(2);
+            expect(select.from[0].alias).toBe('u');
+            expect(select.from[1].table).toBe('Orders');
+            expect(select.from[1].alias).toBe('o');
+        });
+
+        test('should fold negative numbers into single Literals', () => {
+            const sql = "SELECT -50, NOT 1";
+            const ast = parse(sql);
+            const select = ast.body[0] as any;
+
+            const firstCol = select.columns[0].expression;
+            const secondCol = select.columns[1].expression;
+
+            // Negative number check
+            expect(firstCol.type).toBe('Literal');
+            expect(firstCol.value).toBe(-50);
+
+            // Unary NOT check (should remain UnaryExpression)
+            expect(secondCol.type).toBe('UnaryExpression');
+            expect(secondCol.operator).toBe('NOT');
+        });
+
+        test('should handle Dot precedence in complex expressions', () => {
+            const sql = "SELECT u.ID + 10 FROM Users u";
+            const ast = parse(sql);
+            const select = ast.body[0] as any;
+            const expr = select.columns[0].expression;
+
+            // If Dot precedence was low, + would grab 'ID' and fail.
+            // It must be BinaryExpression(+) -> Left: Identifier(u.ID)
+            expect(expr.type).toBe('BinaryExpression');
+            expect(expr.operator).toBe('+');
+            expect(expr.left.type).toBe('Identifier');
+            expect(expr.left.name).toBe('u.ID');
+        });
+
+        test('should handle empty parseList resilience in Functions', () => {
+            const sql = "SELECT COUNT(), GETDATE()";
+            // This would have crashed the old parser that expected [parserFn()]
+            expect(() => parse(sql)).not.toThrow();
+            const ast = parse(sql);
+            const select = ast.body[0] as any;
+
+            expect(select.columns[0].expression.args.length).toBe(0);
         });
     });
 });
