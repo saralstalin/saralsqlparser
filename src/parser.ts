@@ -16,13 +16,15 @@ export type Expression =
     | { type: 'InExpression'; left: Expression; list?: Expression[]; subquery?: QueryStatement; isNot: boolean } & NodeLocation
     | BetweenExpression & NodeLocation
     | { type: 'GroupingExpression'; expression: Expression } & NodeLocation
-    | SubqueryExpression & NodeLocation;
+    | SubqueryExpression & NodeLocation
+    | OverExpression & NodeLocation;
 
 
 export interface JoinNode extends NodeLocation {
     type: string;
     table: string | Expression;
     on: Expression | null;
+    hints?: string[];
     alias?: string;
 }
 
@@ -80,8 +82,12 @@ export interface Program {
 }
 
 export interface TableReference extends NodeLocation {
-    table: string | SubqueryExpression; // Can be a string for simple tables or an Expression for subqueries
+    type: 'TableReference';
+    // Keeping your structure: string for tables, SubqueryExpression for derived tables
+    table: string | SubqueryExpression;
     alias?: string;
+    schema?: string;    // Highly recommended for LSP (e.g., 'dbo')
+    hints?: string[];   // T-SQL hints like NOLOCK, ROWLOCK
     joins: JoinNode[];
 }
 
@@ -90,7 +96,7 @@ export interface SelectNode extends NodeLocation {
     distinct: boolean;
     top: string | null;
     columns: ColumnNode[];
-    from: TableReference | null;
+    from: TableReference[] | null;
     where: Expression | null;
     groupBy: Expression[] | null;
     having: Expression | null;
@@ -184,6 +190,18 @@ export interface WithNode extends NodeLocation {
     body: Statement;
 }
 
+export interface WindowDefinition extends NodeLocation {
+    type: 'WindowDefinition';
+    partitionBy?: Expression[];
+    orderBy?: OrderByNode[];
+}
+
+export interface OverExpression extends NodeLocation {
+    type: 'OverExpression';
+    expression: Expression; // The underlying FunctionCall
+    window: WindowDefinition;
+}
+
 enum Precedence {
     LOWEST,
     OR,
@@ -199,13 +217,14 @@ enum Precedence {
 
 // Precedence mapping for operators
 const PRECEDENCE_MAP: Record<string, Precedence> = {
-    'or': Precedence.OR,
-    'and': Precedence.AND,
-    'not': Precedence.NOT,
-    'is': Precedence.COMPARE,
-    'in': Precedence.COMPARE,
-    'between': Precedence.COMPARE,
-    'like': Precedence.COMPARE,
+    '.': Precedence.CALL,
+    'OR': Precedence.OR,
+    'AND': Precedence.AND,
+    'NOT': Precedence.NOT,
+    'IS': Precedence.COMPARE,
+    'IN': Precedence.COMPARE,
+    'BETWEEN': Precedence.COMPARE,
+    'LIKE': Precedence.COMPARE,
     '=': Precedence.COMPARE,
     '<>': Precedence.COMPARE,
     '!=': Precedence.COMPARE,
@@ -227,9 +246,8 @@ const PRECEDENCE_MAP: Record<string, Precedence> = {
     '%': Precedence.PRODUCT, // Modulo support
 
     // High Precedence
-    'collate': Precedence.CALL,
+    'COLLATE': Precedence.CALL,
     '(': Precedence.CALL,
-    '.': Precedence.CALL  // Added for schema.table.column resolution
 };
 
 
@@ -254,21 +272,22 @@ export class Parser {
      * Ensures the current token is of a specific type and consumes it.
      * If not, it throws a helpful error.
      */
-    private match(type: TokenType): Token {
+    private match(...types: TokenType[]): Token {
         const token = this.peek();
-        if (!token || token.type !== type) {
-            throw new Error(`Expected token type ${TokenType[type]} at line ${token?.line}, but found ${token?.value}`);
+        if (token && types.includes(token.type)) {
+            return this.consume();
         }
-        return this.consume();
+        const expected = types.map(t => TokenType[t]).join(' or ');
+        throw new Error(`Expected ${expected} but found ${token?.value} at line ${token?.line}`);
     }
 
     /**
-     * Ensures the current token has a specific value (case-insensitive) and consumes it.
+     * Ensures the current token has a specific value (case-sensitive) and consumes it.
      * Perfect for keywords like 'AND' in the BETWEEN clause.
      */
     private matchValue(value: string): Token {
         const token = this.peek();
-        if (!token || token.value.toLowerCase() !== value.toLowerCase()) {
+        if (!token || token.value !== value) {
             throw new Error(`Expected '${value}' at line ${token?.line}, but found '${token?.value}'`);
         }
         return this.consume();
@@ -286,8 +305,8 @@ export class Parser {
                 // Check for SET operators (UNION, EXCEPT, INTERSECT)
                 if (stmt.type === 'SelectStatement' || stmt.type === 'SetOperator') {
                     while (this.pos < this.tokens.length) {
-                        const nextVal = this.peek()?.value.toLowerCase();
-                        if (nextVal && ['union', 'except', 'intersect'].includes(nextVal)) {
+                        const nextVal = this.peek()?.value;
+                        if (nextVal && ['UNION', 'EXCEPT', 'INTERSECT'].includes(nextVal)) {
                             // We cast to QueryStatement because we verified the type above
                             stmt = this.parseSetOperation(stmt as QueryStatement);
                         } else {
@@ -314,21 +333,34 @@ export class Parser {
         const first = this.consume();
         segments.push(first);
 
-        while (this.peek()?.type === TokenType.Operator && this.peek()?.value === '.') {
-            this.consume(); // consume '.'
-            if (this.peek()?.type === TokenType.Identifier || this.peek()?.type === TokenType.Keyword) {
+        // Rule #4: The Dot is now its own TokenType.Dot
+        while (this.peek()?.type === TokenType.Dot) {
+            this.consume(); // consume the '.' token
+
+            const next = this.peek();
+            if (
+                next &&
+                (next.type === TokenType.Identifier ||
+                    next.type === TokenType.Keyword ||
+                    next.type === TokenType.Variable ||
+                    next.type === TokenType.TempTable)
+            ) {
                 segments.push(this.consume());
             } else {
+                // Found a dot but no valid following segment; 
+                // break to allow the error handler or resync to handle it.
                 break;
             }
         }
+
+        const lastSegment = segments[segments.length - 1];
 
         return {
             type: 'Identifier',
             name: segments.map(t => t.value).join('.'),
             parts: segments.map(t => t.value),
             start: segments[0].offset,
-            end: segments[segments.length - 1].offset + segments[segments.length - 1].value.length
+            end: lastSegment.offset + lastSegment.value.length
         };
     }
 
@@ -337,7 +369,7 @@ export class Parser {
         let type = operatorToken.value.toUpperCase();
 
         // Handle UNION ALL
-        if (type === 'UNION' && this.peek()?.value.toLowerCase() === 'all') {
+        if (type === 'UNION' && this.peek()?.value === 'ALL') {
             this.consume();
             type = 'UNION ALL';
         }
@@ -355,8 +387,8 @@ export class Parser {
         };
 
         // Check for chained operations
-        const next = this.peek()?.value.toLowerCase();
-        if (next && ['union', 'except', 'intersect'].includes(next)) {
+        const next = this.peek()?.value;
+        if (next && ['UNION', 'EXCEPT', 'INTERSECT'].includes(next)) {
             // The recursive call will correctly wrap the current 'node' 
             // into a new parent SetOperatorNode with updated offsets.
             return this.parseSetOperation(node);
@@ -373,34 +405,34 @@ export class Parser {
         const startOffset = token.offset;
 
         try {
-            const val = token.value.toLowerCase();
+            const val = token.value;
 
             switch (val) {
-                case 'select':
+                case 'SELECT':
                     stmt = this.parseSelect();
                     // Handle Set Operators (UNION/EXCEPT/INTERSECT)
-                    let next = this.peek()?.value.toLowerCase();
-                    while (next && ['union', 'except', 'intersect'].includes(next)) {
+                    let next = this.peek()?.value;
+                    while (next && ['UNION', 'EXCEPT', 'INTERSECT'].includes(next)) {
                         stmt = this.parseSetOperation(stmt as QueryStatement);
-                        next = this.peek()?.value.toLowerCase();
+                        next = this.peek()?.value;
                     }
                     break;
 
-                case 'insert': stmt = this.parseInsert(); break;
-                case 'update': stmt = this.parseUpdate(); break;
-                case 'delete': stmt = this.parseDelete(); break;
-                case 'declare': stmt = this.parseDeclare(); break;
-                case 'set': stmt = this.parseSet(); break;
-                case 'create': stmt = this.parseCreate(); break;
-                case 'if': stmt = this.parseIf(); break;
-                case 'begin': stmt = this.parseBlock(); break;
+                case 'INSERT': stmt = this.parseInsert(); break;
+                case 'UPDATE': stmt = this.parseUpdate(); break;
+                case 'DELETE': stmt = this.parseDelete(); break;
+                case 'DECLARE': stmt = this.parseDeclare(); break;
+                case 'SET': stmt = this.parseSet(); break;
+                case 'CREATE': stmt = this.parseCreate(); break;
+                case 'IF': stmt = this.parseIf(); break;
+                case 'BEGIN': stmt = this.parseBlock(); break;
 
-                case 'with':
+                case 'WITH':
                     stmt = this.parseWith();
                     break;
 
-                case 'print':
-                    this.consume(); // PRINT
+                case 'PRINT':
+                    this.consume();
                     const message = this.parseExpression();
                     stmt = {
                         type: 'PrintStatement',
@@ -410,14 +442,14 @@ export class Parser {
                     } as any;
                     break;
 
-                case 'go':
+                case 'GO':
                     this.consume(); // Batch separator
                     return null;
 
-                case 'when':
-                case 'then':
-                case 'else':
-                case 'end':
+                case 'WHEN':
+                case 'THEN':
+                case 'ELSE':
+                case 'END':
                     throw new Error(`Unexpected keyword: ${token.value}. This must be part of an expression.`);
 
                 default:
@@ -456,20 +488,20 @@ export class Parser {
     }
 
     private parseSelect(): SelectNode {
-        const startToken = this.matchKeyword('select'); // Start tracking from SELECT
+        const startToken = this.matchKeyword('SELECT'); // Start tracking from SELECT
 
         // 1. Handle DISTINCT / ALL
         let distinct = false;
-        if (this.peekKeyword('distinct')) {
+        if (this.peekKeyword('DISTINCT')) {
             this.consume();
             distinct = true;
-        } else if (this.peekKeyword('all')) {
+        } else if (this.peekKeyword('ALL')) {
             this.consume();
         }
 
         // 2. Handle TOP
         let top: string | null = null;
-        if (this.peekKeyword('top')) {
+        if (this.peekKeyword('TOP')) {
             this.consume();
             const hasParens = this.peek()?.type === TokenType.OpenParen;
             if (hasParens) this.consume();
@@ -478,7 +510,7 @@ export class Parser {
 
             if (hasParens) this.match(TokenType.CloseParen);
 
-            if (this.peekKeyword('percent')) {
+            if (this.peekKeyword('PERCENT')) {
                 top += ' PERCENT';
                 this.consume();
             }
@@ -491,15 +523,16 @@ export class Parser {
         let endOffset = columns[columns.length - 1].end;
 
         // 4. Handle FROM
-        let from: TableReference | null = null;
-        if (this.peekKeyword('from')) {
-            from = this.parseFrom();
-            endOffset = from.end;
+        let from: TableReference[] | null = null;
+        if (this.peekKeyword('FROM')) {
+            // We use parseList to handle: FROM Table1 WITH(NOLOCK), Table2
+            from = this.parseList(() => this.parseFrom());
+            endOffset = from[from.length - 1].end;
         }
 
         // 5. Handle WHERE
         let where: Expression | null = null;
-        if (this.peekKeyword('where')) {
+        if (this.peekKeyword('WHERE')) {
             this.consume(); // WHERE
             where = this.parseExpression();
             endOffset = where.end;
@@ -507,16 +540,16 @@ export class Parser {
 
         // 6. Handle GROUP BY
         let groupBy: Expression[] | null = null;
-        if (this.peekKeyword('group')) {
+        if (this.peekKeyword('GROUP')) {
             this.consume(); // GROUP
-            this.matchKeyword('by');
+            this.matchKeyword('BY');
             groupBy = this.parseList(() => this.parseExpression());
             endOffset = groupBy[groupBy.length - 1].end;
         }
 
         // 7. Handle HAVING
         let having: Expression | null = null;
-        if (this.peekKeyword('having')) {
+        if (this.peekKeyword('HAVING')) {
             this.consume(); // HAVING
             having = this.parseExpression();
             endOffset = having.end;
@@ -525,20 +558,20 @@ export class Parser {
         // 8. Handle ORDER BY
         // 8. Handle ORDER BY
         let orderBy: OrderByNode[] | null = null;
-        if (this.peekKeyword('order')) {
-            this.consume(); // order
-            this.matchKeyword('by');
+        if (this.peekKeyword('ORDER')) {
+            this.consume(); // ORDER
+            this.matchKeyword('BY');
 
             orderBy = this.parseList(() => {
                 const expr = this.parseExpression(); // This is the 'Expression' object
                 let direction: 'ASC' | 'DESC' = 'ASC';
                 let itemEnd = expr.end;
 
-                if (this.peekKeyword('desc')) {
+                if (this.peekKeyword('DESC')) {
                     const dirToken = this.consume();
                     direction = 'DESC';
                     itemEnd = dirToken.offset + dirToken.value.length;
-                } else if (this.peekKeyword('asc')) {
+                } else if (this.peekKeyword('ASC')) {
                     const dirToken = this.consume();
                     direction = 'ASC';
                     itemEnd = dirToken.offset + dirToken.value.length;
@@ -577,9 +610,9 @@ export class Parser {
 
 
     private parseInsert(): InsertNode {
-        const startToken = this.matchKeyword('insert');
+        const startToken = this.matchKeyword('INSERT');
 
-        if (this.peekKeyword('into')) {
+        if (this.peekKeyword('INTO')) {
             this.consume();
         }
 
@@ -597,10 +630,10 @@ export class Parser {
         let selectQuery: SelectNode | SetOperatorNode | null = null;
         let endOffset = tableNode.end;
 
-        const nextVal = this.peek()?.value.toLowerCase();
+        const nextVal = this.peek()?.value;
 
         // 2. Handle VALUES Clause
-        if (nextVal === 'values') {
+        if (nextVal === 'VALUES') {
             this.consume(); // VALUES
             this.match(TokenType.OpenParen);
 
@@ -610,7 +643,7 @@ export class Parser {
             endOffset = closeParen.offset + closeParen.value.length;
         }
         // 3. Handle INSERT INTO ... SELECT
-        else if (nextVal === 'select') {
+        else if (nextVal === 'SELECT') {
             const query = this.parseSelect() as QueryStatement;
             selectQuery = query;
             endOffset = query.end;
@@ -629,12 +662,12 @@ export class Parser {
     }
 
     private parseUpdate(): UpdateNode {
-        const startToken = this.matchKeyword('update'); // Start tracking from UPDATE
+        const startToken = this.matchKeyword('UPDATE'); // Start tracking from UPDATE
 
         // 1. Gold Standard: Use Multipart Resolver for target table
         const targetNode = this.parseMultipartIdentifier();
 
-        this.matchKeyword('set');
+        this.matchKeyword('SET');
 
         const assignments = this.parseList(() => {
             // Support multipart for column names (e.g., SET T.Name = ...)
@@ -648,14 +681,14 @@ export class Parser {
         });
 
         let from: TableReference | null = null;
-        if (this.peekKeyword('from')) {
+        if (this.peekKeyword('FROM')) {
             from = this.parseFrom();
         }
 
         let where: Expression | null = null;
         let endOffset = assignments[assignments.length - 1].value.end;
 
-        if (this.peekKeyword('where')) {
+        if (this.peekKeyword('WHERE')) {
             this.consume(); // WHERE
             where = this.parseExpression();
             endOffset = where.end;
@@ -676,16 +709,16 @@ export class Parser {
     }
 
     private parseFrom(): TableReference {
-        const fromToken = this.matchKeyword('from'); // Start tracking from FROM
-
+        const fromToken = this.matchKeyword('FROM');
         let source: Expression;
-        let alias: string | null = null; // Use null to match your common interface style
+        let alias: string | null = null;
+        let hints: string[] | undefined;
 
         // 1. Handle Subquery vs Table Reference
         const next = this.peek();
         const nextNext = this.peek(1);
 
-        if (next?.type === TokenType.OpenParen && nextNext?.value.toLowerCase() === 'select') {
+        if (next?.type === TokenType.OpenParen && nextNext?.value === 'SELECT') {
             const openParen = this.match(TokenType.OpenParen);
             const subquery = this.parseSelect() as QueryStatement;
             const closeParen = this.match(TokenType.CloseParen);
@@ -697,41 +730,55 @@ export class Parser {
                 end: closeParen.offset + closeParen.value.length
             };
         } else {
-            // T-SQL Gold Standard: Use the multipart resolver for table names
             source = this.parseMultipartIdentifier();
         }
 
         // 2. Capture Alias logic
         const stopKeywords = [
-            'inner', 'left', 'right', 'full', 'cross', 'join',
-            'where', 'group', 'order', 'union', 'all', 'on',
-            'apply', 'outer', 'except', 'intersect'
+            'INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS', 'JOIN',
+            'WHERE', 'GROUP', 'ORDER', 'UNION', 'ALL', 'ON',
+            'APPLY', 'OUTER', 'EXCEPT', 'INTERSECT', 'WITH' // Added 'with' to stopKeywords for alias
         ];
 
         let endOffset = source.end;
         const aliasToken = this.peek();
 
-        if (aliasToken?.value.toLowerCase() === 'as') {
-            this.consume(); // AS
+        if (aliasToken?.value === 'AS') {
+            this.consume();
             const aliasNode = this.parseMultipartIdentifier();
             alias = aliasNode.name;
             endOffset = aliasNode.end;
         } else if (
             aliasToken &&
             (aliasToken.type === TokenType.Identifier || aliasToken.type === TokenType.Keyword) &&
-            !stopKeywords.includes(aliasToken.value.toLowerCase())
+            !stopKeywords.includes(aliasToken.value)
         ) {
             const aliasNode = this.parseMultipartIdentifier();
             alias = aliasNode.name;
             endOffset = aliasNode.end;
         }
 
+        // --- NEW: Parse Table Hints (T-SQL specific) ---
+        // Hints only apply to physical tables, not subqueries
+        if (source.type === 'Identifier') {
+            const nextToken = this.peek();
+            // Check for WITH (NOLOCK) or legacy (NOLOCK)
+            if (nextToken?.value === 'WITH' ||
+                (nextToken?.type === TokenType.OpenParen && alias)) {
+                hints = this.parseTableHints();
+                // Update endOffset to include the hint range
+                const lastHintToken = this.tokens[this.pos - 1];
+                endOffset = lastHintToken.offset + lastHintToken.value.length;
+            }
+        }
+        // -----------------------------------------------
+
         // 3. Parse Join Sequence
         const joins: JoinNode[] = [];
         while (this.isJoinToken(this.peek())) {
             const join = this.parseJoin();
             joins.push(join);
-            endOffset = join.end; // Update end to include the furthest join
+            endOffset = join.end;
         }
 
         // 4. Resolve the table value for the AST
@@ -739,18 +786,42 @@ export class Parser {
         if (source.type === 'SubqueryExpression') {
             tableValue = source;
         } else if (source.type === 'Identifier') {
-            tableValue = source.name;
+            tableValue = (source as any).name;
         } else {
             tableValue = this.stringifyExpression(source);
         }
 
         return {
+            type: 'TableReference',
             table: tableValue as any,
-            alias: alias || undefined, // Convert back to undefined if your interface uses '?'
+            alias: alias || undefined,
+            hints, // Added to return object
             joins,
             start: fromToken.offset,
             end: endOffset
         };
+    }
+
+    private parseTableHints(): string[] {
+        // Optional 'WITH' keyword
+        if (this.peekKeyword('WITH')) {
+            this.consume();
+        }
+
+        this.match(TokenType.OpenParen);
+        const hints = this.parseList(() => {
+            let hint = this.consume().value;
+            // Support nested parentheses for INDEX hints: INDEX(1) or INDEX(IX_Name)
+            if (this.peek()?.type === TokenType.OpenParen) {
+                hint += this.consume().value; // (
+                hint += this.consume().value; // name/id
+                hint += this.match(TokenType.CloseParen).value; // )
+            }
+            return hint;
+        });
+        this.match(TokenType.CloseParen);
+
+        return hints;
     }
 
     private parseJoin(): JoinNode {
@@ -761,15 +832,15 @@ export class Parser {
         const first = this.consume().value.toUpperCase();
 
         if (['LEFT', 'RIGHT', 'FULL'].includes(first)) {
-            if (this.peekKeyword('outer')) {
+            if (this.peekKeyword('OUTER')) {
                 this.consume();
                 type = `${first} OUTER JOIN`;
             } else {
                 type = `${first} JOIN`;
             }
-            this.matchKeyword('join');
+            this.matchKeyword('JOIN');
         } else if (first === 'INNER') {
-            this.matchKeyword('join');
+            this.matchKeyword('JOIN');
             type = 'INNER JOIN';
         } else if (first === 'CROSS') {
             const next = this.consume().value.toUpperCase();
@@ -798,7 +869,7 @@ export class Parser {
         const nextToken = this.peek();
         const nextNext = this.peek(1);
 
-        if (nextToken?.type === TokenType.OpenParen && nextNext?.value.toLowerCase() === 'select') {
+        if (nextToken?.type === TokenType.OpenParen && nextNext?.value === 'SELECT') {
             const openParen = this.match(TokenType.OpenParen);
             const subquery = this.parseSelect() as QueryStatement;
             const closeParen = this.match(TokenType.CloseParen);
@@ -809,18 +880,18 @@ export class Parser {
                 end: closeParen.offset + closeParen.value.length
             };
         } else {
-            // Gold Standard: Handles [Schema].[Table] or FunctionCall(args)
             tableTarget = this.parsePrefix();
         }
 
         // 3. Parse Alias
         let alias: string | null = null;
-        const stopKeywords = ['on', 'where', 'inner', 'left', 'right', 'full', 'cross', 'join', 'outer', 'union', 'except', 'intersect'];
+        // Added 'with' to stopKeywords to prevent it being treated as an alias
+        const stopKeywords = ['ON', 'WHERE', 'INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS', 'JOIN', 'OUTER', 'UNION', 'EXCEPT', 'INTERSECT', 'WITH'];
 
         let endOffset = tableTarget.end;
         const potentialAlias = this.peek();
 
-        if (potentialAlias?.value.toLowerCase() === 'as') {
+        if (potentialAlias?.value === 'AS') {
             this.consume(); // as
             const aliasNode = this.parseMultipartIdentifier();
             alias = aliasNode.name;
@@ -828,38 +899,50 @@ export class Parser {
         } else if (
             potentialAlias &&
             (potentialAlias.type === TokenType.Identifier || potentialAlias.type === TokenType.Keyword) &&
-            !stopKeywords.includes(potentialAlias.value.toLowerCase())
+            !stopKeywords.includes(potentialAlias.value)
         ) {
             const aliasNode = this.parseMultipartIdentifier();
             alias = aliasNode.name;
             endOffset = aliasNode.end;
         }
 
+        // --- NEW: Parse Table Hints for Joined Table ---
+        let hints: string[] | undefined;
+        if (tableTarget.type === 'Identifier') {
+            const hintNext = this.peek();
+            if (hintNext?.value === 'WITH' ||
+                (hintNext?.type === TokenType.OpenParen && alias)) {
+                hints = this.parseTableHints();
+                const lastHintToken = this.tokens[this.pos - 1];
+                endOffset = lastHintToken.offset + lastHintToken.value.length;
+            }
+        }
+        // ------------------------------------------------
+
         // 4. Parse ON condition
         let on: Expression | null = null;
-        if (this.peekKeyword('on')) {
-            this.consume(); // on
+        if (this.peekKeyword('ON')) {
+            this.consume(); // ON
             on = this.parseExpression();
             endOffset = on.end;
         }
 
         return {
             type: type.trim(),
-            // Pass the actual Expression node if your interface allows it, 
-            // otherwise stringify using the node name.
-            table: tableTarget.type === 'Identifier' ? tableTarget.name : (tableTarget as any),
+            table: tableTarget.type === 'Identifier' ? (tableTarget as any).name : (tableTarget as any),
             alias: alias || undefined,
+            hints, // Include the hints in the returned JoinNode
             on,
-            start: startToken.offset,
+            start: startToken!.offset,
             end: endOffset
-        };
+        } as any;
     }
 
     private parseDelete(): DeleteNode {
-        const startToken = this.matchKeyword('delete');
+        const startToken = this.matchKeyword('DELETE');
 
         // T-SQL: DELETE [FROM] target ...
-        if (this.peekKeyword('from')) {
+        if (this.peekKeyword('FROM')) {
             this.consume();
         }
 
@@ -869,20 +952,20 @@ export class Parser {
         let endOffset = targetNode.end;
 
         // Check if another FROM follows (DELETE u FROM ...)
-        if (this.peekKeyword('from')) {
+        if (this.peekKeyword('FROM')) {
             this.consume();
         }
 
         let from: TableReference | null = null;
-        const next = this.peek()?.value.toLowerCase();
+        const next = this.peek()?.value;
         // Only parseFrom if we aren't hitting a WHERE or statement end
-        if (next && !['where', ';', 'go'].includes(next)) {
+        if (next && !['WHERE', ';', 'GO'].includes(next)) {
             from = this.parseFrom();
             endOffset = from.end;
         }
 
         let where: Expression | null = null;
-        if (this.peekKeyword('where')) {
+        if (this.peekKeyword('WHERE')) {
             this.consume();
             where = this.parseExpression();
             endOffset = where.end;
@@ -899,9 +982,9 @@ export class Parser {
     }
 
     private parseDeclare(): DeclareNode {
-        const startToken = this.matchKeyword('declare'); // Start tracking from DECLARE
+        const startToken = this.matchKeyword('DECLARE'); // Normalized Uppercase match
 
-        const variables = this.parseList(() => {
+        const variables = this.parseList<ParameterDefinition>(() => {
             const nameToken = this.match(TokenType.Variable);
             const name = nameToken.value;
 
@@ -919,25 +1002,28 @@ export class Parser {
 
             // 2. Handle Initial Assignment (e.g., @Var INT = 10)
             let initialValue: Expression | null = null;
-            if (this.peek()?.value === '=') {
+            // The Lexer now correctly identifies '=' as an Operator
+            if (this.peek()?.type === TokenType.Operator && this.peek()?.value === '=') {
                 this.consume(); // =
                 initialValue = this.parseExpression();
             }
 
-            return { name, dataType, initialValue };
+            const lastToken = this.tokens[this.pos - 1];
+
+            return {
+                name,
+                dataType,
+                initialValue,
+                isOutput: false,
+                start: nameToken.offset,
+                // If we have an initialValue, use its end, otherwise use the data type's end
+                end: initialValue ? initialValue.end : (lastToken.offset + lastToken.value.length)
+            };
         });
 
-        // 3. Calculate the exact end of the statement
-        // If the last variable has an initialValue, use its end. Otherwise, use the last token.
+        // 3. Calculate the exact end of the statement based on the last variable in the list
         const lastVar = variables[variables.length - 1];
-        let endOffset = startToken.offset + startToken.value.length;
-
-        if (lastVar.initialValue) {
-            endOffset = lastVar.initialValue.end;
-        } else {
-            const lastToken = this.tokens[this.pos - 1];
-            endOffset = lastToken.offset + lastToken.value.length;
-        }
+        const endOffset = lastVar ? lastVar.end : (startToken.offset + startToken.value.length);
 
         return {
             type: 'DeclareStatement',
@@ -991,76 +1077,75 @@ export class Parser {
      * Shared by CREATE TABLE and CREATE TYPE ... AS TABLE.
      */
     private parseTableColumns(): ColumnDefinition[] {
-        if (this.peek()?.value !== '(') {
-            throw new Error(`Expected '(' at start of column list, found ${this.peek()?.value}`);
-        }
-        this.consume(); // (
+        const openParen = this.match(TokenType.OpenParen); // Standardized match
 
-        const columns = this.parseList(() => {
-            // 1. Column Name
-            const name = this.consume().value;
+        const columns = this.parseList<ColumnDefinition>(() => {
+            const startToken = this.peek()!;
+
+            // 1. Column Name (Using the resolver for [bracketed] names)
+            const nameNode = this.parseMultipartIdentifier();
+            const name = nameNode.name;
 
             // 2. Data Type (e.g., nvarchar(max), decimal(18, 2))
             let dataType = this.consume().value;
-            if (this.peek()?.value === '(') {
+            if (this.peek()?.type === TokenType.OpenParen) {
                 dataType += this.consume().value; // (
-                dataType += this.consume().value; // size/max
-                if (this.peek()?.value === ',') {
-                    dataType += this.consume().value; // ,
-                    dataType += this.consume().value; // scale
+                // Robust inner-paren consumption
+                while (this.pos < this.tokens.length && this.peek()?.type !== TokenType.CloseParen) {
+                    dataType += this.consume().value;
                 }
-                if (this.peek()?.value === ')') {
-                    dataType += this.consume().value; // )
-                }
+                dataType += this.match(TokenType.CloseParen).value; // )
             }
 
             // 3. Constraint Parsing
             const constraints: string[] = [];
-            const stopWords = [',', ')'];
+            // Use TokenType for structural checks
+            while (this.pos < this.tokens.length) {
+                const next = this.peek();
+                if (!next || next.type === TokenType.Comma || next.type === TokenType.CloseParen) break;
 
-            while (this.pos < this.tokens.length && !stopWords.includes(this.peek()?.value || '')) {
-                const currentToken = this.peek();
-                if (!currentToken) break;
+                const upperVal = next.value; // Already normalized Upper by Lexer
 
-                const upperVal = currentToken.value.toUpperCase();
-
-                if (upperVal === 'PRIMARY' && this.peek(1)?.value.toUpperCase() === 'KEY') {
+                if (upperVal === 'PRIMARY' && this.peek(1)?.value === 'KEY') {
                     this.consume(); // PRIMARY
                     this.consume(); // KEY
                     constraints.push('PRIMARY KEY');
-                } else if (upperVal === 'NOT' && this.peek(1)?.value.toUpperCase() === 'NULL') {
+                } else if (upperVal === 'NOT' && this.peek(1)?.value === 'NULL') {
                     this.consume(); // NOT
                     this.consume(); // NULL
                     constraints.push('NOT NULL');
-                } else if (upperVal === 'FOREIGN' && this.peek(1)?.value.toUpperCase() === 'KEY') {
+                } else if (upperVal === 'FOREIGN' && this.peek(1)?.value === 'KEY') {
                     this.consume(); // FOREIGN
                     this.consume(); // KEY
                     constraints.push('FOREIGN KEY');
                 } else if (upperVal === 'DEFAULT') {
                     this.consume(); // DEFAULT
-                    // Parse the default value as a full expression and stringify for the AST
                     const defaultExpr = this.parseExpression(Precedence.LOWEST);
                     constraints.push('DEFAULT ' + this.stringifyExpression(defaultExpr));
                 } else {
-                    // Catch-all for other keywords like UNIQUE, NULL, IDENTITY, etc.
-                    constraints.push(this.consume().value.toUpperCase());
+                    // Catch-all (IDENTITY, UNIQUE, NULL)
+                    constraints.push(this.consume().value);
                 }
             }
+
+            const lastToken = this.tokens[this.pos - 1];
 
             return {
                 name,
                 dataType,
-                constraints: constraints.length > 0 ? constraints : undefined
+                constraints: constraints.length > 0 ? constraints : undefined,
+                start: startToken.offset,
+                end: lastToken.offset + lastToken.value.length
             };
         });
 
-        this.match(TokenType.CloseParen); // Standardized match for ')'
+        this.match(TokenType.CloseParen);
 
         return columns;
     }
 
     private parseCreate(): CreateNode {
-        const startToken = this.matchKeyword('create'); // Start tracking from CREATE
+        const startToken = this.matchKeyword('CREATE'); // Start tracking from CREATE
         const rawType = this.consume().value.toUpperCase();
 
         // 1. Standardize types for the AST
@@ -1079,9 +1164,9 @@ export class Parser {
 
         // 3. Handle CREATE TYPE ... AS TABLE
         if (objectType === 'TYPE') {
-            if (this.peekKeyword('as')) {
+            if (this.peekKeyword('AS')) {
                 this.consume(); // AS
-                if (this.peekKeyword('table')) {
+                if (this.peekKeyword('TABLE')) {
                     this.consume(); // TABLE
                     columns = this.parseTableColumns();
                     isTableType = true;
@@ -1095,12 +1180,14 @@ export class Parser {
         }
 
         // 5. Handle Parameters for Procedures/Functions
-        else if (['PROCEDURE', 'FUNCTION'].includes(objectType)) {
+        else if (objectType === 'PROCEDURE' || objectType === 'FUNCTION') {
             const hasParens = this.peek()?.type === TokenType.OpenParen;
             if (hasParens) this.consume();
 
+            // Rule #1: Use the improved parseList logic
             if (this.peek()?.type === TokenType.Variable) {
-                parameters = this.parseList(() => {
+                parameters = this.parseList<ParameterDefinition>(() => {
+                    const startToken = this.peek()!;
                     const pName = this.consume().value; // @Param
 
                     // Parse Type (handles VARCHAR(MAX), DECIMAL(18,2) etc)
@@ -1114,19 +1201,30 @@ export class Parser {
                     }
 
                     let isOutput = false;
-                    const nextVal = this.peek()?.value.toUpperCase();
-                    if (nextVal === 'OUTPUT' || nextVal === 'OUT') {
+                    // Rule #3: Lexer now provides Uppercase keywords
+                    const nextToken = this.peek();
+                    if (nextToken?.type === TokenType.Keyword && (nextToken.value === 'OUTPUT' || nextToken.value === 'OUT')) {
                         isOutput = true;
                         this.consume();
                     }
-                    return { name: pName, dataType: pType, isOutput };
+
+                    const lastToken = this.tokens[this.pos - 1];
+
+                    // Return the full ParameterDefinition matching the interface
+                    return {
+                        name: pName,
+                        dataType: pType,
+                        isOutput,
+                        start: startToken.offset,
+                        end: lastToken.offset + lastToken.value.length
+                    };
                 });
             }
             if (hasParens) this.match(TokenType.CloseParen);
         }
 
         // 6. Handle the Body (AS SELECT... or Statement Blocks)
-        if (this.peekKeyword('as')) {
+        if (this.peekKeyword('AS')) {
             this.consume(); // AS
         }
 
@@ -1134,11 +1232,11 @@ export class Parser {
             body = this.parseSelect() as QueryStatement;
         } else if (['PROCEDURE', 'FUNCTION'].includes(objectType)) {
             const statements: Statement[] = [];
-            const stopKeywords = ['go'];
+            const stopKeywords = ['GO'];
 
             while (this.pos < this.tokens.length) {
                 const nextToken = this.peek();
-                if (!nextToken || stopKeywords.includes(nextToken.value.toLowerCase())) break;
+                if (!nextToken || stopKeywords.includes(nextToken.value)) break;
 
                 const stmt = this.parseStatement();
                 if (stmt) {
@@ -1181,7 +1279,7 @@ export class Parser {
         let tablePrefix: string | undefined = undefined;
         let name: string = '';
 
-        const STOP_KEYWORDS = ['from', 'where', 'group', 'order', 'having', 'union', 'all', 'except', 'intersect', 'join', 'on', 'apply', 'into', 'outer', 'values'];
+        const STOP_KEYWORDS = ['FROM', 'WHERE', 'GROUP', 'ORDER', 'HAVING', 'UNION', 'ALL', 'EXCEPT', 'INTERSECT', 'JOIN', 'ON', 'APPLY', 'INTO', 'OUTER', 'VALUES'];
 
         const startOffset = this.peek()?.offset ?? 0;
 
@@ -1195,9 +1293,9 @@ export class Parser {
             expression = this.parseExpression();
 
             const nextToken = this.peek();
-            const nextVal = nextToken?.value.toLowerCase();
+            const nextVal = nextToken?.value;
 
-            if (nextVal === 'as') {
+            if (nextVal === 'AS') {
                 this.consume();
                 // Use Multipart here in case alias is bracketed like: AS [User Name]
                 alias = this.parseMultipartIdentifier().name;
@@ -1251,21 +1349,26 @@ export class Parser {
 
     private isJoinToken(token: Token | undefined): boolean {
         if (!token) return false;
-        const val = token.value.toLowerCase();
-        return ['join', 'inner', 'left', 'right', 'cross', 'full'].includes(val);
+        const val = token.value;
+        return ['JOIN', 'INNER', 'LEFT', 'RIGHT', 'CROSS', 'FULL'].includes(val);
     }
 
     private parseExpression(precedence: Precedence = Precedence.LOWEST): Expression {
         let left = this.parsePrefix();
 
         while (this.pos < this.tokens.length) {
+            const startPos = this.pos; // RULE #5: Infinite Loop Guard
+
             const nextToken = this.peek();
             if (!nextToken || nextToken.type === TokenType.Semicolon) break;
 
-            const val = nextToken.value.toLowerCase();
+            // RULE #3 & #4: Handle normalized keywords and explicit Dot structural token
+            // We map the Dot token to '.' so the PRECEDENCE_MAP can identify it.
+            const val = nextToken.type === TokenType.Dot ? '.' : nextToken.value;
+
             const structuralStops = [
-                'from', 'where', 'group', 'order', 'having',
-                'union', 'except', 'intersect', 'on', 'join'
+                'FROM', 'WHERE', 'GROUP', 'ORDER', 'HAVING',
+                'UNION', 'EXCEPT', 'INTERSECT', 'ON', 'JOIN'
             ];
 
             if (precedence === Precedence.LOWEST && structuralStops.includes(val)) {
@@ -1275,21 +1378,26 @@ export class Parser {
             const nextPrecedence = PRECEDENCE_MAP[val] ?? Precedence.LOWEST;
             if (nextPrecedence <= precedence) break;
 
+            // Consuming the operator/structural token
             const operatorToken = this.consume();
-            let operator = operatorToken.value;
+            const operator = operatorToken.value;
 
-            // --- FIX 1: Composite Operator Logic (>=, <=, <>, !=) ---
-            const peekNext = this.peek();
-            if (peekNext && (operator === '>' || operator === '<' || operator === '!') && peekNext.value === '=') {
-                operator += this.consume().value;
-            } else if (operator === '<' && peekNext?.value === '>') {
-                operator += this.consume().value;
+            // --- 1. Handle Structural Dot (.) ---
+            if (operatorToken.type === TokenType.Dot) {
+                const rightToken = this.match(TokenType.Identifier, TokenType.Keyword);
+                // Transform into a multipart-style identifier or member access
+                left = {
+                    type: 'Identifier',
+                    parts: left.type === 'Identifier' ? [...(left as any).parts, rightToken.value] : [this.stringifyExpression(left), rightToken.value],
+                    name: left.type === 'Identifier' ? `${(left as any).name}.${rightToken.value}` : `${this.stringifyExpression(left)}.${rightToken.value}`,
+                    start: left.start,
+                    end: rightToken.offset + rightToken.value.length
+                } as any;
             }
-            // -------------------------------------------------------
-
-            if (val === 'is') {
+            // --- 2. Handle IS / IS NOT NULL ---
+            else if (val === 'IS') {
                 let isNot = false;
-                if (this.peek()?.value.toUpperCase() === 'NOT') {
+                if (this.peek()?.value === 'NOT') {
                     this.consume();
                     isNot = true;
                 }
@@ -1302,15 +1410,19 @@ export class Parser {
                     end: nullToken.offset + nullToken.value.length
                 };
             }
-            else if (val === 'not') {
-                const innerOpToken = this.consume();
-                const innerOp = innerOpToken.value.toLowerCase();
+            // --- 3. Handle Multi-word NOT Operators ---
+            else if (val === 'NOT') {
+                const next = this.peek();
+                const nextVal = next?.value;
 
-                if (innerOp === 'in') {
+                if (nextVal === 'IN') {
+                    this.consume();
                     left = this.parseInExpression(left, true);
-                } else if (innerOp === 'between') {
+                } else if (nextVal === 'BETWEEN') {
+                    this.consume();
                     left = this.parseBetweenExpression(left, true, nextPrecedence);
-                } else if (innerOp === 'like') {
+                } else if (nextVal === 'LIKE') {
+                    this.consume();
                     const right = this.parseExpression(nextPrecedence);
                     left = {
                         type: 'BinaryExpression',
@@ -1321,24 +1433,24 @@ export class Parser {
                         end: right.end
                     };
                 } else {
-                    const right = this.parseExpression(nextPrecedence);
+                    // Standard prefix NOT (e.g., WHERE NOT ID = 1)
+                    const right = this.parseExpression(Precedence.PREFIX);
                     left = {
-                        type: 'BinaryExpression',
-                        left,
-                        operator: `NOT ${innerOp.toUpperCase()}`,
+                        type: 'UnaryExpression',
+                        operator: 'NOT',
                         right,
-                        start: left.start,
+                        start: operatorToken.offset,
                         end: right.end
                     };
                 }
             }
-            else if (val === 'between') {
+            else if (val === 'BETWEEN') {
                 left = this.parseBetweenExpression(left, false, nextPrecedence);
             }
-            else if (val === 'in') {
+            else if (val === 'IN') {
                 left = this.parseInExpression(left, false);
             }
-            else if (val === 'collate') {
+            else if (val === 'COLLATE') {
                 const collationToken = this.consume();
                 left = {
                     type: 'BinaryExpression',
@@ -1356,16 +1468,21 @@ export class Parser {
                 } as any;
             }
             else {
-                // 4. Standard Binary Operators (Now using the merged operator)
+                // Standard Binary Operators
                 const right = this.parseExpression(nextPrecedence);
                 left = {
                     type: 'BinaryExpression',
                     left,
-                    operator: operator.toUpperCase(), // Use the merged string
+                    operator: operator.toUpperCase(),
                     right,
                     start: left.start,
                     end: right.end
                 };
+            }
+
+            // RULE #5: Progress Check
+            if (this.pos === startPos) {
+                throw new Error(`Parser stuck at token ${val} (offset: ${nextToken.offset}).`);
             }
         }
         return left;
@@ -1382,7 +1499,7 @@ export class Parser {
         let list: Expression[] | undefined = undefined;
 
         // 2. Determine if it's a subquery or a literal list
-        if (this.peekKeyword('select')) {
+        if (this.peekKeyword('SELECT')) {
             subquery = this.parseSelect() as QueryStatement;
         } else {
             list = [];
@@ -1418,7 +1535,7 @@ export class Parser {
      */
     private parseBetweenExpression(left: Expression, isNot: boolean, precedence: number): Expression {
         const lowerBound = this.parseExpression(precedence);
-        this.matchKeyword('and');
+        this.matchKeyword('AND');
         const upperBound = this.parseExpression(precedence);
 
         return {
@@ -1434,93 +1551,83 @@ export class Parser {
 
     private parsePrefix(): Expression {
         const token = this.consume();
-        const value = token.value;
-        const lowerValue = value.toLowerCase();
-
-        // Standardize location for simple tokens
+        const value = token.value; // Already Normalized Upper if Keyword
         const start = token.offset;
-        const end = token.offset + value.length;
 
         switch (token.type) {
             case TokenType.Number:
-                return { type: 'Literal', value: Number(value), variant: 'number', start, end };
+                return { type: 'Literal', value: Number(value), variant: 'number', start, end: start + value.length };
 
             case TokenType.Variable:
-                return { type: 'Variable', name: value, start, end };
+                return { type: 'Variable', name: value, start, end: start + value.length };
 
-            case TokenType.String:
+            case TokenType.String: {
                 const content = value.startsWith("'") && value.endsWith("'")
                     ? value.substring(1, value.length - 1)
                     : value;
-                return { type: 'Literal', value: content, variant: 'string', start, end };
+                return { type: 'Literal', value: content, variant: 'string', start, end: start + value.length };
+            }
 
             case TokenType.TempTable:
-                return { type: 'Identifier', name: value, parts: [value], start, end };
+                return { type: 'Identifier', name: value, parts: [value], start, end: start + value.length };
 
             case TokenType.Operator:
                 // 1. Support for SELECT * (Wildcard)
                 if (value === '*') {
-                    return { type: 'Identifier', name: '*', parts: ['*'], start, end };
+                    return { type: 'Identifier', name: '*', parts: ['*'], start, end: start + value.length };
                 }
 
-                /**
-                 * FIX: Handle '=' in prefix position.
-                 * In T-SQL, '=' is primarily infix, but to prevent the parser from crashing 
-                 * during complex expression recovery or assignment-style column parsing,
-                 * we return it as a simple identifier node rather than throwing an error.
-                 */
-                if (value === '=') {
-                    return { type: 'Identifier', name: '=', parts: ['='], start, end };
+                // 2. Rule #5: Fold negative numbers into a single Literal
+                if (value === '-') {
+                    const next = this.peek();
+                    if (next?.type === TokenType.Number) {
+                        const numToken = this.consume();
+                        return {
+                            type: 'Literal',
+                            value: Number(`-${numToken.value}`),
+                            variant: 'number',
+                            start,
+                            end: numToken.offset + numToken.value.length
+                        };
+                    }
+                    // Fallback for standard unary minus -(x + y)
+                    const right = this.parseExpression(Precedence.PREFIX);
+                    return { type: 'UnaryExpression', operator: '-', right, start, end: right.end };
                 }
 
-                // 2. Unary operators (-, ~, NOT)
-                if (lowerValue === 'not' || value === '-' || value === '~') {
-                    // Use specific precedence for unary ops to ensure they bind tighter than binary ops
-                    const opPrecedence = lowerValue === 'not' ? Precedence.NOT : Precedence.UNARY;
-                    const right = this.parseExpression(opPrecedence);
-
-                    return {
-                        type: 'UnaryExpression',
-                        operator: value.toUpperCase(),
-                        right,
-                        start,
-                        end: right.end
-                    };
+                if (value === '~') {
+                    const right = this.parseExpression(Precedence.PREFIX);
+                    return { type: 'UnaryExpression', operator: '~', right, start, end: right.end };
                 }
 
                 throw new Error(`Unexpected operator in prefix position: ${value}`);
 
             case TokenType.Identifier:
             case TokenType.Keyword:
-                if (lowerValue === 'null') {
-                    return { type: 'Literal', value: null, variant: 'null', start, end };
+                // Rule #3: Comparisons use normalized Uppercase
+                if (value === 'NULL') {
+                    return { type: 'Literal', value: null, variant: 'null', start, end: start + value.length };
                 }
-                if (lowerValue === 'case') return this.parseCaseExpression();
-                if (lowerValue === 'exists') return this.parseExists(token);
+                if (value === 'CASE') return this.parseCaseExpression();
+                if (value === 'EXISTS') return this.parseExists(token);
 
-                // FIX: Explicitly handle NOT as a prefix unary operator
-                if (lowerValue === 'not') {
+                // Explicitly handle NOT as a prefix unary operator
+                if (value === 'NOT') {
                     const right = this.parseExpression(Precedence.NOT);
-                    return {
-                        type: 'UnaryExpression',
-                        operator: 'NOT',
-                        right,
-                        start,
-                        end: right.end
-                    };
+                    return { type: 'UnaryExpression', operator: 'NOT', right, start, end: right.end };
                 }
 
-                // 1. Use the Multipart Resolver for Names and Functions
+                // 3. Resolve Multipart Names and Functions
                 // Backtrack because parseMultipartIdentifier expects to consume the first part
                 this.pos--;
                 const idNode = this.parseMultipartIdentifier();
 
-                // 2. Handle Function Calls (e.g., COUNT(*), LEFT(name, 1))
+                // Handle Function Calls (e.g., COUNT(*), ROW_NUMBER())
                 if (this.peek()?.type === TokenType.OpenParen) {
                     this.consume(); // (
                     const args: Expression[] = [];
 
-                    if (this.peek()?.value.toLowerCase() === 'select') {
+                    if (this.peek()?.value === 'SELECT') {
                         const subquery = this.parseSelect() as QueryStatement;
                         const closeParen = this.match(TokenType.CloseParen);
                         args.push({
@@ -1529,24 +1636,33 @@ export class Parser {
                             start: subquery.start,
                             end: closeParen.offset + closeParen.value.length
                         } as any);
-                    } else if (this.peek()?.type !== TokenType.CloseParen) {
+                    } else {
+                        // Rule #1: Use resilient parseList
                         args.push(...this.parseList(() => this.parseExpression(Precedence.LOWEST)));
                     }
 
                     const closeParen = this.match(TokenType.CloseParen);
-                    return {
+
+                    let result: Expression = {
                         type: 'FunctionCall',
                         name: idNode.name,
                         args,
                         start: idNode.start,
                         end: closeParen.offset + closeParen.value.length
                     };
+
+                    // Window Function Support
+                    if (this.peek()?.value === 'OVER') {
+                        result = this.parseOverClause(result);
+                    }
+
+                    return result;
                 }
 
                 return idNode;
 
             case TokenType.OpenParen:
-                if (this.peek()?.value.toLowerCase() === 'select') {
+                if (this.peek()?.value === 'SELECT') {
                     const query = this.parseSelect() as QueryStatement;
                     const closeParen = this.match(TokenType.CloseParen);
                     return {
@@ -1567,7 +1683,7 @@ export class Parser {
                 }
 
             default:
-                throw new Error(`Unexpected token at line ${token.line}: ${token.value} (${token.type})`);
+                throw new Error(`Unexpected token at line ${token.line}: ${token.value} (${TokenType[token.type]})`);
         }
     }
 
@@ -1596,15 +1712,19 @@ export class Parser {
 
     private matchKeyword(value: string): Token {
         const token = this.peek();
-        if (token && token.value.toLowerCase() === value.toLowerCase()) {
+        // Lexer now returns keywords in UPPERCASE. 
+        // We normalize the 'value' argument once to ensure a perfect match.
+        if (token && token.type === TokenType.Keyword && token.value === value.toUpperCase()) {
             return this.consume();
         }
-        throw new Error(`Expected keyword "${value}" but found "${token?.value}" at line ${token?.line}`);
+
+        throw new Error(`Expected keyword "${value.toUpperCase()}" but found "${token?.value}" at line ${token?.line}`);
     }
 
     private peekKeyword(value: string): boolean {
         const token = this.peek();
-        return !!token && token.value.toLowerCase() === value.toLowerCase();
+        // Compare against the Uppercase version since Lexer normalized it
+        return token?.type === TokenType.Keyword && token.value === value.toUpperCase();
     }
 
     private parseCaseExpression(): Expression {
@@ -1616,27 +1736,27 @@ export class Parser {
         let input: Expression | undefined = undefined;
 
         // 2. Simple CASE vs. Searched CASE logic
-        if (this.peek()?.value.toLowerCase() !== 'when') {
+        if (this.peek()?.value !== 'WHEN') {
             input = this.parseExpression(Precedence.LOWEST);
         }
 
         const branches: { when: Expression, then: Expression }[] = [];
-        while (this.peek()?.value.toLowerCase() === 'when') {
+        while (this.peek()?.value === 'WHEN') {
             this.consume(); // WHEN
             const when = this.parseExpression(Precedence.LOWEST);
-            this.matchValue('then');
+            this.matchValue('THEN');
             const then = this.parseExpression(Precedence.LOWEST);
             branches.push({ when, then });
         }
 
         let elseBranch: Expression | undefined = undefined;
-        if (this.peek()?.value.toLowerCase() === 'else') {
+        if (this.peek()?.value === 'ELSE') {
             this.consume(); // ELSE
             elseBranch = this.parseExpression(Precedence.LOWEST);
         }
 
         // 3. Match 'END' and capture its full range for the end offset
-        const endToken = this.matchValue('end');
+        const endToken = this.matchValue('END');
         const endOffset = endToken.offset + endToken.value.length;
 
         return {
@@ -1649,24 +1769,44 @@ export class Parser {
         };
     }
 
-    private parseList(parserFn: () => any) {
-        const list = [parserFn()];
-        while (this.peek()?.value === ',') {
-            this.consume(); // ,
+    private parseList<T>(parserFn: () => T): T[] {
+        const list: T[] = [];
+
+        // Rule #1: Resilience. If the list is empty (e.g., FUNC()), return early.
+        const next = this.peek();
+        if (!next || next.type === TokenType.CloseParen || next.type === TokenType.Semicolon) {
+            return list;
+        }
+
+        // Parse the first mandatory item
+        list.push(parserFn());
+
+        // Continue as long as we see a comma
+        while (this.peek()?.type === TokenType.Comma) {
+            this.consume(); // Consume ','
+
+            // T-SQL "Gold Standard": Check for trailing comma or immediate close
+            const afterComma = this.peek();
+            if (!afterComma || afterComma.type === TokenType.CloseParen) {
+                // Optional: You could log a warning here for better LSP diagnostics
+                break;
+            }
+
             list.push(parserFn());
         }
+
         return list;
     }
 
     private parseIf(): IfNode {
-        const startToken = this.matchKeyword('if');
+        const startToken = this.matchKeyword('IF');
         const condition = this.parseExpression();
         const thenBranch = this.parseStatement();
 
         let elseBranch: Statement | undefined = undefined;
         let endOffset = thenBranch ? thenBranch.end : condition.end;
 
-        if (this.peekKeyword('else')) {
+        if (this.peekKeyword('ELSE')) {
             this.consume(); // ELSE
             const stmt = this.parseStatement();
             if (stmt) {
@@ -1686,10 +1826,10 @@ export class Parser {
     }
 
     private parseBlock(): BlockNode {
-        const startToken = this.matchKeyword('begin');
+        const startToken = this.matchKeyword('BEGIN');
         const body: Statement[] = [];
 
-        while (this.pos < this.tokens.length && !this.peekKeyword('end')) {
+        while (this.pos < this.tokens.length && !this.peekKeyword('END')) {
             const stmt = this.parseStatement();
             if (stmt) {
                 body.push(stmt);
@@ -1700,7 +1840,7 @@ export class Parser {
             }
         }
 
-        const endToken = this.matchKeyword('end');
+        const endToken = this.matchKeyword('END');
         return {
             type: 'BlockStatement',
             body,
@@ -1726,7 +1866,7 @@ export class Parser {
                 this.match(TokenType.CloseParen);
             }
 
-            this.matchKeyword('as');
+            this.matchKeyword('AS');
             this.match(TokenType.OpenParen);
 
             // Parse the CTE query
@@ -1765,6 +1905,68 @@ export class Parser {
         };
     }
 
+    private parseOverClause(expr: Expression): OverExpression {
+        const overToken = this.matchKeyword('OVER');
+        this.match(TokenType.OpenParen);
+
+        // Initialize WindowDefinition with the 'OVER' token's start
+        const windowStart = overToken.offset;
+
+        let partitionBy: Expression[] | undefined = undefined;
+        if (this.peekKeyword('PARTITION')) {
+            this.consume(); // PARTITION
+            this.matchKeyword('BY');
+            partitionBy = this.parseList(() => this.parseExpression());
+        }
+
+        let orderBy: OrderByNode[] | undefined = undefined;
+        if (this.peekKeyword('ORDER')) {
+            this.consume(); // ORDER
+            this.matchKeyword('BY');
+            orderBy = this.parseList(() => {
+                const e = this.parseExpression();
+                let direction: 'ASC' | 'DESC' = 'ASC';
+                let itemEnd = e.end;
+
+                if (this.peekKeyword('DESC')) {
+                    const dirToken = this.consume();
+                    direction = 'DESC';
+                    itemEnd = dirToken.offset + dirToken.value.length;
+                } else if (this.peekKeyword('ASC')) {
+                    const dirToken = this.consume();
+                    itemEnd = dirToken.offset + dirToken.value.length;
+                }
+
+                return {
+                    column: this.stringifyExpression(e),
+                    expression: e,
+                    direction,
+                    start: e.start,
+                    end: itemEnd
+                } as OrderByNode;
+            });
+        }
+
+        const closeParen = this.match(TokenType.CloseParen);
+        const windowEnd = closeParen.offset + closeParen.value.length;
+
+        const window: WindowDefinition = {
+            type: 'WindowDefinition',
+            partitionBy,
+            orderBy,
+            start: windowStart,
+            end: windowEnd
+        };
+
+        return {
+            type: 'OverExpression',
+            expression: expr,
+            window,
+            start: expr.start, // The full expression starts at the function name (e.g., ROW_NUMBER)
+            end: windowEnd     // And ends at the closing paren of the OVER clause
+        };
+    }
+
     private stringifyExpression(expr: Expression): string {
         switch (expr.type) {
             case 'Literal':
@@ -1798,12 +2000,12 @@ export class Parser {
 
         // 2. Skip tokens until we find a semicolon or a major statement keyword
         while (this.pos < this.tokens.length) {
-            const val = this.peek()?.value.toLowerCase();
+            const val = this.peek()?.value;
             if (this.peek()?.type === TokenType.Semicolon) {
                 this.consume();
                 break;
             }
-            if (['select', 'insert', 'update', 'delete', 'set', 'declare', 'if', 'begin', 'create', 'with', 'go', 'when', 'then', 'else', 'end'].includes(val!)) {
+            if (['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'SET', 'DECLARE', 'IF', 'BEGIN', 'CREATE', 'WITH', 'GO', 'WHEN', 'THEN', 'ELSE', 'END'].includes(val!)) {
                 break;
             }
             this.pos++;

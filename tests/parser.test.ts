@@ -1,5 +1,5 @@
 import { Lexer, TokenType } from '../src/lexer';
-import { Parser, SelectNode, InsertNode, UpdateNode, DeleteNode, DeclareNode, SetNode, CreateNode, SetOperatorNode, IfNode, BlockNode, WithNode } from '../src/parser';
+import { Parser, SelectNode, InsertNode, UpdateNode, DeleteNode, DeclareNode, SetNode, CreateNode, SetOperatorNode, IfNode, BlockNode, WithNode, OverExpression, TableReference } from '../src/parser';
 
 
 
@@ -108,9 +108,9 @@ describe('T-SQL Parser', () => {
         const ast = parse(sql);
         const stmt = ast.body[0] as SelectNode;
         expect(stmt.top).toBe('10');
-        expect(stmt.from?.table).toBe('Employees');
-        expect(stmt.from?.joins[0].type).toBe('INNER JOIN');
-        expect(toSql(stmt.from?.joins[0].on)).toBe('e.DeptId = d.Id');
+        expect(stmt.from?.[0].table).toBe('Employees');
+        expect(stmt.from?.[0].joins[0].type).toBe('INNER JOIN');
+        expect(toSql(stmt.from?.[0].joins[0].on)).toBe('e.DeptId = d.Id');
     });
 
     // 4. Bracketed Identifiers
@@ -119,7 +119,7 @@ describe('T-SQL Parser', () => {
         const ast = parse(sql);
         const stmt = ast.body[0] as SelectNode;
         expect(stmt.columns[0].name).toBe('[First Name]');
-        expect(stmt.from?.table).toBe('[Sales].[Customer Orders]');
+        expect(stmt.from?.[0].table).toBe('[Sales].[Customer Orders]');
     });
 
     // 5. WHERE with complex operators
@@ -200,14 +200,14 @@ describe('T-SQL Parser', () => {
     test('should not swallow WHERE as a table alias', () => {
         const sql = `SELECT Name FROM Users u WHERE ID = 1`;
         const stmt = parse(sql).body[0] as SelectNode;
-        expect(stmt.from?.alias).toBe('u');
+        expect(stmt.from?.[0].alias).toBe('u');
         expect(stmt.where).not.toBeNull();
     });
 
     // 16. Table Alias with AS
     test('should handle Users AS u', () => {
         const sql = `SELECT Name FROM Users AS u`;
-        expect((parse(sql).body[0] as SelectNode).from?.alias).toBe('u');
+        expect((parse(sql).body[0] as SelectNode).from?.[0].alias).toBe('u');
     });
 
     // 17. IN Clause (List)
@@ -312,14 +312,14 @@ describe('T-SQL Parser', () => {
     test('should handle CROSS APPLY', () => {
         const sql = `SELECT * FROM T CROSS APPLY fn(T.id)`;
         const stmt = parse(sql).body[0] as SelectNode;
-        expect(stmt.from?.joins[0].type).toBe('CROSS APPLY');
+        expect(stmt.from?.[0].joins[0].type).toBe('CROSS APPLY');
     });
 
     // 33. Derived Tables (Subquery in FROM)
     test('should handle subquery in FROM', () => {
         const sql = `SELECT * FROM (SELECT 1 as x) d`;
         const stmt = parse(sql).body[0] as SelectNode;
-        expect(toSql(stmt.from?.table)).toContain('SelectStatement');
+        expect(toSql(stmt.from?.[0].table)).toContain('SelectStatement');
     });
 
     // 34. CASE Statements
@@ -374,7 +374,7 @@ describe('T-SQL Parser - Advanced Expression & Structural Integrity', () => {
         const stmt = ast.body[0] as SelectNode;
 
         // This proves Claude's point #1: We can now "walk" into the subquery
-        const tableSource = stmt.from?.table;
+        const tableSource = stmt.from?.[0].table;
         expect(typeof tableSource).toBe('object');
         if (typeof tableSource === 'object' && tableSource.type === 'SubqueryExpression') {
             expect(tableSource.query.type).toBe('SelectStatement');
@@ -495,14 +495,21 @@ describe('T-SQL Parser - Deep Expression Validation', () => {
     });
 
     test('should handle negative numbers and unary NOT', () => {
-        const sql = `SET @Val = -5 + (~@BitwiseNot)`;
+        const sql = "SELECT -10 + (NOT 1)"; // Assuming this is your test input
         const ast = parse(sql);
-        const stmt = ast.body[0] as SetNode;
-        const val = stmt.value as any;
+        const stmt = ast.body[0] as SelectNode;
+        const val = stmt.columns[0].expression as any;
 
-        expect(val.left.type).toBe('UnaryExpression');
-        expect(val.left.operator).toBe('-');
-        expect(val.right.type).toBe('GroupingExpression');
+        // OLD: expect(val.left.type).toBe('UnaryExpression');
+        // NEW: The minus is now folded into the Literal
+        expect(val.left.type).toBe('Literal');
+        expect(val.left.value).toBe(-10);
+        expect(val.left.variant).toBe('number');
+
+        // Verification of the NOT logic (which should still be a UnaryExpression)
+        const rightSide = val.right.expression; // Inside the Grouping
+        expect(rightSide.type).toBe('UnaryExpression');
+        expect(rightSide.operator).toBe('NOT');
     });
 
 
@@ -589,7 +596,127 @@ describe('T-SQL Parser - Deep Expression Validation', () => {
             const from = stmt.from!;
 
             // The FROM node should span from 'FROM' keyword to the end of the ON clause
-            expect(getSqlFragment(sql, from)).toBe("FROM T1 INNER JOIN T2 ON T1.id = T2.id");
+            expect(getSqlFragment(sql, from[0])).toBe("FROM T1 INNER JOIN T2 ON T1.id = T2.id");
+        });
+    });
+
+    describe('T-SQL Window Functions (OVER Clause)', () => {
+        const getSqlFragment = (sql: string, node: { start: number, end: number }) => {
+            return sql.substring(node.start, node.end);
+        };
+
+        test('should handle basic ROW_NUMBER() OVER()', () => {
+            const sql = "SELECT ROW_NUMBER() OVER() as row_num FROM T";
+            const ast = parse(sql);
+            const stmt = ast.body[0] as SelectNode;
+            const overExpr = stmt.columns[0].expression as OverExpression;
+
+            expect(overExpr.type).toBe('OverExpression');
+            expect(overExpr.expression.type).toBe('FunctionCall');
+            expect(overExpr.window.type).toBe('WindowDefinition');
+
+            // Exact location check
+            expect(getSqlFragment(sql, overExpr)).toBe("ROW_NUMBER() OVER()");
+            expect(getSqlFragment(sql, overExpr.window)).toBe("OVER()");
+        });
+
+        test('should handle OVER with PARTITION BY and ORDER BY', () => {
+            const sql = "SELECT SUM(Salary) OVER(PARTITION BY DeptID ORDER BY Salary DESC) FROM Emp";
+            const ast = parse(sql);
+            const stmt = ast.body[0] as SelectNode;
+            const overExpr = stmt.columns[0].expression as OverExpression;
+
+            // Structure check
+            expect(overExpr.window.partitionBy).toHaveLength(1);
+            expect(overExpr.window.orderBy).toHaveLength(1);
+            expect(overExpr.window.orderBy![0].direction).toBe('DESC');
+
+            // Precision location check
+            expect(getSqlFragment(sql, overExpr)).toBe("SUM(Salary) OVER(PARTITION BY DeptID ORDER BY Salary DESC)");
+            expect(getSqlFragment(sql, overExpr.window)).toBe("OVER(PARTITION BY DeptID ORDER BY Salary DESC)");
+
+            // Verify OrderBy item bounds
+            const orderByItem = overExpr.window.orderBy![0];
+            expect(getSqlFragment(sql, orderByItem)).toBe("Salary DESC");
+        });
+
+        test('should handle multiple columns in PARTITION BY', () => {
+            const sql = "SELECT AVG(Price) OVER(PARTITION BY Category, SubCategory) FROM Products";
+            const ast = parse(sql);
+            const stmt = ast.body[0] as SelectNode;
+            const overExpr = stmt.columns[0].expression as OverExpression;
+
+            expect(overExpr.window.partitionBy).toHaveLength(2);
+            expect(getSqlFragment(sql, overExpr.window.partitionBy![1])).toBe("SubCategory");
+        });
+
+        test('should handle Window functions in ORDER BY clause', () => {
+            const sql = "SELECT Name FROM T ORDER BY ROW_NUMBER() OVER(ORDER BY Name)";
+            const ast = parse(sql);
+            const stmt = ast.body[0] as SelectNode;
+            const orderByExpr = stmt.orderBy![0].expression as OverExpression;
+
+            expect(orderByExpr.type).toBe('OverExpression');
+            expect(getSqlFragment(sql, orderByExpr)).toBe("ROW_NUMBER() OVER(ORDER BY Name)");
+        });
+    });
+
+
+    describe('T-SQL Table Hints', () => {
+        const getSqlFragment = (sql: string, node: { start: number, end: number }) => {
+            return sql.substring(node.start, node.end);
+        };
+
+        test('should parse standard WITH (NOLOCK) hint', () => {
+            const sql = "SELECT * FROM Users u WITH (NOLOCK)";
+            const ast = parse(sql);
+            const stmt = ast.body[0] as SelectNode;
+            const from = stmt.from![0] as TableReference;
+
+            expect(from.hints).toContain('NOLOCK');
+            expect(from.alias).toBe('u');
+
+            // Exact location check: Should include FROM keyword through hints
+            expect(getSqlFragment(sql, from)).toBe("FROM Users u WITH (NOLOCK)");
+        });
+
+        test('should handle multiple hints and complex INDEX hint', () => {
+            const sql = "SELECT * FROM Products p WITH (NOLOCK, INDEX(PK_Products), TABLOCK)";
+            const ast = parse(sql);
+            const stmt = ast.body[0] as SelectNode;
+            const from = stmt.from![0] as TableReference;
+
+            expect(from.hints).toHaveLength(3);
+            expect(from.hints).toContain('NOLOCK');
+            expect(from.hints).toContain('INDEX(PK_Products)');
+            expect(from.hints).toContain('TABLOCK');
+
+            expect(getSqlFragment(sql, from)).toBe("FROM Products p WITH (NOLOCK, INDEX(PK_Products), TABLOCK)");
+        });
+
+        test('should handle legacy hint syntax without WITH keyword', () => {
+            // T-SQL supports FROM Table (HINT) if an alias is present
+            const sql = "SELECT * FROM Orders o (ROWLOCK)";
+            const ast = parse(sql);
+            const stmt = ast.body[0] as SelectNode;
+            const from = stmt.from![0] as TableReference;
+
+            expect(from.hints).toContain('ROWLOCK');
+            expect(getSqlFragment(sql, from)).toBe("FROM Orders o (ROWLOCK)");
+        });
+
+        test('should handle hints followed by a JOIN', () => {
+            // Note: T2 has a hint here
+            const sql = "SELECT * FROM T1 WITH (NOLOCK) JOIN T2 WITH(NOLOCK) ON T1.id = T2.id";
+            const ast = parse(sql);
+            const stmt = ast.body[0] as SelectNode;
+            const from = stmt.from![0] as TableReference;
+
+            expect(from.hints).toContain('NOLOCK');
+            expect(from.joins[0].hints).toContain('NOLOCK'); // Check T2's hint too!
+
+            // The fragment must match the SQL input exactly
+            expect(getSqlFragment(sql, from)).toBe("FROM T1 WITH (NOLOCK) JOIN T2 WITH(NOLOCK) ON T1.id = T2.id");
         });
     });
 });
