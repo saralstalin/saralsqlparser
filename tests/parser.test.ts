@@ -80,21 +80,21 @@ function toSql(expr: any): string {
 }
 
 function getTableName(expr: any): string {
-  if (!expr) return '';
+    if (!expr) return '';
 
-  if (expr.type === 'Identifier') {
-    return expr.parts.join('.');
-  }
+    if (expr.type === 'Identifier') {
+        return expr.parts.join('.');
+    }
 
-  if (expr.type === 'MemberExpression') {
-    return expr.name; // safe for now
-  }
+    if (expr.type === 'MemberExpression') {
+        return expr.name; // safe for now
+    }
 
-  if (expr.type === 'SubqueryExpression') {
-    return 'SUBQUERY';
-  }
+    if (expr.type === 'SubqueryExpression') {
+        return 'SUBQUERY';
+    }
 
-  return '';
+    return '';
 }
 
 describe('T-SQL Parser', () => {
@@ -210,7 +210,10 @@ describe('T-SQL Parser', () => {
     test('should handle u.Name in SELECT', () => {
         const sql = `SELECT u.Name FROM Users u`;
         const col = (parse(sql).body[0] as SelectNode).columns[0];
-        expect(col.tablePrefix).toBe('u');
+
+        // Update this line to check the name property of the Expression node
+        expect((col.tablePrefix as any).name).toBe('u');
+
         expect(col.name).toBe('Name');
     });
 

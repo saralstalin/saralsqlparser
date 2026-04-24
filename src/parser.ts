@@ -37,7 +37,7 @@ export interface PrintNode extends NodeLocation {
 export interface ColumnNode extends NodeLocation {
     type: 'Column';
     expression: Expression;
-    tablePrefix?: string;
+    tablePrefix?: Expression;
     name: string;
     alias?: string;
 }
@@ -799,7 +799,7 @@ export class Parser {
             endOffset = join.end;
         }
 
-        
+
 
         return {
             type: 'TableReference',
@@ -849,7 +849,7 @@ export class Parser {
     }
 
     private parseJoin(): JoinNode {
-        const startToken = this.peek(); // Capture the start of the join sequence
+        const startToken = this.peek();
         let type = '';
 
         // 1. Determine Join Type
@@ -888,33 +888,38 @@ export class Parser {
             type = `${first} JOIN`;
         }
 
-        // 2. Parse the Join Target
+        // 2. Parse the Join Target as an Expression
         let tableTarget: Expression;
         const nextToken = this.peek();
-        const nextNext = this.peek(1);
 
-        if (nextToken?.type === TokenType.OpenParen && nextNext?.value === 'SELECT') {
-            const openParen = this.match(TokenType.OpenParen);
-            const subquery = this.parseSelect() as QueryStatement;
-            const closeParen = this.match(TokenType.CloseParen);
-            tableTarget = {
-                type: 'SubqueryExpression',
-                query: subquery,
-                start: openParen.offset,
-                end: closeParen.offset + closeParen.value.length
-            };
+        if (nextToken?.type === TokenType.OpenParen) {
+            // Look ahead for subquery vs grouped table
+            if (this.peek(1)?.value === 'SELECT') {
+                const openParen = this.consume(); // (
+                const subquery = this.parseQueryExpression(); // Use unified query expression
+                const closeParen = this.match(TokenType.CloseParen);
+                tableTarget = {
+                    type: 'SubqueryExpression',
+                    query: subquery,
+                    start: openParen.offset,
+                    end: closeParen.offset + closeParen.value.length
+                };
+            } else {
+                // Grouped table: (TableA JOIN TableB)
+                tableTarget = this.parseExpression();
+            }
         } else {
-            tableTarget = this.parsePrefix();
+            // Multi-part table name: dbo.Employees
+            tableTarget = this.parseMultipartIdentifier();
         }
 
         // 3. Parse Alias
         let alias: string | null = null;
-
         let endOffset = tableTarget.end;
         const potentialAlias = this.peek();
 
         if (potentialAlias?.value === 'AS') {
-            this.consume(); // as
+            this.consume();
             const aliasNode = this.parseMultipartIdentifier();
             alias = aliasNode.name;
             endOffset = aliasNode.end;
@@ -928,36 +933,31 @@ export class Parser {
             endOffset = aliasNode.end;
         }
 
-        // --- NEW: Parse Table Hints for Joined Table ---
+        // 4. Parse Table Hints
         let hints: string[] | undefined;
-        if (tableTarget.type === 'Identifier') {
-            const hintNext = this.peek();
-            if (hintNext?.value === 'WITH' ||
-                (hintNext?.type === TokenType.OpenParen && alias)) {
-                hints = this.parseTableHints();
-                const lastHintToken = this.tokens[this.pos - 1];
-                endOffset = lastHintToken.offset + lastHintToken.value.length;
-            }
+        const hintNext = this.peek();
+        if (hintNext?.value === 'WITH' || (hintNext?.type === TokenType.OpenParen && alias)) {
+            hints = this.parseTableHints();
+            endOffset = this.lastConsumedEnd();
         }
-        // ------------------------------------------------
 
-        // 4. Parse ON condition
+        // 5. Parse ON condition
         let on: Expression | null = null;
         if (this.peekKeyword('ON')) {
-            this.consume(); // ON
+            this.consume();
             on = this.parseExpression();
             endOffset = on.end;
         }
 
         return {
             type: type.trim(),
-            table: tableTarget,
+            table: tableTarget, // Always an Expression Node
             alias: alias || undefined,
-            hints, // Include the hints in the returned JoinNode
+            hints,
             on,
             start: startToken!.offset,
             end: endOffset
-        } as any;
+        };
     }
 
     private parseDelete(): DeleteNode {
@@ -1279,11 +1279,10 @@ export class Parser {
     private parseColumn(): ColumnNode {
         let alias: string | undefined = undefined;
         let expression: Expression;
-        let tablePrefix: string | undefined = undefined;
+        let tablePrefix: Expression | undefined = undefined; // Expression type
         let name: string = '';
 
         const STOP_KEYWORDS = ['FROM', 'WHERE', 'GROUP', 'ORDER', 'HAVING', 'UNION', 'ALL', 'EXCEPT', 'INTERSECT', 'JOIN', 'ON', 'APPLY', 'INTO', 'OUTER', 'VALUES'];
-
         const startOffset = this.peek()?.offset ?? 0;
 
         // 1. Handle T-SQL Assignment Style (Alias = Expression)
@@ -1300,7 +1299,6 @@ export class Parser {
 
             if (nextVal === 'AS') {
                 this.consume();
-                // Use Multipart here in case alias is bracketed like: AS [User Name]
                 alias = this.parseMultipartIdentifier().name;
             } else if (
                 nextToken &&
@@ -1309,43 +1307,44 @@ export class Parser {
                 (nextToken.type === TokenType.Identifier || nextToken.type === TokenType.Keyword) &&
                 !STOP_KEYWORDS.includes(nextVal!)
             ) {
-                // Implicit alias: SELECT Col AliasName
                 alias = this.parseMultipartIdentifier().name;
             }
         }
 
-        // 3. Extraction logic for name and tablePrefix
+        // 3. Extraction logic for name and tablePrefix (Node-based)
+        // Inside parseColumn -> Extraction logic for Identifier
         if (expression.type === 'Identifier') {
-            // If the parser returned a multi-part identifier (e.g. u.Name)
             if (expression.parts && expression.parts.length > 1) {
-                // The last part is the column name (Name)
                 name = expression.parts[expression.parts.length - 1];
-                // Everything before the last part is the table prefix (u)
-                tablePrefix = expression.parts.slice(0, -1).join('.');
+
+                // Everything before the last part
+                const prefixParts = expression.parts.slice(0, -1);
+
+                tablePrefix = {
+                    type: 'Identifier',
+                    // FIX: Populate the name property here!
+                    name: prefixParts.join('.'),
+                    parts: prefixParts,
+                    start: expression.start,
+                    end: expression.end
+                } as IdentifierNode;
             } else {
-                // Simple identifier (Name)
                 name = expression.name;
             }
         } else if (expression.type === 'MemberExpression') {
-            // This handles cases where the dot handler in parseExpression was triggered
             name = expression.property;
-            // Extract name from the object (e.g. 'u')
-            tablePrefix = (expression.object as any).name || this.stringifyExpression(expression.object);
+            // Directly use the object node as the prefix (e.g. 'u' in 'u.Name')
+            tablePrefix = expression.object;
         } else if (expression.type === 'FunctionCall') {
             name = expression.name;
         } else if (expression.type === 'Literal') {
             name = String(expression.value);
-        }
-        else {
+        } else {
             name = 'expression';
         }
 
-        // 4. Calculate end offset based on whether an alias exists
-        let endOffset = expression.end;
-        if (alias) {
-            // If an alias exists, the column definition ends at the last token consumed
-            endOffset = this.lastConsumedEnd();
-        }
+        // 4. Calculate end offset
+        let endOffset = alias ? this.lastConsumedEnd() : expression.end;
 
         return {
             type: 'Column',
