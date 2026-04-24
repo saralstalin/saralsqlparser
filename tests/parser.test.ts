@@ -79,6 +79,24 @@ function toSql(expr: any): string {
     }
 }
 
+function getTableName(expr: any): string {
+  if (!expr) return '';
+
+  if (expr.type === 'Identifier') {
+    return expr.parts.join('.');
+  }
+
+  if (expr.type === 'MemberExpression') {
+    return expr.name; // safe for now
+  }
+
+  if (expr.type === 'SubqueryExpression') {
+    return 'SUBQUERY';
+  }
+
+  return '';
+}
+
 describe('T-SQL Parser', () => {
     const parse = (sql: string) => {
         const lexer = new Lexer(sql);
@@ -108,7 +126,7 @@ describe('T-SQL Parser', () => {
         const ast = parse(sql);
         const stmt = ast.body[0] as SelectNode;
         expect(stmt.top).toBe('10');
-        expect(stmt.from?.[0].table).toBe('Employees');
+        expect(getTableName(stmt.from?.[0].table)).toBe('Employees');
         expect(stmt.from?.[0].joins[0].type).toBe('INNER JOIN');
         expect(toSql(stmt.from?.[0].joins[0].on)).toBe('e.DeptId = d.Id');
     });
@@ -119,7 +137,7 @@ describe('T-SQL Parser', () => {
         const ast = parse(sql);
         const stmt = ast.body[0] as SelectNode;
         expect(stmt.columns[0].name).toBe('[First Name]');
-        expect(stmt.from?.[0].table).toBe('[Sales].[Customer Orders]');
+        expect(getTableName(stmt.from?.[0].table)).toBe('[Sales].[Customer Orders]');
     });
 
     // 5. WHERE with complex operators
@@ -420,7 +438,7 @@ describe('T-SQL Parser - Advanced Expression & Structural Integrity', () => {
         const updateNode = ast.body[0] as UpdateNode;
 
         // Verifies parseFrom is used for UPDATE as well
-        expect(updateNode.from?.[0].table).toBe('Users');
+        expect(getTableName(updateNode.from?.[0].table)).toBe('Users');
         expect(updateNode.from?.[0].alias).toBe('u');
     });
 });
@@ -758,7 +776,7 @@ describe('T-SQL Parser - Deep Expression Validation', () => {
             expect(Array.isArray(select.from)).toBe(true);
             expect(select.from.length).toBe(2);
             expect(select.from[0].alias).toBe('u');
-            expect(select.from[1].table).toBe('Orders');
+            expect(getTableName(select.from[1].table)).toBe('Orders');
             expect(select.from[1].alias).toBe('o');
         });
 

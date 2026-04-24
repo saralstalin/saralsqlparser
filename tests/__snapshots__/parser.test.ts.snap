@@ -49,7 +49,15 @@ exports[`T-SQL Parser should build AST for a basic SELECT 1`] = `
           "hints": undefined,
           "joins": [],
           "start": 17,
-          "table": "Users",
+          "table": {
+            "end": 27,
+            "name": "Users",
+            "parts": [
+              "Users",
+            ],
+            "start": 22,
+            "type": "Identifier",
+          },
           "type": "TableReference",
         },
       ],

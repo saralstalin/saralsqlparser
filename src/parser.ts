@@ -10,7 +10,7 @@ export type Expression =
     | UnaryExpression & NodeLocation
     | { type: 'Literal'; value: string | number | null; variant: 'string' | 'number' | 'null' } & NodeLocation
     | IdentifierNode & NodeLocation
-    | { type: 'Variable'; name: string } & NodeLocation
+    | VariableNode & NodeLocation
     | { type: 'FunctionCall'; name: string; args: Expression[] } & NodeLocation
     | { type: 'CaseExpression'; input?: Expression; branches: { when: Expression, then: Expression }[]; elseBranch?: Expression } & NodeLocation
     | { type: 'InExpression'; left: Expression; list?: Expression[]; subquery?: QueryStatement; isNot: boolean } & NodeLocation
@@ -23,7 +23,7 @@ export type Expression =
 
 export interface JoinNode extends NodeLocation {
     type: string;
-    table: string | Expression;
+    table: Expression;
     on: Expression | null;
     hints?: string[];
     alias?: string;
@@ -96,7 +96,7 @@ export interface Program {
 export interface TableReference extends NodeLocation {
     type: 'TableReference';
     // Keeping your structure: string for tables, SubqueryExpression for derived tables
-    table: string | SubqueryExpression;
+    table: Expression;
     alias?: string;
     schema?: string;    // Highly recommended for LSP (e.g., 'dbo')
     hints?: string[];   // T-SQL hints like NOLOCK, ROWLOCK
@@ -226,6 +226,11 @@ export interface ErrorNode extends NodeLocation {
     message: string;
 }
 
+export interface VariableNode extends NodeLocation {
+    type: 'Variable';
+    name: string;
+}
+
 enum Precedence {
     LOWEST,
     OR,
@@ -351,40 +356,30 @@ export class Parser {
         return { type: 'Program', body: statements };
     }
 
-    // Inside class Parser
     private parseMultipartIdentifier(): IdentifierNode {
         const segments: Token[] = [];
         const first = this.consume();
         segments.push(first);
 
-        // Rule #4: The Dot is now its own TokenType.Dot
+        // Keep consuming as long as there is a dot followed by an identifier-like token
         while (this.peek()?.type === TokenType.Dot) {
-            this.consume(); // consume the '.' token
-
-            const next = this.peek();
-            if (
-                next &&
-                (next.type === TokenType.Identifier ||
-                    next.type === TokenType.Keyword ||
-                    next.type === TokenType.Variable ||
-                    next.type === TokenType.TempTable)
-            ) {
-                segments.push(this.consume());
-            } else {
-                // Found a dot but no valid following segment; 
-                // break to allow the error handler or resync to handle it.
-                break;
-            }
+            this.consume(); // consume the dot
+            const next = this.match(
+                TokenType.Identifier,
+                TokenType.Keyword,
+                TokenType.Variable,
+                TokenType.TempTable
+            );
+            segments.push(next);
         }
 
-        const lastSegment = segments[segments.length - 1];
-
+        const last = segments[segments.length - 1];
         return {
             type: 'Identifier',
             name: segments.map(t => t.value).join('.'),
             parts: segments.map(t => t.value),
             start: segments[0].offset,
-            end: lastSegment.offset + lastSegment.value.length
+            end: last.offset + last.value.length
         };
     }
 
@@ -804,18 +799,11 @@ export class Parser {
             endOffset = join.end;
         }
 
-        // 5. Finalize Table Value
-        let tableValue: any;
-        if (source.type === 'SubqueryExpression') {
-            tableValue = source;
-        } else {
-            // Now also checking .name on MemberExpressions due to our recent update
-            tableValue = this.hasName(source) ? source.name : this.stringifyExpression(source);
-        }
+        
 
         return {
             type: 'TableReference',
-            table: tableValue,
+            table: source,
             alias: alias || undefined,
             hints,
             joins,
@@ -963,7 +951,7 @@ export class Parser {
 
         return {
             type: type.trim(),
-            table: tableTarget.type === 'Identifier' ? (tableTarget as any).name : (tableTarget as any),
+            table: tableTarget,
             alias: alias || undefined,
             hints, // Include the hints in the returned JoinNode
             on,
@@ -1328,23 +1316,27 @@ export class Parser {
 
         // 3. Extraction logic for name and tablePrefix
         if (expression.type === 'Identifier') {
-            const parts = expression.parts || [];
-            if (parts.length > 1) {
-                name = parts[parts.length - 1];
-                tablePrefix = parts.slice(0, -1).join('.');
+            // If the parser returned a multi-part identifier (e.g. u.Name)
+            if (expression.parts && expression.parts.length > 1) {
+                // The last part is the column name (Name)
+                name = expression.parts[expression.parts.length - 1];
+                // Everything before the last part is the table prefix (u)
+                tablePrefix = expression.parts.slice(0, -1).join('.');
             } else {
+                // Simple identifier (Name)
                 name = expression.name;
             }
+        } else if (expression.type === 'MemberExpression') {
+            // This handles cases where the dot handler in parseExpression was triggered
+            name = expression.property;
+            // Extract name from the object (e.g. 'u')
+            tablePrefix = (expression.object as any).name || this.stringifyExpression(expression.object);
         } else if (expression.type === 'FunctionCall') {
             name = expression.name;
         } else if (expression.type === 'Literal') {
             name = String(expression.value);
         }
-        else if (expression.type === 'MemberExpression') {
-            name = expression.property;
-            // Extract prefix from the object (e.g., 'u' from 'u.Name')
-            tablePrefix = (expression.object as any).name || this.stringifyExpression(expression.object);
-        } else {
+        else {
             name = 'expression';
         }
 
@@ -1401,34 +1393,7 @@ export class Parser {
             const operatorToken = this.consume();
             const operator = operatorToken.value;
 
-            // --- 1. Handle Structural Dot (.) ---
-            if (operatorToken.type === TokenType.Dot) {
-                // Expanded to allow Identifiers, Keywords, TempTables (#) and Variables (@)
-                const rightToken = this.match(
-                    TokenType.Identifier,
-                    TokenType.Keyword,
-                    TokenType.TempTable,
-                    TokenType.Variable
-                );
-
-                // Create a structured MemberExpression
-                // We keep the flattened 'name' property temporarily to avoid regressions 
-                // in other parts of the parser that rely on .name
-                const propertyName = rightToken.value;
-                const objectName = (left as any).name || this.stringifyExpression(left);
-
-                left = {
-                    type: 'MemberExpression',
-                    object: left,
-                    property: propertyName,
-                    // Flattened name for backwards compatibility with your current DML logic
-                    name: `${objectName}.${propertyName}`,
-                    start: left.start,
-                    end: rightToken.offset + propertyName.length
-                } as any;
-            }
-            // --- 2. Handle IS / IS NOT NULL ---
-            else if (val === 'IS') {
+            if (val === 'IS') {
                 let isNot = false;
                 if (this.peek()?.value === 'NOT') {
                     this.consume();
@@ -1595,7 +1560,7 @@ export class Parser {
             }
 
             case TokenType.TempTable:
-                return { type: 'Identifier', name: value, parts: [value], start, end: start + value.length };
+                return this.parseMultipartIdentifier();
 
             case TokenType.Operator:
                 // 1. Support for SELECT * (Wildcard)
@@ -2026,7 +1991,7 @@ export class Parser {
             case 'Literal':
                 return expr.variant === 'string' ? `'${expr.value}'` : String(expr.value);
             case 'Identifier':
-                return expr.tablePrefix ? `${expr.tablePrefix}.${expr.name}` : expr.name;
+                return expr.name;
             case 'Variable':
                 return expr.name;
             case 'SubqueryExpression':
@@ -2044,6 +2009,14 @@ export class Parser {
                 return `${this.stringifyExpression(expr.left)} ${expr.isNot ? 'NOT ' : ''}BETWEEN ${this.stringifyExpression(expr.lowerBound)} AND ${this.stringifyExpression(expr.upperBound)}`;
             case 'FunctionCall':
                 return `${expr.name}(${expr.args.map(a => this.stringifyExpression(a)).join(', ')})`;
+            // Inside stringifyExpression switch
+            case 'MemberExpression':
+                // Priority 1: Use the flattened name if it exists (prevents e.e.DeptId)
+                if ((expr as any).name) {
+                    return (expr as any).name;
+                }
+                // Priority 2: Recursive stringification
+                return `${this.stringifyExpression(expr.object)}.${expr.property}`;
             default: return '';
         }
     }
