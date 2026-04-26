@@ -81,25 +81,19 @@ export interface MemberExpression extends NodeLocation {
     property: string;
     name: string; // The flattened string (e.g., "dbo.Table")
 }
-
-
-// Add this near your other type definitions
 export type QueryStatement = SelectNode | SetOperatorNode;
-
-// Update your Statement union to include Insert
 export type Statement = (QueryStatement | InsertNode | UpdateNode | DeleteNode | DeclareNode | SetNode | CreateNode | IfNode | BlockNode | WithNode | PrintNode | ErrorNode) & NodeLocation;
 
 export interface Program {
     type: 'Program';
-    body: Statement[]; // Update this from any[]
+    body: Statement[]; 
 }
 
 export interface TableReference extends NodeLocation {
     type: 'TableReference';
-    // Keeping your structure: string for tables, SubqueryExpression for derived tables
     table: Expression;
     alias?: string;
-    schema?: string;    // Highly recommended for LSP (e.g., 'dbo')
+    schema?: string;    
     hints?: string[];   // T-SQL hints like NOLOCK, ROWLOCK
     joins: JoinNode[];
 }
@@ -143,6 +137,11 @@ export interface VariableDeclaration extends NodeLocation {
     name: string;        // e.g., "@BatchID"
     dataType: string;    // e.g., "INT" or "VARCHAR(MAX)"
     initialValue?: Expression; // Optional initial value (e.g., "10" or "@ID + 1")
+    columns?: ColumnDefinition[] | null; // For table variables
+}
+
+export interface ParseResult {
+    ast: Program;
 }
 
 export interface DeclareNode extends NodeLocation {
@@ -271,6 +270,24 @@ enum Precedence {
     CALL     // Function calls
 }
 
+const STRUCTURAL_KEYWORDS = new Set([
+    'INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS', 'JOIN',
+    'WHERE', 'GROUP', 'ORDER', 'HAVING', 'UNION', 'ALL',
+    'ON', 'APPLY', 'OUTER', 'EXCEPT', 'INTERSECT', 'WITH',
+    'FOR', 'TABLESAMPLE', 'PIVOT', 'UNPIVOT'
+]);
+
+const RESYNC_KEYWORDS = new Set([
+    'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'SET',
+    'DECLARE', 'IF', 'BEGIN', 'CREATE', 'WITH', 'GO',
+    'WHEN', 'THEN', 'ELSE', 'END'
+]);
+
+const CREATE_OBJECT_TYPES: Record<string, CreateNode['objectType']> = {
+    TABLE: 'TABLE', VIEW: 'VIEW', PROCEDURE: 'PROCEDURE',
+    FUNCTION: 'FUNCTION', TYPE: 'TYPE', PROC: 'PROCEDURE'
+};
+
 // Precedence mapping for operators
 const PRECEDENCE_MAP: Record<string, Precedence> = {
     '.': Precedence.CALL,
@@ -349,25 +366,34 @@ export class Parser {
         return this.consume();
     }
 
-    public parse(): Program {
+    public parse(): ParseResult {
         const statements: Statement[] = [];
-        while (this.pos < this.tokens.length) {
 
-            // Allow the variable to be null initially
+        while (this.pos < this.tokens.length) {
+            const token = this.peek();
+
+            // Handle T-SQL Batch Separator 'GO'
+            if (token?.value === 'GO') {
+                this.consume();
+                continue;
+            }
+
             let stmt: Statement | null = this.parseStatement();
 
-            // Only proceed if we actually got a statement
             if (stmt) {
-                // Now that we've processed potential SET operations, push the final stmt
                 statements.push(stmt);
             }
 
-            // Consume optional semicolon regardless of whether stmt was null
-            if (this.peek()?.type === TokenType.Semicolon) this.consume();
-
-
+            if (this.peek()?.type === TokenType.Semicolon) {
+                this.consume();
+            }
         }
-        return { type: 'Program', body: statements };
+
+        const ast: Program = { type: 'Program', body: statements };
+    
+        return {
+            ast: ast
+        };
     }
 
     private parseMultipartIdentifier(): IdentifierNode {
@@ -829,13 +855,7 @@ export class Parser {
      * Prevents "Select col NEW_KEYWORD" from breaking if NEW_KEYWORD is added to T-SQL.
      */
     private isStructuralKeyword(value: string): boolean {
-        const structural = [
-            'INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS', 'JOIN',
-            'WHERE', 'GROUP', 'ORDER', 'HAVING', 'UNION', 'ALL',
-            'ON', 'APPLY', 'OUTER', 'EXCEPT', 'INTERSECT', 'WITH',
-            'FOR', 'TABLESAMPLE', 'PIVOT', 'UNPIVOT'
-        ];
-        return structural.includes(value.toUpperCase());
+        return STRUCTURAL_KEYWORDS.has(value); // O(1), no allocation, no toUpperCase
     }
 
     private parseTableHints(): string[] {
@@ -1061,25 +1081,39 @@ export class Parser {
 
     private parseDeclare(): DeclareNode {
         const startToken = this.matchKeyword('DECLARE');
-        // Corrected to use VariableDeclaration
+
         const variables = this.parseList<VariableDeclaration>(() => {
             const nameToken = this.match(TokenType.Variable);
             const name = nameToken.value;
 
-            let dataType = this.consume().value;
-            if (this.peek()?.type === TokenType.OpenParen) {
-                dataType += this.consume().value;
-                while (this.pos < this.tokens.length && this.peek()?.type !== TokenType.CloseParen) {
-                    dataType += this.consume().value;
-                }
-                dataType += this.match(TokenType.CloseParen).value;
+            // 1. Check for Table Variable: DECLARE @MyTable TABLE (...)
+            if (this.peekKeyword('TABLE')) {
+                this.consume(); // Consume 'TABLE'
+
+                // This returns ColumnDefinition[]
+                const columns = this.parseTableColumns();
+
+
+
+                return {
+                    name,
+                    dataType: 'TABLE',
+                    columns, // Now type-safe thanks to the interface update
+                    start: nameToken.offset,
+                    end: this.lastConsumedEnd()
+                };
             }
+
+            // 2. Standard Variable Logic (Scalar types)
+            const dataType = this.parseDataType();
 
             let initialValue: Expression | undefined;
             if (this.peek()?.value === '=') {
                 this.consume();
                 initialValue = this.parseExpression();
             }
+
+
 
             return {
                 name,
@@ -1090,7 +1124,12 @@ export class Parser {
             };
         });
 
-        return { type: 'DeclareStatement', variables, start: startToken.offset, end: this.lastConsumedEnd() };
+        return {
+            type: 'DeclareStatement',
+            variables,
+            start: startToken.offset,
+            end: this.lastConsumedEnd()
+        };
     }
 
     private parseSet(): SetNode {
@@ -1222,116 +1261,100 @@ export class Parser {
     }
 
     private parseCreate(): CreateNode {
-        const startToken = this.matchKeyword('CREATE'); // Start tracking from CREATE
+        const startToken = this.matchKeyword('CREATE');
         const rawType = this.consume().value.toUpperCase();
 
-        // 1. Standardize types for the AST
-        let objectType: CreateNode['objectType'] = rawType as any;
-        if (rawType === 'PROC') objectType = 'PROCEDURE';
-
-        // 2. Gold Standard: Use Multipart Resolver for name
-        // This correctly handles [dbo].[MyTable] and returns start/end for the name
+        let objectType = CREATE_OBJECT_TYPES[rawType];
+    
         const nameNode = this.parseMultipartIdentifier();
         const name = nameNode.name;
+
 
         let columns: ColumnDefinition[] | undefined = undefined;
         let parameters: ParameterDefinition[] | undefined = undefined;
         let body: Statement | Statement[] | undefined = undefined;
         let isTableType: boolean | undefined = undefined;
 
-        // 3. Handle CREATE TYPE ... AS TABLE
         if (objectType === 'TYPE') {
             if (this.peekKeyword('AS')) {
-                this.consume(); // AS
+                this.consume();
                 if (this.peekKeyword('TABLE')) {
-                    this.consume(); // TABLE
+                    this.consume();
                     columns = this.parseTableColumns();
                     isTableType = true;
                 }
             }
         }
-
-        // 4. Handle CREATE TABLE
         else if (objectType === 'TABLE') {
             columns = this.parseTableColumns();
         }
-
-        // 5. Handle Parameters for Procedures/Functions
         else if (objectType === 'PROCEDURE' || objectType === 'FUNCTION') {
+            // [SCOPE] Push a private scope for Procedure/Function
+
+
             const hasParens = this.peek()?.type === TokenType.OpenParen;
             if (hasParens) this.consume();
 
-            // Rule #1: Use the improved parseList logic
             if (this.peek()?.type === TokenType.Variable) {
                 parameters = this.parseList<ParameterDefinition>(() => {
-                    const startToken = this.peek()!;
-                    const pName = this.consume().value; // @Param
+                    const paramToken = this.peek()!;
+                    const pName = this.consume().value;
 
-                    // Parse Type (handles VARCHAR(MAX), DECIMAL(18,2) etc)
-                    let pType = this.consume().value;
-                    if (this.peek()?.type === TokenType.OpenParen) {
-                        pType += this.consume().value; // (
-                        while (this.pos < this.tokens.length && this.peek()?.type !== TokenType.CloseParen) {
-                            pType += this.consume().value;
-                        }
-                        pType += this.match(TokenType.CloseParen).value; // )
-                    }
+                    // Use our new helper
+                    const pType = this.parseDataType();
 
                     let isOutput = false;
-                    // Rule #3: Lexer now provides Uppercase keywords
                     const nextToken = this.peek();
                     if (nextToken?.type === TokenType.Keyword && (nextToken.value === 'OUTPUT' || nextToken.value === 'OUT')) {
                         isOutput = true;
                         this.consume();
                     }
 
-
-                    // Return the full ParameterDefinition matching the interface
                     return {
                         name: pName,
                         dataType: pType,
                         isOutput,
-                        start: startToken.offset,
+                        start: paramToken.offset,
                         end: this.lastConsumedEnd()
                     };
                 });
             }
             if (hasParens) this.match(TokenType.CloseParen);
-        }
 
-        // 6. Handle the Body (AS SELECT... or Statement Blocks)
-        if (this.peekKeyword('AS')) {
-            this.consume(); // AS
-        }
+            if (this.peekKeyword('AS')) {
+                this.consume(); // AS
+            }
 
-        if (objectType === 'VIEW') {
-            body = this.parseSelect() as QueryStatement;
-        } else if (['PROCEDURE', 'FUNCTION'].includes(objectType)) {
+            // Parse Body
             const statements: Statement[] = [];
             const stopKeywords = ['GO'];
-
             while (this.pos < this.tokens.length) {
                 const nextToken = this.peek();
                 if (!nextToken || stopKeywords.includes(nextToken.value)) break;
 
                 const stmt = this.parseStatement();
-                if (stmt) {
-                    statements.push(stmt);
-                } else {
-                    break;
-                }
+                if (stmt) statements.push(stmt);
+                else break;
             }
             body = statements;
+
+
+        }
+        else if (objectType === 'VIEW') {
+            if (this.peekKeyword('AS')) {
+                this.consume();
+            }
+
+            body = this.parseQueryExpression();
         }
 
-        // 7. Calculate End Offset for the whole CREATE statement
+        // ... endOffset calculation and return (same as your previous version)
         let endOffset = nameNode.end;
         if (Array.isArray(body) && body.length > 0) {
             endOffset = body[body.length - 1].end;
         } else if (body && !Array.isArray(body)) {
             endOffset = (body as Statement).end;
         } else if (columns) {
-            // Find the offset of the last token (usually the closing paren of the column list)          
             endOffset = this.lastConsumedEnd();
         }
 
@@ -1775,7 +1798,7 @@ export class Parser {
         const token = this.peek();
         // Lexer now returns keywords in UPPERCASE. 
         // We normalize the 'value' argument once to ensure a perfect match.
-        if (token && token.type === TokenType.Keyword && token.value === value.toUpperCase()) {
+        if (token && token.type === TokenType.Keyword && token.value === value) {
             return this.consume();
         }
 
@@ -1785,7 +1808,7 @@ export class Parser {
     private peekKeyword(value: string): boolean {
         const token = this.peek();
         // Compare against the Uppercase version since Lexer normalized it
-        return token?.type === TokenType.Keyword && token.value === value.toUpperCase();
+        return token?.type === TokenType.Keyword && token.value === value;
     }
 
     private parseCaseExpression(): Expression {
@@ -2056,6 +2079,24 @@ export class Parser {
         return query;
     }
 
+    private parseDataType(): string {
+        let typeName = this.consume().value; // e.g., 'VARCHAR', 'INT', 'DECIMAL'
+
+        // Handle types with length/precision: VARCHAR(50), DECIMAL(18,2)
+        if (this.peek()?.type === TokenType.OpenParen) {
+            typeName += this.consume().value; // '('
+
+            while (this.pos < this.tokens.length && this.peek()?.type !== TokenType.CloseParen) {
+                typeName += this.consume().value;
+            }
+
+            if (this.peek()?.type === TokenType.CloseParen) {
+                typeName += this.consume().value; // ')'
+            }
+        }
+        return typeName;
+    }
+
     private stringifyExpression(expr: Expression): string {
         switch (expr.type) {
             case 'Literal':
@@ -2097,9 +2138,7 @@ export class Parser {
                 this.consume();
                 break;
             }
-            if (['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'SET', 'DECLARE', 'IF', 'BEGIN', 'CREATE', 'WITH', 'GO', 'WHEN', 'THEN', 'ELSE', 'END'].includes(val!)) {
-                break;
-            }
+            if (RESYNC_KEYWORDS.has(val!)) break;
             this.pos++;
         }
     }

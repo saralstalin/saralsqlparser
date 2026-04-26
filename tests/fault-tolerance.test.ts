@@ -8,7 +8,7 @@ describe('Parser Fault Tolerance', () => {
         const lexer = new Lexer(sql);
         const parser = new Parser(lexer);
 
-        const ast = parser.parse();
+        const ast = parser.parse().ast;
 
         // The parser should have "resynced" and still found the statement
         expect(ast.body.length).toBeGreaterThan(0);
@@ -25,7 +25,7 @@ describe('Parser Fault Tolerance', () => {
     `;
         const lexer = new Lexer(sql);
         const parser = new Parser(lexer);
-        const ast = parser.parse();
+        const ast = parser.parse().ast;
 
         // Filter for valid SelectStatements
         const validStatements = ast.body.filter(s => s.type === 'SelectStatement');

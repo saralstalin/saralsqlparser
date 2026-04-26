@@ -101,7 +101,7 @@ describe('T-SQL Parser', () => {
     const parse = (sql: string) => {
         const lexer = new Lexer(sql);
         const parser = new Parser(lexer);
-        return parser.parse();
+        return parser.parse().ast;
     };
 
 
@@ -386,7 +386,7 @@ describe('T-SQL Parser - Advanced Expression & Structural Integrity', () => {
     const parse = (sql: string) => {
         const lexer = new Lexer(sql);
         const parser = new Parser(lexer);
-        return parser.parse();
+        return parser.parse().ast;
     };
 
     test('Architectural: should preserve SubqueryExpression as an object in FROM', () => {
@@ -450,7 +450,7 @@ describe('T-SQL Parser - Deep Expression Validation', () => {
     const parse = (sql: string) => {
         const lexer = new Lexer(sql);
         const parser = new Parser(lexer);
-        return parser.parse();
+        return parser.parse().ast;
     };
 
     test('should handle deeply nested function calls and math', () => {
@@ -537,7 +537,7 @@ describe('T-SQL Parser - Deep Expression Validation', () => {
     test('Should resolve 3-part identifiers', () => {
         const sql = 'SELECT [DB].[Schema].[Table] FROM T';
         const parser = new Parser(new Lexer(sql));
-        const ast = parser.parse();
+        const ast = parser.parse().ast;
 
         const select = ast.body[0] as SelectNode;
         const identifier = select.columns[0].expression as any;
@@ -550,7 +550,7 @@ describe('T-SQL Parser - Deep Expression Validation', () => {
     test('Should handle mixed bracketed and standard segments', () => {
         const sql = 'SELECT dbo.[Users] FROM T';
         const parser = new Parser(new Lexer(sql));
-        const ast = parser.parse();
+        const ast = parser.parse().ast;
 
         const identifier = (ast.body[0] as any).columns[0].expression;
         expect(identifier.name).toBe('dbo.[Users]');
@@ -559,7 +559,7 @@ describe('T-SQL Parser - Deep Expression Validation', () => {
     test('Should maintain correct offsets for the whole multipart string', () => {
         const sql = 'SELECT   dbo.Table';
         const parser = new Parser(new Lexer(sql));
-        const ast = parser.parse();
+        const ast = parser.parse().ast;
         const identifier = (ast.body[0] as any).columns[0].expression;
 
         // "SELECT" (6) + 3 spaces = index 9
@@ -824,4 +824,6 @@ describe('T-SQL Parser - Deep Expression Validation', () => {
             expect(select.columns[0].expression.args.length).toBe(0);
         });
     });
+
+    
 });

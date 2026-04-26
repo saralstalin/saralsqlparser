@@ -22,6 +22,9 @@ export interface Token {
     offset: number; // Absolute character position for LSP integration
 }
 
+const COMPOSITE_START = new Set(['>', '<', '!', '=']);
+const COMPOSITE_OPERATORS = new Set(['>=', '<=', '<>', '!=']);
+
 export class Lexer {
     private pos = 0;
     private line = 1;
@@ -102,14 +105,13 @@ export class Lexer {
         }
 
         // 5. Rule #1: Composite Operators (>=, <=, <>, !=)
-        const compositeStart = ['>', '<', '!', '='];
-        if (compositeStart.includes(char)) {
+        
+        if (COMPOSITE_START.has(char)) {
             let op = this.consume();
             const next = this.peek();
             const combined = op + next;
-            const composites = ['>=', '<=', '<>', '!='];
-
-            if (composites.includes(combined)) {
+            
+            if (COMPOSITE_OPERATORS.has(combined)) {
                 op = combined;
                 this.consume();
             }
