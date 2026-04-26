@@ -278,7 +278,7 @@ describe('T-SQL Parser', () => {
     test('should handle UPDATE with FROM and JOIN', () => {
         const sql = `UPDATE u SET x = 1 FROM Users u JOIN T2 ON u.id = T2.id`;
         const node = parse(sql).body[0] as UpdateNode;
-        expect(node.target).toBe('u');
+        expect(getTableName(node.target)).toBe('u');
         expect(node.from?.[0].joins.length).toBe(1);
     });
 
@@ -292,7 +292,7 @@ describe('T-SQL Parser', () => {
     test('should handle DELETE with FROM and JOIN', () => {
         const sql = `DELETE u FROM Users u JOIN T2 ON u.id = T2.id`;
         const node = parse(sql).body[0] as DeleteNode;
-        expect(node.target).toBe('u');
+        expect(getTableName(node.target)).toBe('u');
     });
 
     // 27. DECLARE variables

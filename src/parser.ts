@@ -22,7 +22,8 @@ export type Expression =
 
 
 export interface JoinNode extends NodeLocation {
-    type: string;
+    type: JoinType;
+    rawType: string; // The actual keyword(s) by user (e.g., "LEFT JOIN", "JOIN")
     table: Expression;
     on: Expression | null;
     hints?: string[];
@@ -117,7 +118,7 @@ export interface SelectNode extends NodeLocation {
 
 export interface InsertNode extends NodeLocation {
     type: 'InsertStatement';
-    table: string;
+    table: Expression;
     columns: string[] | null;
     values: Expression[][] | null;
     selectQuery: SelectNode | SetOperatorNode | null;
@@ -125,7 +126,7 @@ export interface InsertNode extends NodeLocation {
 
 export interface UpdateNode extends NodeLocation {
     type: 'UpdateStatement';
-    target: string;        // The table or alias being updated
+    target: Expression;        // The table or alias being updated
     assignments: { column: string, value: Expression }[];
     from: TableReference[] | null;
     where: Expression | null;
@@ -133,7 +134,7 @@ export interface UpdateNode extends NodeLocation {
 
 export interface DeleteNode extends NodeLocation {
     type: 'DeleteStatement';
-    target: string;         // The table or alias being deleted from
+    target: Expression;         // The table or alias being deleted from
     from: TableReference[] | null;
     where: Expression | null;
 }
@@ -230,6 +231,32 @@ export interface VariableNode extends NodeLocation {
     type: 'Variable';
     name: string;
 }
+export const JoinKeywords = {
+    JOIN: 'JOIN',
+    INNER: 'INNER',
+    LEFT: 'LEFT',
+    RIGHT: 'RIGHT',
+    FULL: 'FULL',
+    CROSS: 'CROSS',
+    OUTER: 'OUTER',
+    APPLY: 'APPLY'
+} as const;
+
+export type JoinKeyword =
+    typeof JoinKeywords[keyof typeof JoinKeywords];
+
+export const JoinTypes = {
+    INNER: 'INNER JOIN',
+    LEFT_OUTER: 'LEFT OUTER JOIN',
+    RIGHT_OUTER: 'RIGHT OUTER JOIN',
+    FULL_OUTER: 'FULL OUTER JOIN',
+    CROSS: 'CROSS JOIN',
+    CROSS_APPLY: 'CROSS APPLY',
+    OUTER_APPLY: 'OUTER APPLY',
+} as const;
+
+export type JoinType =
+    typeof JoinTypes[keyof typeof JoinTypes];
 
 enum Precedence {
     LOWEST,
@@ -326,24 +353,11 @@ export class Parser {
         const statements: Statement[] = [];
         while (this.pos < this.tokens.length) {
 
-            // 1. Allow the variable to be null initially
+            // Allow the variable to be null initially
             let stmt: Statement | null = this.parseStatement();
 
-            // 2. Only proceed if we actually got a statement
+            // Only proceed if we actually got a statement
             if (stmt) {
-                // Check for SET operators (UNION, EXCEPT, INTERSECT)
-                if (stmt.type === 'SelectStatement' || stmt.type === 'SetOperator') {
-                    while (this.pos < this.tokens.length) {
-                        const nextVal = this.peek()?.value;
-                        if (nextVal && ['UNION', 'EXCEPT', 'INTERSECT'].includes(nextVal)) {
-                            // We cast to QueryStatement because we verified the type above
-                            stmt = this.parseSetOperation(stmt as QueryStatement);
-                        } else {
-                            break;
-                        }
-                    }
-                }
-
                 // Now that we've processed potential SET operations, push the final stmt
                 statements.push(stmt);
             }
@@ -427,7 +441,7 @@ export class Parser {
             const val = token.value;
 
             switch (val) {
-                case 'SELECT': stmt = this.parseSelect(); break;
+                case 'SELECT': stmt = this.parseQueryExpression(); break;
                 case 'INSERT': stmt = this.parseInsert(); break;
                 case 'UPDATE': stmt = this.parseUpdate(); break;
                 case 'DELETE': stmt = this.parseDelete(); break;
@@ -566,7 +580,6 @@ export class Parser {
         }
 
         // 8. Handle ORDER BY
-        // 8. Handle ORDER BY
         let orderBy: OrderByNode[] | null = null;
         if (this.peekKeyword('ORDER')) {
             this.consume(); // ORDER
@@ -668,7 +681,7 @@ export class Parser {
 
         return {
             type: 'InsertStatement',
-            table: tableNode.name,
+            table: tableNode,
             columns: columns,
             values: values, // Now returns Expression[][]
             selectQuery: selectQuery,
@@ -710,12 +723,12 @@ export class Parser {
             endOffset = where.end;
         } else if (from) {
             // If no WHERE, end at the last table reference in FROM
-            endOffset = (from as any).end || endOffset;
+            endOffset = from[from.length - 1].end;
         }
 
         return {
             type: 'UpdateStatement',
-            target: targetNode.name,
+            target: targetNode,
             assignments,
             from,
             where,
@@ -786,8 +799,7 @@ export class Parser {
             const nextToken = this.peek();
             if (nextToken?.value === 'WITH' || (nextToken?.type === TokenType.OpenParen && alias)) {
                 hints = this.parseTableHints();
-                const lastHintToken = this.tokens[this.pos - 1];
-                endOffset = lastHintToken.offset + lastHintToken.value.length;
+                endOffset = this.lastConsumedEnd();
             }
         }
 
@@ -849,55 +861,106 @@ export class Parser {
     }
 
     private parseJoin(): JoinNode {
-        const startToken = this.peek();
-        let type = '';
+        const startToken = this.peek()!;
+        let type: JoinType;
+        let rawType: string;
 
-        // 1. Determine Join Type
+        // 1. Determine canonical Join Type + preserve raw type
         const first = this.consume().value.toUpperCase();
 
-        if (['LEFT', 'RIGHT', 'FULL'].includes(first)) {
-            if (this.peekKeyword('OUTER')) {
-                this.consume();
-                type = `${first} OUTER JOIN`;
-            } else {
-                type = `${first} JOIN`;
+        switch (first) {
+            case JoinKeywords.JOIN:
+                rawType = JoinKeywords.JOIN;
+                type = JoinTypes.INNER;
+                break;
+
+            case JoinKeywords.INNER:
+                this.matchKeyword(JoinKeywords.JOIN);
+                rawType = 'INNER JOIN';
+                type = JoinTypes.INNER;
+                break;
+
+            case JoinKeywords.LEFT:
+                if (this.peekKeyword(JoinKeywords.OUTER)) {
+                    this.consume();
+                    this.matchKeyword(JoinKeywords.JOIN);
+                    rawType = 'LEFT OUTER JOIN';
+                } else {
+                    this.matchKeyword(JoinKeywords.JOIN);
+                    rawType = 'LEFT JOIN';
+                }
+                type = JoinTypes.LEFT_OUTER;
+                break;
+
+            case JoinKeywords.RIGHT:
+                if (this.peekKeyword(JoinKeywords.OUTER)) {
+                    this.consume();
+                    this.matchKeyword(JoinKeywords.JOIN);
+                    rawType = 'RIGHT OUTER JOIN';
+                } else {
+                    this.matchKeyword(JoinKeywords.JOIN);
+                    rawType = 'RIGHT JOIN';
+                }
+                type = JoinTypes.RIGHT_OUTER;
+                break;
+
+            case JoinKeywords.FULL:
+                if (this.peekKeyword(JoinKeywords.OUTER)) {
+                    this.consume();
+                    this.matchKeyword(JoinKeywords.JOIN);
+                    rawType = 'FULL OUTER JOIN';
+                } else {
+                    this.matchKeyword(JoinKeywords.JOIN);
+                    rawType = 'FULL JOIN';
+                }
+                type = JoinTypes.FULL_OUTER;
+                break;
+
+            case JoinKeywords.CROSS: {
+                const next = this.consume().value.toUpperCase();
+
+                if (next === JoinKeywords.JOIN) {
+                    rawType = 'CROSS JOIN';
+                    type = JoinTypes.CROSS;
+                } else if (next === JoinKeywords.APPLY) {
+                    rawType = 'CROSS APPLY';
+                    type = JoinTypes.CROSS_APPLY;
+                } else {
+                    throw new Error(
+                        `Expected JOIN or APPLY after CROSS, found ${next}`
+                    );
+                }
+                break;
             }
-            this.matchKeyword('JOIN');
-        } else if (first === 'INNER') {
-            this.matchKeyword('JOIN');
-            type = 'INNER JOIN';
-        } else if (first === 'CROSS') {
-            const next = this.consume().value.toUpperCase();
-            if (next === 'JOIN') {
-                type = 'CROSS JOIN';
-            } else if (next === 'APPLY') {
-                type = 'CROSS APPLY';
-            } else {
-                type = `CROSS ${next}`;
+
+            case JoinKeywords.OUTER: {
+                const next = this.consume().value.toUpperCase();
+
+                if (next === JoinKeywords.APPLY) {
+                    rawType = 'OUTER APPLY';
+                    type = JoinTypes.OUTER_APPLY;
+                } else {
+                    throw new Error(
+                        `Expected APPLY after OUTER, found ${next}`
+                    );
+                }
+                break;
             }
-        } else if (first === 'OUTER') {
-            const next = this.consume().value.toUpperCase();
-            if (next === 'APPLY') {
-                type = 'OUTER APPLY';
-            } else {
-                type = `OUTER ${next}`;
-            }
-        } else if (first === 'JOIN') {
-            type = 'INNER JOIN';
-        } else {
-            type = `${first} JOIN`;
+
+            default:
+                throw new Error(`Unsupported join type: ${first}`);
         }
 
-        // 2. Parse the Join Target as an Expression
+        // 2. Parse Join Target as Expression
         let tableTarget: Expression;
         const nextToken = this.peek();
 
         if (nextToken?.type === TokenType.OpenParen) {
-            // Look ahead for subquery vs grouped table
             if (this.peek(1)?.value === 'SELECT') {
-                const openParen = this.consume(); // (
-                const subquery = this.parseQueryExpression(); // Use unified query expression
+                const openParen = this.consume();
+                const subquery = this.parseQueryExpression();
                 const closeParen = this.match(TokenType.CloseParen);
+
                 tableTarget = {
                     type: 'SubqueryExpression',
                     query: subquery,
@@ -905,17 +968,16 @@ export class Parser {
                     end: closeParen.offset + closeParen.value.length
                 };
             } else {
-                // Grouped table: (TableA JOIN TableB)
                 tableTarget = this.parseExpression();
             }
         } else {
-            // Multi-part table name: dbo.Employees
             tableTarget = this.parseMultipartIdentifier();
         }
 
-        // 3. Parse Alias
-        let alias: string | null = null;
+        // 3. Alias
+        let alias: string | undefined;
         let endOffset = tableTarget.end;
+
         const potentialAlias = this.peek();
 
         if (potentialAlias?.value === 'AS') {
@@ -923,9 +985,13 @@ export class Parser {
             const aliasNode = this.parseMultipartIdentifier();
             alias = aliasNode.name;
             endOffset = aliasNode.end;
+
         } else if (
             potentialAlias &&
-            (potentialAlias.type === TokenType.Identifier || potentialAlias.type === TokenType.Keyword) &&
+            (
+                potentialAlias.type === TokenType.Identifier ||
+                potentialAlias.type === TokenType.Keyword
+            ) &&
             !this.isStructuralKeyword(potentialAlias.value)
         ) {
             const aliasNode = this.parseMultipartIdentifier();
@@ -933,16 +999,21 @@ export class Parser {
             endOffset = aliasNode.end;
         }
 
-        // 4. Parse Table Hints
+        // 4. Table hints
         let hints: string[] | undefined;
         const hintNext = this.peek();
-        if (hintNext?.value === 'WITH' || (hintNext?.type === TokenType.OpenParen && alias)) {
+
+        if (
+            hintNext?.value === 'WITH' ||
+            (hintNext?.type === TokenType.OpenParen && alias)
+        ) {
             hints = this.parseTableHints();
             endOffset = this.lastConsumedEnd();
         }
 
-        // 5. Parse ON condition
+        // 5. ON clause
         let on: Expression | null = null;
+
         if (this.peekKeyword('ON')) {
             this.consume();
             on = this.parseExpression();
@@ -950,12 +1021,13 @@ export class Parser {
         }
 
         return {
-            type: type.trim(),
-            table: tableTarget, // Always an Expression Node
-            alias: alias || undefined,
+            type,       // canonical
+            rawType,    // user syntax
+            table: tableTarget,
+            alias,
             hints,
             on,
-            start: startToken!.offset,
+            start: startToken.offset,
             end: endOffset
         };
     }
@@ -965,7 +1037,7 @@ export class Parser {
         if (this.peekKeyword('FROM')) this.consume();
 
         const targetNode = this.parseMultipartIdentifier();
-        const target = targetNode.name;
+        const target = targetNode;
         let endOffset = targetNode.end;
 
         let from: TableReference[] | null = null;
@@ -1359,8 +1431,7 @@ export class Parser {
 
     private isJoinToken(token: Token | undefined): boolean {
         if (!token) return false;
-        const val = token.value;
-        return ['JOIN', 'INNER', 'OUTER', 'LEFT', 'RIGHT', 'CROSS', 'FULL'].includes(val);
+        return Object.values(JoinKeywords).includes(token.value as JoinKeyword);
     }
 
     private parseExpression(precedence: Precedence = Precedence.LOWEST): Expression {
@@ -2010,12 +2081,7 @@ export class Parser {
                 return `${expr.name}(${expr.args.map(a => this.stringifyExpression(a)).join(', ')})`;
             // Inside stringifyExpression switch
             case 'MemberExpression':
-                // Priority 1: Use the flattened name if it exists (prevents e.e.DeptId)
-                if ((expr as any).name) {
-                    return (expr as any).name;
-                }
-                // Priority 2: Recursive stringification
-                return `${this.stringifyExpression(expr.object)}.${expr.property}`;
+                return expr.name || `${this.stringifyExpression(expr.object)}.${expr.property}`;
             default: return '';
         }
     }
