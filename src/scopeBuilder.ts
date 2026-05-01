@@ -377,10 +377,18 @@ export class ScopeBuilder {
 
     // ── Query ────────────────────────────────────────────────────────────────
 
-    private visitQuery(query: QueryStatement): void {
+    private visitQuery(query: QueryStatement | null): void {
+        if (!query) {
+            return;
+        }
+
         if (query.type === 'SetOperator') {
             this.visitQuery(query.left);
-            this.visitQuery(query.right);
+
+            if (query.right) {
+                this.visitQuery(query.right);
+            }
+
             return;
         }
 

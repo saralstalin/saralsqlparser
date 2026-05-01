@@ -232,7 +232,7 @@ export interface SetOperatorNode extends NodeLocation {
     type: 'SetOperator';
     operator: 'UNION' | 'UNION ALL' | 'EXCEPT' | 'INTERSECT';
     left: QueryStatement;  // Changed from Statement
-    right: QueryStatement; // Changed from Statement
+    right: QueryStatement | null; // Changed from Statement
 }
 
 export interface ColumnDefinition extends NodeLocation {
@@ -545,32 +545,71 @@ export class Parser {
     }
 
     private parseSetOperation(left: QueryStatement): SetOperatorNode {
-        const operatorToken = this.consume(); // UNION, EXCEPT, INTERSECT
-        let type = operatorToken.value.toUpperCase();
+        const operatorToken = this.consume(); // UNION / EXCEPT / INTERSECT
 
-        // Handle UNION ALL
-        if (type === 'UNION' && this.peek()?.value === 'ALL') {
-            this.consume();
-            type = 'UNION ALL';
+        let incomplete = false;
+        const errors: string[] = [];
+
+        let operator = operatorToken.value.toUpperCase();
+
+        // UNION ALL
+        if (
+            operator === 'UNION' &&
+            this.peekKeyword('ALL')
+        ) {
+            const allToken = this.consume();
+            operator = 'UNION ALL';
         }
 
-        const right = this.parseSelect();
+        let right: QueryStatement | null = null;
+        let endOffset = operatorToken.offset + operatorToken.value.length;
 
-        // The range starts where the left query starts and ends where the right query ends
+        // RHS (recoverable)
+        try {
+            const next = this.peek();
+
+            if (
+                next &&
+                next.type !== TokenType.Semicolon &&
+                next.value !== ')'
+            ) {
+                right = this.parseSelect();
+                endOffset = right.end;
+            } else {
+                incomplete = true;
+                errors.push(`Expected SELECT after ${operator}`);
+            }
+
+        } catch (e) {
+            incomplete = true;
+
+            errors.push(
+                e instanceof Error ? e.message : String(e)
+            );
+        }
+
         const node: SetOperatorNode = {
             type: 'SetOperator',
-            operator: type as 'UNION' | 'UNION ALL' | 'EXCEPT' | 'INTERSECT',
-            left: left,
-            right: right,
+            operator: operator as
+                | 'UNION'
+                | 'UNION ALL'
+                | 'EXCEPT'
+                | 'INTERSECT',
+            left,
+            right,
             start: left.start,
-            end: right.end
+            end: endOffset,
+            ...(incomplete ? { incomplete: true } : {}),
+            ...(errors.length ? { errors } : {})
         };
 
-        // Check for chained operations
-        const next = this.peek()?.value;
-        if (next && ['UNION', 'EXCEPT', 'INTERSECT'].includes(next)) {
-            // The recursive call will correctly wrap the current 'node' 
-            // into a new parent SetOperatorNode with updated offsets.
+        // chained operators
+        const next = this.peek()?.value?.toUpperCase();
+
+        if (
+            next &&
+            ['UNION', 'EXCEPT', 'INTERSECT'].includes(next)
+        ) {
             return this.parseSetOperation(node);
         }
 
@@ -959,6 +998,18 @@ export class Parser {
         };
     }
 
+    private isInsertRecoveryBoundary(token?: Token): boolean {
+        if (!token) {
+            return true;
+        }
+
+        return (
+            token.type === TokenType.Semicolon ||
+            token.type === TokenType.CloseParen ||
+            token.type === TokenType.Comma
+        );
+    }
+
     private parseInsert(): InsertNode {
         const startToken = this.matchKeyword('INSERT');
 
@@ -979,7 +1030,8 @@ export class Parser {
             if (
                 next &&
                 !this.isStructuralKeyword(next.value) &&
-                next.type !== TokenType.OpenParen
+                next.type !== TokenType.OpenParen &&
+                next.type !== TokenType.Semicolon
             ) {
                 tableNode = this.parseMultipartIdentifier();
                 endOffset = tableNode.end;
@@ -1004,7 +1056,6 @@ export class Parser {
             endOffset = openParen.offset + openParen.value.length;
 
             try {
-                // FIX: parse identifiers, not raw tokens
                 if (this.peek()?.type !== TokenType.CloseParen) {
                     columns = this.parseList(() =>
                         this.parseMultipartIdentifier().name
@@ -1013,8 +1064,13 @@ export class Parser {
                     columns = [];
                 }
 
-                const closeParen = this.match(TokenType.CloseParen);
-                endOffset = closeParen.offset + closeParen.value.length;
+                if (this.peek()?.type === TokenType.CloseParen) {
+                    const closeParen = this.consume();
+                    endOffset = closeParen.offset + closeParen.value.length;
+                } else {
+                    incomplete = true;
+                    errors.push('Expected ) after column list');
+                }
 
             } catch (e) {
                 columns = [];
@@ -1024,10 +1080,11 @@ export class Parser {
                     e instanceof Error ? e.message : String(e)
                 );
 
-                // recover to ')'
+                // recover safely
                 while (
                     this.peek() &&
                     this.peek()!.type !== TokenType.CloseParen &&
+                    this.peek()!.type !== TokenType.Semicolon &&
                     this.peek()!.value !== 'VALUES' &&
                     this.peek()!.value !== 'SELECT' &&
                     this.peek()!.value !== 'WITH'
@@ -1053,65 +1110,120 @@ export class Parser {
             const valuesToken = this.consume();
             endOffset = valuesToken.offset + valuesToken.value.length;
 
+            values = [];
+            let sawValuesRow = false;
+
             try {
-                values = this.parseList(() => {
-                    const openParen = this.match(TokenType.OpenParen);
-                    endOffset = openParen.offset + openParen.value.length;
+                while (this.peek()) {
+                    const token = this.peek()!;
 
-                    let rowValues: Expression[] = [];
-
-                    try {
-                        // allow VALUES ()
-                        if (this.peek()?.type !== TokenType.CloseParen) {
-                            rowValues = this.parseList(() =>
-                                this.parseExpression(Precedence.LOWEST)
-                            );
-                        }
-
-                        if (rowValues.length > 0) {
-                            endOffset = rowValues[rowValues.length - 1].end;
-                        }
-
-                    } catch (e) {
-                        rowValues = [];
+                    // hard stop at statement boundary
+                    if (token.type === TokenType.Semicolon) {
                         incomplete = true;
-
-                        errors.push(
-                            e instanceof Error ? e.message : String(e)
-                        );
-
-                        // recover to ')'
-                        while (
-                            this.peek() &&
-                            this.peek()!.type !== TokenType.CloseParen &&
-                            this.peek()!.type !== TokenType.Comma
-                        ) {
-                            this.consume();
-                        }
+                        break;
                     }
 
-                    try {
-                        const closeParen = this.match(TokenType.CloseParen);
+                    // comma between rows
+                    if (token.type === TokenType.Comma) {
+                        this.consume();
+                        incomplete = true;
+                        continue;
+                    }
+
+                    // must start row
+                    if (token.type !== TokenType.OpenParen) {
+                        incomplete = true;
+                        errors.push('Expected ( after VALUES');
+                        break;
+                    }
+
+                    const openParen = this.consume();
+                    endOffset = openParen.offset + openParen.value.length;
+                    sawValuesRow = true;
+
+                    const rowValues: Expression[] = [];
+
+                    // parse row manually
+                    while (this.peek()) {
+                        const t = this.peek()!;
+
+                        // row end / statement boundary
+                        if (
+                            t.type === TokenType.CloseParen ||
+                            t.type === TokenType.Semicolon
+                        ) {
+                            break;
+                        }
+
+                        // stray comma
+                        if (t.type === TokenType.Comma) {
+                            this.consume();
+                            incomplete = true;
+                            continue;
+                        }
+
+                        try {
+                            const expr = this.parseExpression(Precedence.LOWEST);
+                            rowValues.push(expr);
+                            endOffset = expr.end;
+                        } catch (e) {
+                            incomplete = true;
+
+                            errors.push(
+                                e instanceof Error ? e.message : String(e)
+                            );
+
+                            break;
+                        }
+
+                        // separator
+                        if (this.peek()?.type === TokenType.Comma) {
+                            this.consume();
+
+                            // trailing comma before ) or ;
+                            if (
+                                this.peek()?.type === TokenType.CloseParen ||
+                                this.peek()?.type === TokenType.Semicolon
+                            ) {
+                                incomplete = true;
+                            }
+
+                            continue;
+                        }
+
+                        break;
+                    }
+
+                    values.push(rowValues);
+
+                    // close row
+                    if (this.peek()?.type === TokenType.CloseParen) {
+                        const closeParen = this.consume();
                         endOffset =
                             closeParen.offset + closeParen.value.length;
-                    } catch (e) {
+                    } else {
                         incomplete = true;
-
-                        errors.push(
-                            e instanceof Error ? e.message : String(e)
-                        );
+                        errors.push('Expected ) after VALUES row');
+                        break;
                     }
+                }
 
-                    return rowValues;
-                });
+                // preserve semantic "VALUES clause exists"
+                if (!sawValuesRow) {
+                    values = [[]];
+                }
 
             } catch (e) {
-                values = [];
                 incomplete = true;
 
                 errors.push(
                     e instanceof Error ? e.message : String(e)
                 );
+
+                // preserve VALUES intent even on failure
+                if (!sawValuesRow) {
+                    values = [[]];
+                }
             }
         }
 
@@ -1568,6 +1680,11 @@ export class Parser {
                 break;
             }
 
+            // HARD stop at semicolon
+            if (token.type === TokenType.Semicolon) {
+                break;
+            }
+
             // stop at clause boundary
             if (
                 token.type === TokenType.Keyword &&
@@ -1576,7 +1693,7 @@ export class Parser {
                 break;
             }
 
-            // Parse one hint, preserving nested parens:
+            // Parse one hint preserving nested parens:
             // NOLOCK
             // INDEX(PK_Products)
             // FORCESEEK(IndexA(col1,col2))
@@ -1598,6 +1715,14 @@ export class Parser {
                 if (
                     depth === 0 &&
                     t.type === TokenType.Comma
+                ) {
+                    break;
+                }
+
+                // HARD stop at semicolon
+                if (
+                    depth === 0 &&
+                    t.type === TokenType.Semicolon
                 ) {
                     break;
                 }
@@ -1626,6 +1751,12 @@ export class Parser {
             // optional comma
             if (this.peek()?.type === TokenType.Comma) {
                 this.consume();
+                continue;
+            }
+
+            // stop cleanly if we hit semicolon
+            if (this.peek()?.type === TokenType.Semicolon) {
+                break;
             }
         }
 

@@ -149,10 +149,21 @@ export class DiagnosticEngine {
         }
     }
 
-    private visitQuery(query: QueryStatement, insideView: boolean): void {
+    private visitQuery(
+        query: QueryStatement | null,
+        insideView: boolean
+    ): void {
+        if (!query) {
+            return;
+        }
+
         if (query.type === 'SetOperator') {
             this.visitQuery(query.left, insideView);
-            this.visitQuery(query.right, insideView);
+
+            if (query.right) {
+                this.visitQuery(query.right, insideView);
+            }
+
             return;
         }
 
@@ -190,12 +201,18 @@ export class DiagnosticEngine {
     }
 
     private checkInsert(stmt: InsertNode): void {
-        if (stmt.incomplete) return;
+        const hasValuesClause =
+            stmt.values !== null;
 
-        if (stmt.values && stmt.values.length > 0 && !stmt.columns) {
+        if (
+            hasValuesClause &&
+            !stmt.columns
+        ) {
             this.emit({
                 code: DiagnosticCode.InsertWithoutColumnList,
-                message: `INSERT statement does not specify a column list — this will break if the table schema changes`,
+                message:
+                    `INSERT statement does not specify a column list — ` +
+                    `this will break if the table schema changes`,
                 severity: 'warning',
                 start: stmt.start,
                 end: stmt.start + 6,
