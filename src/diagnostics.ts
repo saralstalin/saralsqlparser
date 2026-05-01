@@ -10,21 +10,19 @@ import {
     IfNode,
     BlockNode,
     CreateNode,
-    SetNode,
     QueryStatement,
     NodeLocation,
     ColumnNode,
 } from './parser';
 
 import { ScopeBuilderResult } from './scopeBuilder';
-import { SymbolKind } from './scope';
+import { SymbolKind, Scope } from './scope';
 
 // ─── Core types ───────────────────────────────────────────────────────────────
 
 export type DiagnosticSeverity = 'error' | 'warning' | 'info';
 
 export interface Diagnostic {
-    /** Rule identifier — used to suppress specific rules */
     code: DiagnosticCode;
     message: string;
     severity: DiagnosticSeverity;
@@ -33,22 +31,18 @@ export interface Diagnostic {
 }
 
 export const enum DiagnosticCode {
-    // Variable rules
     UndeclaredVariable = 'VAR001',
     UnusedVariable = 'VAR002',
     UnusedParameter = 'VAR003',
     VariableUsedBeforeSet = 'VAR004',
 
-    // DML safety rules
     UpdateWithoutWhere = 'DML001',
     DeleteWithoutWhere = 'DML002',
     InsertWithoutColumnList = 'DML003',
 
-    // SELECT rules
     SelectStar = 'SEL001',
     SelectStarInView = 'SEL002',
 
-    // Duplicate declaration
     DuplicateVariable = 'DUP001',
     DuplicateCte = 'DUP002',
 }
@@ -61,26 +55,18 @@ export class DiagnosticEngine {
     run(program: Program, scopeResult: ScopeBuilderResult): Diagnostic[] {
         this.diagnostics = [];
 
-        // Scope-based rules (require symbol table)
         this.checkUndeclaredVariables(scopeResult);
         this.checkUnusedSymbols(scopeResult);
 
-        // AST-based rules (pure tree walk)
         for (const stmt of program.body) {
             this.visitStatement(stmt, false);
         }
 
-        // Sort by position for clean LSP output
         return this.diagnostics.sort((a, b) => a.start - b.start);
     }
 
-    // ── Scope-based rules ─────────────────────────────────────────────────────
+    // ── Scope rules ───────────────────────────────────────────────────────────
 
-    /**
-     * VAR001: Variable referenced but never declared.
-     * Excludes system variables (@@ROWCOUNT etc.) — those are filtered
-     * upstream in ScopeBuilder.recordReference.
-     */
     private checkUndeclaredVariables(result: ScopeBuilderResult): void {
         for (const ref of result.undeclared) {
             this.emit({
@@ -93,12 +79,6 @@ export class DiagnosticEngine {
         }
     }
 
-    /**
-     * VAR002: Variable declared but never referenced.
-     * VAR003: Procedure/function parameter declared but never used.
-     * Only fires on user variables (@x) and parameters, not on
-     * table symbols, aliases, CTEs, or procedures.
-     */
     private checkUnusedSymbols(result: ScopeBuilderResult): void {
         this.walkScopes(result.root, (scope) => {
             for (const symbol of scope.getOwnSymbols()) {
@@ -127,7 +107,7 @@ export class DiagnosticEngine {
         });
     }
 
-    // ── AST-based rules ───────────────────────────────────────────────────────
+    // ── Statement traversal ───────────────────────────────────────────────────
 
     private visitStatement(stmt: Statement, insideView: boolean): void {
         switch (stmt.type) {
@@ -166,9 +146,6 @@ export class DiagnosticEngine {
             case 'SetOperator':
                 this.visitQuery(stmt, insideView);
                 break;
-
-            default:
-                break;
         }
     }
 
@@ -178,69 +155,57 @@ export class DiagnosticEngine {
             this.visitQuery(query.right, insideView);
             return;
         }
+
         this.checkSelect(query, insideView);
     }
 
-    // ── DML001: UPDATE without WHERE ─────────────────────────────────────────
+    // ── DML rules ─────────────────────────────────────────────────────────────
 
-    /**
-     * DML001: UPDATE with no WHERE clause will affect every row in the table.
-     * Exempt: UPDATE with a FROM clause that filters via JOIN (common pattern),
-     * but still warn because the WHERE-less form is a common mistake.
-     */
     private checkUpdate(stmt: UpdateNode): void {
+        if (stmt.incomplete) return;
+
         if (!stmt.where) {
             this.emit({
                 code: DiagnosticCode.UpdateWithoutWhere,
                 message: `UPDATE statement has no WHERE clause — all rows will be affected`,
                 severity: 'warning',
                 start: stmt.start,
-                end: stmt.start + 6, // Underline just "UPDATE"
+                end: stmt.start + 6,
             });
         }
     }
 
-    // ── DML002: DELETE without WHERE ─────────────────────────────────────────
-
     private checkDelete(stmt: DeleteNode): void {
+        if (stmt.incomplete) return;
+
         if (!stmt.where) {
             this.emit({
                 code: DiagnosticCode.DeleteWithoutWhere,
                 message: `DELETE statement has no WHERE clause — all rows will be deleted`,
                 severity: 'warning',
                 start: stmt.start,
-                end: stmt.start + 6, // Underline just "DELETE"
+                end: stmt.start + 6,
             });
         }
     }
 
-    // ── DML003: INSERT without column list ───────────────────────────────────
-
-    /**
-     * DML003: INSERT INTO T VALUES (...) without specifying columns.
-     * Breaks silently when table schema changes.
-     */
     private checkInsert(stmt: InsertNode): void {
+        if (stmt.incomplete) return;
+
         if (stmt.values && stmt.values.length > 0 && !stmt.columns) {
             this.emit({
                 code: DiagnosticCode.InsertWithoutColumnList,
                 message: `INSERT statement does not specify a column list — this will break if the table schema changes`,
                 severity: 'warning',
                 start: stmt.start,
-                end: stmt.start + 6, // Underline just "INSERT"
+                end: stmt.start + 6,
             });
         }
     }
 
-    // ── SEL001/SEL002: SELECT * ──────────────────────────────────────────────
+    // ── SELECT rules ──────────────────────────────────────────────────────────
 
-    /**
-     * SEL001: SELECT * in a regular query — informational, not an error.
-     * SEL002: SELECT * inside a CREATE VIEW — error, will break the view
-     *         if the underlying table schema changes.
-     */
     private checkSelect(stmt: SelectNode, insideView: boolean): void {
-        // Check for SELECT * or SELECT table.*
         for (const col of stmt.columns) {
             if (this.isWildcard(col)) {
                 if (insideView) {
@@ -263,36 +228,57 @@ export class DiagnosticEngine {
             }
         }
 
-        // Recurse into subqueries in FROM
+        // FROM / JOIN recursion
         if (stmt.from) {
             for (const ref of stmt.from) {
-                const table = ref.table as any;
+                const table = ref.table;
+
                 if (table?.type === 'SubqueryExpression') {
                     this.visitQuery(table.query, insideView);
+                } else if (table) {
+                    this.visitExpression(table, insideView);
                 }
+
                 for (const join of ref.joins) {
-                    const jt = join.table as any;
+                    const jt = join.table;
+
                     if (jt?.type === 'SubqueryExpression') {
                         this.visitQuery(jt.query, insideView);
+                    } else if (jt) {
+                        this.visitExpression(jt, insideView);
+                    }
+
+                    if (join.on) {
+                        this.visitExpression(join.on, insideView);
                     }
                 }
             }
         }
 
-        // Recurse into subqueries in WHERE / HAVING expressions
-        if (stmt.where) this.visitExpression(stmt.where, insideView);
-        if (stmt.having) this.visitExpression(stmt.having, insideView);
+        if (stmt.where) {
+            this.visitExpression(stmt.where, insideView);
+        }
+
+        if (stmt.having) {
+            this.visitExpression(stmt.having, insideView);
+        }
+
+        if (stmt.groupBy) {
+            for (const expr of stmt.groupBy) {
+                this.visitExpression(expr, insideView);
+            }
+        }
+
+        if (stmt.orderBy) {
+            for (const order of stmt.orderBy) {
+                this.visitExpression(order.expression, insideView);
+            }
+        }
     }
 
-    // ── DUP001/DUP002: Duplicate declarations ────────────────────────────────
-
-    /**
-     * DUP001: DECLARE @x INT; DECLARE @x VARCHAR — same variable declared twice.
-     * DUP002: Two CTEs with the same name in a WITH clause.
-     */
+    // ── WITH / CREATE / IF / BLOCK ───────────────────────────────────────────
 
     private checkWith(stmt: WithNode): void {
-        // Check for duplicate CTE names
         const seen = new Map<string, NodeLocation>();
 
         for (const cte of stmt.ctes) {
@@ -310,34 +296,32 @@ export class DiagnosticEngine {
                 seen.set(key, cte);
             }
 
-            // IMPORTANT:
-            // walk the CTE query body
             this.visitQuery(cte.query, false);
         }
 
-        // walk statement after WITH
         this.visitStatement(stmt.body, false);
     }
-
-
 
     private checkCreate(stmt: CreateNode): void {
         const isView = stmt.objectType === 'VIEW';
 
-        if (stmt.body) {
-            if (Array.isArray(stmt.body)) {
-                for (const s of stmt.body) {
-                    this.visitStatement(s, isView);
-                }
-            } else {
-                this.visitStatement(stmt.body, isView);
+        if (!stmt.body) return;
+
+        if (Array.isArray(stmt.body)) {
+            for (const s of stmt.body) {
+                this.visitStatement(s, isView);
             }
+        } else {
+            this.visitStatement(stmt.body, isView);
         }
     }
 
     private checkIf(stmt: IfNode): void {
         this.visitBranch(stmt.thenBranch, false);
-        if (stmt.elseBranch) this.visitBranch(stmt.elseBranch, false);
+
+        if (stmt.elseBranch) {
+            this.visitBranch(stmt.elseBranch, false);
+        }
     }
 
     private checkBlock(stmt: BlockNode): void {
@@ -351,48 +335,105 @@ export class DiagnosticEngine {
         insideView: boolean
     ): void {
         if (Array.isArray(branch)) {
-            for (const s of branch) this.visitStatement(s, insideView);
+            for (const s of branch) {
+                this.visitStatement(s, insideView);
+            }
             return;
         }
+
         this.visitStatement(branch, insideView);
     }
 
-    // ── Expression subquery recursion ─────────────────────────────────────────
+    // ── Expression traversal ──────────────────────────────────────────────────
 
-    /**
-     * Recurse into subquery expressions found inside WHERE/HAVING/IN
-     * so that SELECT * inside a subquery is also caught.
-     */
-    private visitExpression(expr: Expression, insideView: boolean): void {
+    private visitExpression(
+        expr: Expression | null | undefined,
+        insideView: boolean
+    ): void {
         if (!expr) return;
+
         switch (expr.type) {
             case 'SubqueryExpression':
                 this.visitQuery(expr.query, insideView);
                 break;
+
             case 'InExpression':
-                if (expr.subquery) this.visitQuery(expr.subquery, insideView);
+                this.visitExpression(expr.left, insideView);
+
+                if (expr.list) {
+                    for (const item of expr.list) {
+                        this.visitExpression(item, insideView);
+                    }
+                }
+
+                if (expr.subquery) {
+                    this.visitQuery(expr.subquery, insideView);
+                }
                 break;
+
             case 'BinaryExpression':
                 this.visitExpression(expr.left, insideView);
                 this.visitExpression(expr.right, insideView);
                 break;
+
             case 'UnaryExpression':
                 this.visitExpression(expr.right, insideView);
                 break;
+
+            case 'GroupingExpression':
+                this.visitExpression(expr.expression, insideView);
+                break;
+
+            case 'BetweenExpression':
+                this.visitExpression(expr.left, insideView);
+                this.visitExpression(expr.lowerBound, insideView);
+                this.visitExpression(expr.upperBound, insideView);
+                break;
+
             case 'CaseExpression':
-                if (expr.input) this.visitExpression(expr.input, insideView);
+                if (expr.input) {
+                    this.visitExpression(expr.input, insideView);
+                }
+
                 for (const b of expr.branches) {
                     this.visitExpression(b.when, insideView);
                     this.visitExpression(b.then, insideView);
                 }
-                if (expr.elseBranch) this.visitExpression(expr.elseBranch, insideView);
+
+                if (expr.elseBranch) {
+                    this.visitExpression(expr.elseBranch, insideView);
+                }
                 break;
+
             case 'FunctionCall':
                 for (const arg of expr.args) {
                     this.visitExpression(arg, insideView);
                 }
                 break;
-            default:
+
+            case 'OverExpression':
+                this.visitExpression(expr.expression, insideView);
+
+                if (expr.window.partitionBy) {
+                    for (const p of expr.window.partitionBy) {
+                        this.visitExpression(p, insideView);
+                    }
+                }
+
+                if (expr.window.orderBy) {
+                    for (const o of expr.window.orderBy) {
+                        this.visitExpression(o.expression, insideView);
+                    }
+                }
+                break;
+
+            case 'MemberExpression':
+                this.visitExpression(expr.object, insideView);
+                break;
+
+            case 'Literal':
+            case 'Identifier':
+            case 'Variable':
                 break;
         }
     }
@@ -400,25 +441,28 @@ export class DiagnosticEngine {
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private isWildcard(col: ColumnNode): boolean {
-        // SELECT * — expression is an Operator with value '*'
         if ((col.expression as any).type === 'Operator') return true;
         if (col.name === '*') return true;
 
-        // Identifier with name '*'
         const expr = col.expression as any;
-        if (expr?.type === 'Identifier' && expr?.name === '*') return true;
 
-        // MemberExpression: table.*
-        if (expr?.type === 'MemberExpression' && expr?.property === '*') return true;
+        if (expr?.type === 'Identifier' && expr?.name === '*') {
+            return true;
+        }
+
+        if (expr?.type === 'MemberExpression' && expr?.property === '*') {
+            return true;
+        }
 
         return false;
     }
 
     private walkScopes(
-        scope: import('./scope').Scope,
-        visitor: (scope: import('./scope').Scope) => void
+        scope: Scope,
+        visitor: (scope: Scope) => void
     ): void {
         visitor(scope);
+
         for (const child of scope.getChildren()) {
             this.walkScopes(child, visitor);
         }
@@ -429,12 +473,8 @@ export class DiagnosticEngine {
     }
 }
 
-// ─── Convenience function ────────────────────────────────────────────────────
+// ─── Convenience ──────────────────────────────────────────────────────────────
 
-/**
- * Single entry point for the LSP layer.
- * Returns all diagnostics sorted by position.
- */
 export function diagnose(
     program: Program,
     scopeResult: ScopeBuilderResult

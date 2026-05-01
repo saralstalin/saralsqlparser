@@ -397,7 +397,7 @@ describe('T-SQL Parser - Advanced Expression & Structural Integrity', () => {
         // This proves Claude's point #1: We can now "walk" into the subquery
         const tableSource = stmt.from?.[0].table;
         expect(typeof tableSource).toBe('object');
-        if (typeof tableSource === 'object' && tableSource.type === 'SubqueryExpression') {
+        if (typeof tableSource === 'object' && tableSource!.type === 'SubqueryExpression') {
             expect(tableSource.query.type).toBe('SelectStatement');
         }
     });
