@@ -20,7 +20,7 @@ import {
     SubqueryExpression,
 } from './parser';
 
-import { Scope, Symbol, SymbolKind, SymbolReference } from './scope';
+import { Scope, Symbol, SymbolKind, SymbolReference, ReferenceKind } from './scope';
 
 // ─── Result ──────────────────────────────────────────────────────────────────
 
@@ -78,10 +78,10 @@ export class ScopeBuilder {
 
     // ── References ────────────────────────────────────────────────────────────
 
-    private recordReference(name: string, location: NodeLocation): void {
+    private recordReference(name: string, location: NodeLocation, kind: ReferenceKind = 'read'): void {
         if (name.startsWith('@@')) return;
 
-        const ref: SymbolReference = { location };
+        const ref: SymbolReference = { location, kind };
         const key = name.toLowerCase();
 
         if (!this.references.has(key)) {
@@ -96,6 +96,7 @@ export class ScopeBuilder {
         } else {
             this.undeclared.push(ref);
         }
+
     }
 
     // ── Statement visitor ─────────────────────────────────────────────────────
@@ -183,7 +184,7 @@ export class ScopeBuilder {
         // SET @x = 1
         // SET @@ROWCOUNT = 5
         if (stmt.variable.startsWith('@')) {
-            this.recordReference(stmt.variable, stmt);
+            this.recordReference(stmt.variable, stmt, 'write');
         }
 
         if (stmt.value) {

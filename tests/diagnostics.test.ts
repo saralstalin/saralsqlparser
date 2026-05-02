@@ -3,7 +3,7 @@ import { Parser } from '../src/parser';
 import { ScopeBuilder } from '../src/scopeBuilder';
 import { diagnose, DiagnosticCode, Diagnostic } from '../src/diagnostics';
 
-beforeAll(() => jest.spyOn(console, 'error').mockImplementation(() => {}));
+beforeAll(() => jest.spyOn(console, 'error').mockImplementation(() => { }));
 afterAll(() => jest.restoreAllMocks());
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -103,11 +103,37 @@ describe('VAR002 — unused variable', () => {
         expect(d[0].severity).toBe('warning');
     });
 
-    test('does NOT fire when variable is used in SET', () => {
+    test('fires when variable is only assigned but never read', () => {
         const d = only(
             `DECLARE @X INT; SET @X = 1;`,
             DiagnosticCode.UnusedVariable
         );
+
+        expect(d.length).toBe(1);
+    });
+
+    test('does NOT fire when variable is later read', () => {
+        const d = only(
+            `
+        DECLARE @X INT;
+        SET @X = 1;
+        SELECT @X;
+        `,
+            DiagnosticCode.UnusedVariable
+        );
+
+        expect(d.length).toBe(0);
+    });
+
+    test('does NOT fire when initialized and later PRINTED', () => {
+        const d = only(
+            `
+        DECLARE @X INT = 1;
+        PRINT @X;
+        `,
+            DiagnosticCode.UnusedVariable
+        );
+
         expect(d.length).toBe(0);
     });
 

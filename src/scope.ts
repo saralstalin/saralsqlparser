@@ -13,9 +13,12 @@ export enum SymbolKind {
     Type = 'Type'
 }
 
+export type ReferenceKind = 'read' | 'write';
+
 // A single usage site for a declared symbol
 export interface SymbolReference {
     location: NodeLocation;
+    kind: ReferenceKind;
 }
 
 export interface Symbol {

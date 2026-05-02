@@ -82,7 +82,12 @@ export class DiagnosticEngine {
     private checkUnusedSymbols(result: ScopeBuilderResult): void {
         this.walkScopes(result.root, (scope) => {
             for (const symbol of scope.getOwnSymbols()) {
-                if (symbol.references.length > 0) continue;
+
+                const readRefs = symbol.references.filter(
+                    r => r.kind === 'read'
+                );
+
+                if (readRefs.length > 0) continue;
 
                 if (symbol.kind === SymbolKind.Variable) {
                     this.emit({
