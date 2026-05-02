@@ -25,6 +25,11 @@ export interface Recoverable {
     errors?: string[];
 }
 
+export interface WildcardExpression extends NodeLocation {
+    type: 'WildcardExpression';
+    tablePrefix?: IdentifierNode; // Preserves location of the 'alias' in 'alias.*'
+}
+
 export interface BinaryExpression extends NodeLocation, Recoverable {
     type: 'BinaryExpression';
     left: Expression;
@@ -82,7 +87,8 @@ export type Expression =
     | GroupingExpression
     | SubqueryExpression
     | OverExpression
-    | MemberExpression;
+    | MemberExpression
+    | WildcardExpression;
 
 export interface JoinNode extends NodeLocation, Recoverable {
     type: JoinType;
@@ -464,10 +470,10 @@ export class Parser {
         };
     }
 
-    private parseMultipartIdentifier(): IdentifierNode {
+    private parseMultipartIdentifier(): Expression {
         const segments: Token[] = [];
 
-        // first segment must be identifier-like
+        // 1. First segment must be identifier-like
         const first = this.match(
             TokenType.Identifier,
             TokenType.Keyword,
@@ -475,26 +481,43 @@ export class Parser {
             TokenType.TempTable
         );
 
-        // reject structural keywords
+        // Reject structural keywords
         if (
             first.type === TokenType.Keyword &&
             this.isStructuralKeyword(first.value)
         ) {
-            throw new Error(
-                `Expected identifier but found ${first.value}`
-            );
+            throw new Error(`Expected identifier but found ${first.value}`);
         }
 
         segments.push(first);
 
-        // multipart:
-        // dbo.Table
-        // db.schema.table
-        // @t.col
+        // 2. Handle dots: dbo.Table, alias.*, etc.
         while (this.peek()?.type === TokenType.Dot) {
             const dot = this.consume();
 
             try {
+                // Check for wildcard after dot (e.g., alias.*)
+                if (this.peek()?.value === '*') {
+                    const star = this.consume();
+
+                    // Create a prefix node from existing segments
+                    const prefixParts = segments.map(t => t.value);
+                    const prefixNode: IdentifierNode = {
+                        type: 'Identifier',
+                        name: prefixParts.join('.'),
+                        parts: prefixParts,
+                        start: segments[0].offset,
+                        end: segments[segments.length - 1].offset + segments[segments.length - 1].value.length
+                    };
+
+                    return {
+                        type: 'WildcardExpression',
+                        tablePrefix: prefixNode,
+                        start: segments[0].offset,
+                        end: star.offset + star.value.length
+                    } as WildcardExpression;
+                }
+
                 const next = this.match(
                     TokenType.Identifier,
                     TokenType.Keyword,
@@ -502,24 +525,19 @@ export class Parser {
                     TokenType.TempTable
                 );
 
-                // reject structural keyword segment
+                // Reject structural keyword segment
                 if (
                     next.type === TokenType.Keyword &&
                     this.isStructuralKeyword(next.value)
                 ) {
-                    throw new Error(
-                        `Expected identifier after dot but found ${next.value}`
-                    );
+                    throw new Error(`Expected identifier after dot but found ${next.value}`);
                 }
 
                 segments.push(next);
 
-            } catch {
-                // recover:
-                // dbo.
-                // alias.
-                const name =
-                    segments.map(t => t.value).join('.') + '.';
+            } catch (e) {
+                // Error recovery for incomplete paths (e.g., "dbo.")
+                const name = segments.map(t => t.value).join('.') + '.';
 
                 return {
                     type: 'Identifier',
@@ -528,20 +546,21 @@ export class Parser {
                     start: segments[0].offset,
                     end: dot.offset + dot.value.length,
                     incomplete: true,
-                    errors: ['Expected identifier after dot']
-                };
+                    errors: [e instanceof Error ? e.message : 'Expected identifier after dot']
+                } as IdentifierNode;
             }
         }
 
         const last = segments[segments.length - 1];
 
+        // Standard multi-part identifier
         return {
             type: 'Identifier',
             name: segments.map(t => t.value).join('.'),
             parts: segments.map(t => t.value),
             start: segments[0].offset,
             end: last.offset + last.value.length
-        };
+        } as IdentifierNode;
     }
 
     private parseSetOperation(left: QueryStatement): SetOperatorNode {
@@ -1057,9 +1076,17 @@ export class Parser {
 
             try {
                 if (this.peek()?.type !== TokenType.CloseParen) {
-                    columns = this.parseList(() =>
-                        this.parseMultipartIdentifier().name
-                    );
+                    columns = this.parseList(() => {
+                        const node = this.parseMultipartIdentifier();
+
+                        // Validation: Column lists in INSERT cannot contain wildcards
+                        if (node.type === 'Identifier') {
+                            return node.name;
+                        } else {
+                            // If it's a WildcardExpression, it's a syntax error in this context
+                            throw new Error("Wildcards are not allowed in an INSERT column list");
+                        }
+                    });
                 } else {
                     columns = [];
                 }
@@ -1325,9 +1352,22 @@ export class Parser {
                             };
                         }
 
-                        const columnNode = this.parseMultipartIdentifier();
-                        columnName = columnNode.name;
-                        endOffset = columnNode.end;
+                        const columnExpr = this.parseMultipartIdentifier();
+
+                        // Check if the result is a valid identifier for an assignment target
+                        if (columnExpr.type === 'Identifier') {
+                            columnName = columnExpr.name;
+                            endOffset = columnExpr.end;
+                        } else {
+                            // Handle WildcardExpression as an error in this context
+                            incomplete = true;
+                            errors.push('Wildcards are not allowed as update assignment targets');
+
+                            return {
+                                column: '',
+                                value: null
+                            };
+                        }
 
                     } catch (e) {
                         incomplete = true;
@@ -1569,9 +1609,15 @@ export class Parser {
             if (source && aliasToken?.value === 'AS') {
                 this.consume();
 
-                const aliasNode = this.parseMultipartIdentifier();
-                alias = aliasNode.name;
-                endOffset = aliasNode.end;
+                const aliasExpr = this.parseMultipartIdentifier();
+
+                // Validation: Aliases must be identifiers, not wildcards
+                if (aliasExpr.type === 'Identifier') {
+                    alias = aliasExpr.name;
+                    endOffset = aliasExpr.end;
+                } else {
+                    throw new Error("Wildcards cannot be used as table aliases");
+                }
             }
             else if (
                 source &&
@@ -1582,9 +1628,15 @@ export class Parser {
                 ) &&
                 !this.isStructuralKeyword(aliasToken.value)
             ) {
-                const aliasNode = this.parseMultipartIdentifier();
-                alias = aliasNode.name;
-                endOffset = aliasNode.end;
+                const aliasExpr = this.parseMultipartIdentifier();
+
+                // Validation: Implicit aliases must also be identifiers
+                if (aliasExpr.type === 'Identifier') {
+                    alias = aliasExpr.name;
+                    endOffset = aliasExpr.end;
+                } else {
+                    throw new Error("Wildcards cannot be used as table aliases");
+                }
             }
 
         } catch (e) {
@@ -1975,9 +2027,15 @@ export class Parser {
                     const asToken = this.consume();
                     endOffset = asToken.offset + asToken.value.length;
 
-                    const aliasNode = this.parseMultipartIdentifier();
-                    alias = aliasNode.name;
-                    endOffset = aliasNode.end;
+                    const aliasExpr = this.parseMultipartIdentifier();
+
+                    // Validation: JOIN aliases must be identifiers, not wildcards
+                    if (aliasExpr.type === 'Identifier') {
+                        alias = aliasExpr.name;
+                        endOffset = aliasExpr.end;
+                    } else {
+                        throw new Error("Wildcards cannot be used as JOIN aliases");
+                    }
                 }
                 else {
                     const potentialAlias = this.peek();
@@ -1990,9 +2048,15 @@ export class Parser {
                         ) &&
                         !this.isStructuralKeyword(potentialAlias.value)
                     ) {
-                        const aliasNode = this.parseMultipartIdentifier();
-                        alias = aliasNode.name;
-                        endOffset = aliasNode.end;
+                        const aliasExpr = this.parseMultipartIdentifier();
+
+                        // Validation: Implicit JOIN aliases must be identifiers
+                        if (aliasExpr.type === 'Identifier') {
+                            alias = aliasExpr.name;
+                            endOffset = aliasExpr.end;
+                        } else {
+                            throw new Error("Wildcards cannot be used as JOIN aliases");
+                        }
                     }
                 }
 
@@ -2403,8 +2467,15 @@ export class Parser {
             const startToken = this.peek()!;
 
             // 1. Column Name (Using the resolver for [bracketed] names)
-            const nameNode = this.parseMultipartIdentifier();
-            const name = nameNode.name;
+            const nameExpr = this.parseMultipartIdentifier();
+            let name = '';
+
+            // Validation: Table column definitions must be identifiers, not wildcards
+            if (nameExpr.type === 'Identifier') {
+                name = nameExpr.name;
+            } else {
+                throw new Error("Wildcards are not allowed as column names in table definitions");
+            }
 
             // 2. Data Type (e.g., nvarchar(max), decimal(18, 2))
             let dataType = this.consume().value;
@@ -2448,7 +2519,6 @@ export class Parser {
                 }
             }
 
-
             return {
                 name,
                 dataType,
@@ -2469,8 +2539,15 @@ export class Parser {
 
         let objectType = CREATE_OBJECT_TYPES[rawType];
 
-        const nameNode = this.parseMultipartIdentifier();
-        const name = nameNode.name;
+        const nameExpr = this.parseMultipartIdentifier();
+        let name = '';
+
+        // Validation: Created objects must have identifiers, not wildcards
+        if (nameExpr.type === 'Identifier') {
+            name = nameExpr.name;
+        } else {
+            throw new Error(`Wildcards are not allowed as names for ${objectType} definitions`);
+        }
 
 
         let columns: ColumnDefinition[] | undefined = undefined;
@@ -2552,7 +2629,7 @@ export class Parser {
         }
 
         // ... endOffset calculation and return (same as your previous version)
-        let endOffset = nameNode.end;
+        let endOffset = nameExpr.end;
         if (Array.isArray(body) && body.length > 0) {
             endOffset = body[body.length - 1].end;
         } else if (body && !Array.isArray(body)) {
@@ -2584,6 +2661,7 @@ export class Parser {
         const startOffset = this.peek()?.offset ?? 0;
 
         // 1. Handle T-SQL Assignment Style (Alias = Expression)
+        // 1. Handle T-SQL Assignment Style (Alias = Expression)
         if (this.peek()?.type === TokenType.Identifier && this.peek(1)?.value === '=') {
             alias = this.consume().value;
             this.consume(); // consume '='
@@ -2597,7 +2675,14 @@ export class Parser {
 
             if (nextVal === 'AS') {
                 this.consume();
-                alias = this.parseMultipartIdentifier().name;
+                const aliasExpr = this.parseMultipartIdentifier();
+
+                // Validation: Column aliases must be identifiers, not wildcards
+                if (aliasExpr.type === 'Identifier') {
+                    alias = aliasExpr.name;
+                } else {
+                    throw new Error("Wildcards cannot be used as column aliases");
+                }
             } else if (
                 nextToken &&
                 nextToken.type !== TokenType.Semicolon &&
@@ -2605,7 +2690,14 @@ export class Parser {
                 (nextToken.type === TokenType.Identifier || nextToken.type === TokenType.Keyword) &&
                 !STOP_KEYWORDS.includes(nextVal!)
             ) {
-                alias = this.parseMultipartIdentifier().name;
+                const aliasExpr = this.parseMultipartIdentifier();
+
+                // Validation: Implicit aliases must also be identifiers
+                if (aliasExpr.type === 'Identifier') {
+                    alias = aliasExpr.name;
+                } else {
+                    throw new Error("Wildcards cannot be used as column aliases");
+                }
             }
         }
 
@@ -2861,7 +2953,11 @@ export class Parser {
             case TokenType.Operator:
                 // 1. Support for SELECT * (Wildcard)
                 if (value === '*') {
-                    return { type: 'Identifier', name: '*', parts: ['*'], start, end: start + value.length };
+                    return {
+                        type: 'WildcardExpression',
+                        start,
+                        end: start + 1
+                    } as WildcardExpression;
                 }
 
                 // 2. Rule #5: Fold negative numbers into a single Literal
@@ -2914,6 +3010,11 @@ export class Parser {
                     this.consume(); // (
                     const args: Expression[] = [];
 
+                    // Ensure idNode is a valid identifier for a function name
+                    if (idNode.type !== 'Identifier') {
+                        throw new Error("Wildcards cannot be used as function names");
+                    }
+
                     if (this.peek()?.value === 'SELECT') {
                         const subquery = this.parseSelect() as QueryStatement;
                         const closeParen = this.match(TokenType.CloseParen);
@@ -2932,13 +3033,13 @@ export class Parser {
 
                     let result: Expression = {
                         type: 'FunctionCall',
-                        name: idNode.name,
+                        name: idNode.name, // Now safe to access[cite: 3]
                         args,
                         start: idNode.start,
                         end: closeParen.offset + closeParen.value.length
                     };
 
-                    // Window Function Support
+                    // Window Function Support[cite: 3]
                     if (this.peek()?.value === 'OVER') {
                         result = this.parseOverClause(result);
                     }
@@ -3143,8 +3244,13 @@ export class Parser {
 
         while (true) {
             // Use the multipart identifier for the CTE name
-            const nameNode = this.parseMultipartIdentifier();
+            const nameExpr = this.parseMultipartIdentifier();
             let columns: string[] | undefined = undefined;
+
+            // Validation: CTE names must be identifiers, not wildcards
+            if (nameExpr.type !== 'Identifier') {
+                throw new Error("Wildcards are not allowed as CTE names");
+            }
 
             // Optional column list: WITH MyCTE (Col1, Col2)
             if (this.peek()?.type === TokenType.OpenParen) {
@@ -3161,10 +3267,10 @@ export class Parser {
             const closeParen = this.match(TokenType.CloseParen);
 
             ctes.push({
-                name: nameNode.name,
+                name: nameExpr.name, // Safe to access after type check
                 columns,
                 query,
-                start: nameNode.start,
+                start: nameExpr.start,
                 end: closeParen.offset + closeParen.value.length
             });
 
@@ -3306,6 +3412,15 @@ export class Parser {
         }
 
         switch (expr.type) {
+            // Add this case to handle the new WildcardExpression type
+            case 'WildcardExpression': {
+                if (expr.tablePrefix) {
+                    // Recursively stringify the prefix (IdentifierNode)
+                    return `${this.stringifyExpression(expr.tablePrefix)}.*`;
+                }
+                return '*';
+            }
+
             case 'Literal':
                 return expr.variant === 'string'
                     ? `'${expr.value}'`
@@ -3324,8 +3439,6 @@ export class Parser {
                 const left = this.stringifyExpression(expr.left);
                 const right = this.stringifyExpression(expr.right);
 
-                // Recoverable AST support:
-                // "Id =" instead of "Id = <missing>" if incomplete
                 if (!expr.right && expr.incomplete) {
                     return `${left} ${expr.operator}`;
                 }

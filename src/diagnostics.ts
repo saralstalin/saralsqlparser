@@ -375,6 +375,8 @@ export class DiagnosticEngine {
         if (!expr) return;
 
         switch (expr.type) {
+            case 'WildcardExpression':
+                break;
             case 'SubqueryExpression':
                 this.visitQuery(expr.query, insideView);
                 break;
@@ -463,16 +465,21 @@ export class DiagnosticEngine {
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private isWildcard(col: ColumnNode): boolean {
-        if ((col.expression as any).type === 'Operator') return true;
-        if (col.name === '*') return true;
+        const expr = col.expression;
 
-        const expr = col.expression as any;
-
-        if (expr?.type === 'Identifier' && expr?.name === '*') {
+        // Check for the new dedicated node type (e.g., SELECT *)
+        if (expr.type === 'WildcardExpression') {
             return true;
         }
 
-        if (expr?.type === 'MemberExpression' && expr?.property === '*') {
+        // Check for table wildcards (e.g., SELECT u.*)
+        // If your parser still produces MemberExpression for these, keep this check:
+        if (expr.type === 'MemberExpression' && expr.property === '*') {
+            return true;
+        }
+
+        // Fallback for legacy Identifier nodes with '*' name
+        if (expr.type === 'Identifier' && expr.name === '*') {
             return true;
         }
 
