@@ -1,40 +1,22 @@
-# SaralSQL T-SQL Parser
+# @saralsql/tsql-parser
 
 High-fidelity TypeScript parser for Microsoft SQL Server T-SQL.
 
-Built for **language tooling**, **static analysis**, **linting**, and **developer productivity** — not just parsing valid SQL.
+Built for **language tooling**, **static analysis**, **linting**, and **IDE integrations** — not just parsing valid SQL.
 
 ---
 
-## Overview
+## Why This Exists
 
-SaralSQL T-SQL Parser is a strongly typed parser designed specifically for **SQL Server T-SQL**.
-
-Unlike generic SQL parsers, it understands procedural SQL and SQL Server constructs commonly found in real enterprise codebases:
-
-* Variables (`@Id`)
-* Temp tables (`#Temp`)
-* CTEs (`WITH`)
-* Stored procedures
-* Functions
-* Views
-* Table types
-* IF / ELSE logic
-* BEGIN / END blocks
-* Table hints
-* Complex joins
-* Window functions
-* Mixed DDL + DML batches
+Generic SQL parsers treat T-SQL as one of many dialects. SaralSQL is built around T-SQL specifically — variables, temp tables, stored procedures, table variables, CTEs, mixed DDL/DML batches, and the procedural constructs that appear in real enterprise codebases.
 
 It is designed as a foundation for:
 
-* Parsing
-* Semantic analysis
-* Symbol resolution
-* Diagnostics
-* Refactoring tools
-* Autocomplete engines
-* Static performance analysis
+- LSP servers and IDE extensions
+- Static analysis and linting
+- Refactoring tools
+- Autocomplete engines
+- Query quality analysis
 
 ---
 
@@ -46,112 +28,158 @@ npm install @saralsql/tsql-parser
 
 ---
 
-## Clean Public API
+## Quick Start
 
-Everything is exported from a single entry point:
+Everything is exported from a single entry point. No internal module references.
 
 ```ts
-import {
-  Lexer,
-  Parser,
-  ScopeBuilder,
-  Scope,
-  diagnose
-} from "@saralsql/tsql-parser";
+import { Lexer, Parser, ScopeBuilder, diagnose } from "@saralsql/tsql-parser";
 ```
 
-No deep imports.
-No internal module references.
-Stable public API.
+---
+
+## Usage
+
+### Parse SQL
+
+```ts
+import { Lexer, Parser } from "@saralsql/tsql-parser";
+
+const sql = `
+  SELECT Id, Name
+  FROM Users
+  WHERE Id = @Id
+`;
+
+const ast = new Parser(new Lexer(sql)).parse().ast;
+```
 
 ---
 
-## Features
+### Build Scope
 
-### Lexer
+```ts
+import { Lexer, Parser, ScopeBuilder } from "@saralsql/tsql-parser";
 
-Robust tokenizer with support for:
+const sql = `
+  DECLARE @Id INT;
+  SET @Id = 10;
 
-✅ SQL keyword normalization
-✅ Variables (`@BatchId`)
-✅ Temp tables (`#Orders`)
-✅ Bracket identifiers (`[Order Details]`)
-✅ Composite operators (`>=`, `<=`, `!=`, `<>`)
-✅ Strings (`'Text'`, `N'Unicode'`)
-✅ Decimal numbers
-✅ Comments
-✅ Exact source offsets for LSP/editor tooling
+  SELECT Id, Name
+  FROM Users
+  WHERE Id = @Id;
+`;
+
+const ast = new Parser(new Lexer(sql)).parse().ast;
+const scopeResult = new ScopeBuilder().build(ast);
+
+// Scope tree — query aliases, CTE names, variables, parameters
+console.log(scopeResult.root);
+
+// References that could not be resolved
+console.log(scopeResult.undeclared);
+
+// Duplicate declarations within the same scope
+console.log(scopeResult.duplicates);
+```
+
+`ScopeBuilderResult` contains:
+
+| Field | Type | Description |
+|---|---|---|
+| `root` | `Scope` | Root of the scope tree |
+| `references` | `Map<string, SymbolReference[]>` | All recorded references by name |
+| `undeclared` | `SymbolReference[]` | References with no matching declaration |
+| `duplicates` | `DuplicateDeclaration[]` | Re-declarations within the same scope |
 
 ---
 
-### Parser
+### Run Diagnostics
 
-Produces a strongly typed AST.
+```ts
+import { Lexer, Parser, ScopeBuilder, diagnose } from "@saralsql/tsql-parser";
 
-Supports:
+const sql = `
+  UPDATE Users
+  SET Name = 'John';
+`;
 
-#### Query statements
+const ast = new Parser(new Lexer(sql)).parse().ast;
+const scopeResult = new ScopeBuilder().build(ast);
+const diagnostics = diagnose(ast, scopeResult);
 
-* SELECT
-* DISTINCT
-* TOP
-* WHERE
-* GROUP BY
-* HAVING
-* ORDER BY
-* JOINs
-* Subqueries
-* UNION
-* UNION ALL
-* EXCEPT
-* INTERSECT
-* CTEs
+console.log(diagnostics);
+// [
+//   {
+//     code: "DML001",
+//     message: "UPDATE statement has no WHERE clause — all rows will be affected",
+//     severity: "warning",
+//     start: 3,
+//     end: 9
+//   }
+// ]
+```
 
-#### DML
+Each `Diagnostic` contains:
 
-* INSERT
-* UPDATE
-* DELETE
-* DECLARE
-* SET
-* PRINT
+| Field | Type | Description |
+|---|---|---|
+| `code` | `DiagnosticCode` | Machine-readable rule identifier |
+| `message` | `string` | Human-readable description |
+| `severity` | `'error' \| 'warning' \| 'info'` | Severity level |
+| `start` | `number` | Byte offset of the problem start |
+| `end` | `number` | Byte offset of the problem end |
 
-#### DDL
+---
 
-* CREATE TABLE
-* CREATE VIEW
-* CREATE PROCEDURE
-* CREATE FUNCTION
-* CREATE TYPE
+## Diagnostic Rules
 
-#### Procedural SQL
+### Variable rules
 
-* IF / ELSE
-* BEGIN / END blocks
-* Parameters
-* Variable declarations
-* Table variables
+| Code | Severity | Description |
+|---|---|---|
+| `VAR001` | error | Variable used but never declared |
+| `VAR002` | warning | Variable declared but never read |
+| `VAR003` | warning | Parameter declared but never read |
 
-#### Expressions
+> **Note:** `SET @x = value` is tracked as a **write**, not a read. A variable that is only written is still flagged as unused.
 
-* Binary operators
-* Unary operators
-* CASE expressions
-* BETWEEN
-* IN
-* EXISTS
-* Function calls
-* Window functions (`OVER`)
-* Member expressions (`dbo.Table.Column`)
-* Wildcards (`*`, `alias.*`)
+### DML safety
+
+| Code | Severity | Description |
+|---|---|---|
+| `DML001` | warning | `UPDATE` without `WHERE` clause |
+| `DML002` | warning | `DELETE` without `WHERE` clause |
+| `DML003` | warning | `INSERT` without a column list |
+
+### Query quality
+
+| Code | Severity | Description |
+|---|---|---|
+| `SEL001` | warning | `SELECT *` — list columns explicitly |
+| `SEL002` | error | `SELECT *` inside a `VIEW` — breaks on schema changes |
+
+### Duplicate declarations
+
+| Code | Severity | Description |
+|---|---|---|
+| `DUP001` | error | Variable re-declared in the same scope |
+| `DUP002` | error | CTE name defined more than once in the same `WITH` clause |
 
 ---
 
 ## Fault-Tolerant Parsing
 
-SaralSQL is built for tooling, so parsing does **not** stop on incomplete SQL.
+SaralSQL does not stop parsing on syntax errors. Every statement and expression node carries a `Recoverable` interface:
 
-Example:
+```ts
+interface Recoverable {
+  incomplete?: boolean;
+  errors?: string[];
+}
+```
+
+Incomplete SQL still produces a usable AST:
 
 ```sql
 SELECT *
@@ -159,263 +187,154 @@ FROM Customers
 WHERE
 ```
 
-Still produces a recoverable AST node:
-
 ```ts
 {
   type: "SelectStatement",
   incomplete: true,
-  errors: ["Expected expression after WHERE"]
+  where: null
 }
 ```
 
-This makes it suitable for:
-
-* IDE tooling
-* Live diagnostics
-* Autocomplete
-* Refactoring
-* Parsing partially typed SQL
+This makes SaralSQL suitable for IDE use where SQL is partially typed at any given moment.
 
 ---
 
-## Parse SQL
+## Scope Model
+
+The scope tree models T-SQL scoping semantics precisely:
+
+- **Batch scope** — variables declared at the top level
+- **Procedure / Function scope** — parameters and local variables isolated per routine
+- **SELECT scope** — table aliases and column aliases are query-local
+- **WITH scope** — CTE names visible only within the `WITH` statement body
+- **Block scope** — `BEGIN / END` boundaries
+
+T-SQL variables declared inside `IF / ELSE` branches are **batch-scoped**, not block-scoped. SaralSQL models this correctly — a `DECLARE` inside an `IF` is visible after the block ends.
+
+### Cursor resolution
+
+Given a byte offset, find the innermost scope at that position:
 
 ```ts
-import {
-  Lexer,
-  Parser
-} from "@saralsql/tsql-parser";
-
-const sql = `
-SELECT Id, Name
-FROM Users
-WHERE Id = @Id
-`;
-
-const parser = new Parser(
-  new Lexer(sql)
-);
-
-const result = parser.parse();
-
-console.log(result.ast);
+const scope = scopeResult.root.findInnermost(offset);
+const visible = scope.getVisibleSymbols();
 ```
 
----
+`getVisibleSymbols()` walks the parent chain and returns all symbols visible at that position — suitable for autocomplete.
 
-## Build Scope
-
-Semantic scope analysis:
+### Symbol kinds
 
 ```ts
-import {
-  Lexer,
-  Parser,
-  ScopeBuilder
-} from "@saralsql/tsql-parser";
-
-const sql = `
-DECLARE @Id INT;
-SET @Id = 10;
-
-SELECT *
-FROM Users
-WHERE Id = @Id;
-`;
-
-const ast =
-  new Parser(new Lexer(sql))
-    .parse()
-    .ast;
-
-const scope =
-  new ScopeBuilder()
-    .build(ast);
-
-console.log(scope);
+enum SymbolKind {
+  Variable   // DECLARE @x INT
+  Parameter  // @param in CREATE PROCEDURE
+  Table      // CREATE TABLE or DECLARE @t TABLE
+  Alias      // FROM Users u
+  CTE        // WITH cte AS (...)
+  Procedure  // CREATE PROCEDURE
+  Function   // CREATE FUNCTION
+  Type       // CREATE TYPE
+  TempTable  // #temp tables
+  Column
+}
 ```
 
-Tracks:
+### Read / write tracking
 
-* Variables
-* Parameters
-* Tables
-* Aliases
-* CTEs
-* Functions
-* Types
-* Read/write references
+Every symbol reference is classified:
 
-Detects:
-
-* Undeclared symbols
-* Duplicate declarations
-* Unused variables
-* Unused parameters
-
----
-
-## Semantic Intelligence
-
-SaralSQL goes beyond parsing and symbol declaration tracking.
-
-Every symbol reference is classified as:
-
-* **Read**
-* **Write**
-
-Example:
+```ts
+type ReferenceKind = 'read' | 'write';
+```
 
 ```sql
-DECLARE @Count INT;
-SET @Count = 10;
-
-SELECT @Count;
+DECLARE @Count INT;   -- declaration
+SET @Count = 10;      -- write reference
+SELECT @Count;        -- read reference
 ```
 
-Semantic model:
+This enables:
 
-* `DECLARE @Count` → declaration
-* `SET @Count = 10` → write reference
-* `SELECT @Count` → read reference
+- Detecting write-only variables (declared and assigned, never read)
+- Dead write detection
+- Data-flow analysis foundations
 
-This enables advanced static analysis:
+---
 
-* Variable used before assignment
-* Dead writes
-* Unused assignments
-* Read/write lineage
-* Mutation tracking
-* Control-flow aware analysis
-* Data-flow diagnostics
-* Semantic refactoring
+## T-SQL Coverage
 
-Foundation:
+### Query statements
+`SELECT`, `DISTINCT`, `TOP`, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `UNION`, `UNION ALL`, `EXCEPT`, `INTERSECT`, subqueries, CTEs
 
-```text
-Declaration → Reference → Read / Write → Data Flow → Intelligence
-```
+### Joins
+`INNER JOIN`, `LEFT / RIGHT / FULL OUTER JOIN`, `CROSS JOIN`, `CROSS APPLY`, `OUTER APPLY`
 
-This architecture is designed for **compiler-grade SQL tooling**, not just syntax parsing.
+### DML
+`INSERT` (multi-column, multi-row), `UPDATE`, `DELETE` (including alias-based join deletes)
 
+### DDL
+`CREATE TABLE`, `CREATE VIEW`, `CREATE PROCEDURE`, `CREATE FUNCTION`, `CREATE TYPE`
 
-## Diagnostics
+### Procedural SQL
+`IF / ELSE`, `BEGIN / END`, `DECLARE` (scalar and table variables), `SET`, `PRINT`
 
-Built-in diagnostics engine:
+### Expressions
+Binary and unary operators, `CASE`, `BETWEEN`, `IN`, `EXISTS`, `LIKE`, `IS NULL`, function calls, window functions (`OVER / PARTITION BY`), member expressions (`dbo.Table.Column`), wildcards (`*`, `alias.*`), `COLLATE`
+
+---
+
+## Node Locations
+
+Every AST node carries precise byte offsets:
 
 ```ts
-import { diagnose } from "@saralsql/tsql-parser";
-
-const sql = `
-UPDATE Users
-SET Name = 'John';
-`;
-
-const diagnostics = diagnose(sql);
-
-console.log(diagnostics);
+interface NodeLocation {
+  start: number;
+  end: number;
+}
 ```
 
-Example output:
+Offsets are always relative to the original source string — including across multiline scripts and Windows-style `\r\n` line endings. This makes it safe to use them for editor range highlighting, hover tooltips, and go-to-definition without any translation layer.
 
-```ts
-[
-  {
-    code: "DML001",
-    message: "UPDATE statement has no WHERE clause — all rows will be affected",
-    severity: "warning"
-  }
-]
+---
+
+## Architecture
+
+```
+Lexer → Parser → ScopeBuilder → DiagnosticEngine
 ```
 
----
+Each layer is independent and can be used without the next:
 
-## Diagnostic Rules
-
-### Variables
-
-| Code   | Description              |
-| ------ | ------------------------ |
-| VAR001 | Undeclared variable      |
-| VAR002 | Unused variable          |
-| VAR003 | Unused parameter         |
-| VAR004 | Variable used before set |
-
-### DML Safety
-
-| Code   | Description                |
-| ------ | -------------------------- |
-| DML001 | UPDATE without WHERE       |
-| DML002 | DELETE without WHERE       |
-| DML003 | INSERT without column list |
-
-### Query Quality
-
-| Code   | Description      |
-| ------ | ---------------- |
-| SEL001 | SELECT * warning |
-| SEL002 | SELECT * in VIEW |
-
-### Duplicate Declarations
-
-| Code   | Description        |
-| ------ | ------------------ |
-| DUP001 | Duplicate variable |
-| DUP002 | Duplicate CTE      |
-
----
-
-## Design Principles
-
-### High fidelity
-
-Every AST node preserves:
-
-```ts
-start
-end
-```
-
-Precise source offsets make editor tooling reliable.
-
----
-
-### Recover gracefully
-
-Broken SQL should still produce meaningful AST.
-
----
-
-### Strong typing
-
-Full TypeScript AST model.
-
----
-
-### Semantic first
-
-Pipeline:
-
-```text
-Lexer → Parser → Scope → Diagnostics → Intelligence
-```
+- **Lexer** — tokenises raw T-SQL, normalises keywords to uppercase, tracks exact byte offsets
+- **Parser** — transforms tokens into a strongly-typed AST; pure function, no side effects
+- **ScopeBuilder** — post-parse AST walk; builds the scope tree and reference map
+- **DiagnosticEngine** — walks AST and scope tree; emits structured diagnostics
 
 ---
 
 ## Roadmap
 
-Planned capabilities:
+### Near term (`0.2.0`)
+- `WHILE` loop, `RETURN`, `EXEC / EXECUTE`
+- `TRY / CATCH`, `THROW`, `RAISERROR`
+- `OFFSET / FETCH` pagination
+- `OUTPUT` clause on `INSERT / UPDATE / DELETE`
+- `GO` batch boundaries modelled in AST
+- Reference resolution — link identifier uses to declaration sites
 
-* Alias resolution
-* Column lineage
-* Table lineage
-* Semantic autocomplete
-* Missing index suggestions
-* Static performance analysis
-* Query smell detection
-* Execution plan hints
-* Auto-fixes / code actions
+### Medium term
+- `MERGE` statement
+- `ALTER` and `DROP` DDL
+- Column alias resolution
+- Derived table column inference
+
+### Long term
+- Column and table lineage
+- Semantic autocomplete
+- Missing index suggestions
+- Query smell detection
+- Auto-fixes and code actions
 
 ---
 
