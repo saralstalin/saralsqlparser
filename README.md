@@ -256,6 +256,50 @@ Detects:
 
 ---
 
+## Semantic Intelligence
+
+SaralSQL goes beyond parsing and symbol declaration tracking.
+
+Every symbol reference is classified as:
+
+* **Read**
+* **Write**
+
+Example:
+
+```sql
+DECLARE @Count INT;
+SET @Count = 10;
+
+SELECT @Count;
+```
+
+Semantic model:
+
+* `DECLARE @Count` → declaration
+* `SET @Count = 10` → write reference
+* `SELECT @Count` → read reference
+
+This enables advanced static analysis:
+
+* Variable used before assignment
+* Dead writes
+* Unused assignments
+* Read/write lineage
+* Mutation tracking
+* Control-flow aware analysis
+* Data-flow diagnostics
+* Semantic refactoring
+
+Foundation:
+
+```text
+Declaration → Reference → Read / Write → Data Flow → Intelligence
+```
+
+This architecture is designed for **compiler-grade SQL tooling**, not just syntax parsing.
+
+
 ## Diagnostics
 
 Built-in diagnostics engine:
