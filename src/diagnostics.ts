@@ -15,7 +15,7 @@ import {
     ColumnNode,
 } from './parser';
 
-import { ScopeBuilderResult } from './scopeBuilder';
+import { ScopeBuilderResult, DuplicateDeclaration } from './scopeBuilder';
 import { SymbolKind, Scope } from './scope';
 
 // ─── Core types ───────────────────────────────────────────────────────────────
@@ -57,6 +57,7 @@ export class DiagnosticEngine {
 
         this.checkUndeclaredVariables(scopeResult);
         this.checkUnusedSymbols(scopeResult);
+        this.checkDuplicateDeclarations(scopeResult);
 
         for (const stmt of program.body) {
             this.visitStatement(stmt, false);
@@ -75,6 +76,19 @@ export class DiagnosticEngine {
                 severity: 'error',
                 start: ref.location.start,
                 end: ref.location.end,
+            });
+        }
+    }
+
+    private checkDuplicateDeclarations(result: ScopeBuilderResult): void {
+        for (const dup of result.duplicates) {
+            if (dup.scopeName === 'with') continue; // WITH clause duplicates are already reported by the CheckWith method
+            this.emit({
+                code: DiagnosticCode.DuplicateVariable,
+                message: `'${dup.name}' is already declared in this scope`,
+                severity: 'error',
+                start: dup.duplicate.start,
+                end: dup.duplicate.end,
             });
         }
     }

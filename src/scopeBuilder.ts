@@ -22,13 +22,25 @@ import {
 
 import { Scope, Symbol, SymbolKind, SymbolReference, ReferenceKind } from './scope';
 
+
+export interface DuplicateDeclaration {
+    name: string;
+    original: NodeLocation;
+    duplicate: NodeLocation;
+    scopeName?: string;
+}
+
+
 // ─── Result ──────────────────────────────────────────────────────────────────
 
 export interface ScopeBuilderResult {
     root: Scope;
     references: Map<string, SymbolReference[]>;
     undeclared: SymbolReference[];
+    duplicates: DuplicateDeclaration[];
 }
+
+
 
 // ─── Builder ─────────────────────────────────────────────────────────────────
 
@@ -38,12 +50,14 @@ export class ScopeBuilder {
 
     private references = new Map<string, SymbolReference[]>();
     private undeclared: SymbolReference[] = [];
+    private duplicates: DuplicateDeclaration[] = [];
 
     // ── Public ────────────────────────────────────────────────────────────────
 
     build(program: Program): ScopeBuilderResult {
         this.references = new Map();
         this.undeclared = [];
+        this.duplicates = [];
 
         this.root = new Scope(0, Number.MAX_SAFE_INTEGER, null, 'root');
         this.current = this.root;
@@ -56,6 +70,7 @@ export class ScopeBuilder {
             root: this.root,
             references: this.references,
             undeclared: this.undeclared,
+            duplicates: this.duplicates,
         };
     }
 
@@ -73,7 +88,15 @@ export class ScopeBuilder {
     }
 
     private declare(symbol: Symbol): void {
-        this.current.define(symbol);
+        const existing = this.current.define(symbol);
+        if (existing) {
+            this.duplicates.push({
+                name: symbol.name,
+                original: existing.location,
+                duplicate: symbol.location,
+                scopeName: this.current.name,
+            });
+        }
     }
 
     // ── References ────────────────────────────────────────────────────────────
@@ -184,7 +207,14 @@ export class ScopeBuilder {
         // SET @x = 1
         // SET @@ROWCOUNT = 5
         if (stmt.variable.startsWith('@')) {
-            this.recordReference(stmt.variable, stmt, 'write');
+            this.recordReference(
+                stmt.variable,
+                {
+                    start: stmt.variableStart,
+                    end: stmt.variableEnd
+                },
+                'write'
+            );
         }
 
         if (stmt.value) {
@@ -225,20 +255,28 @@ export class ScopeBuilder {
             for (const table of stmt.from) {
                 this.visitTableReference(table);
             }
-        }
 
-        if (stmt.assignments) {
-            for (const assignment of stmt.assignments) {
-                this.visitExpression(assignment.value);
+            if (stmt.assignments) {
+                for (const assignment of stmt.assignments) {
+                    this.visitExpression(assignment.value);
+                }
             }
-        }
 
-        if (stmt.where) {
-            this.visitExpression(stmt.where);
-        }
+            if (stmt.where) {
+                this.visitExpression(stmt.where);
+            }
 
-        if (stmt.from) {
             this.popScope();
+        } else {
+            if (stmt.assignments) {
+                for (const assignment of stmt.assignments) {
+                    this.visitExpression(assignment.value);
+                }
+            }
+
+            if (stmt.where) {
+                this.visitExpression(stmt.where);
+            }
         }
     }
 
@@ -253,14 +291,16 @@ export class ScopeBuilder {
             for (const table of stmt.from) {
                 this.visitTableReference(table);
             }
-        }
 
-        if (stmt.where) {
-            this.visitExpression(stmt.where);
-        }
+            if (stmt.where) {
+                this.visitExpression(stmt.where);
+            }
 
-        if (stmt.from) {
             this.popScope();
+        } else {
+            if (stmt.where) {
+                this.visitExpression(stmt.where);
+            }
         }
     }
 

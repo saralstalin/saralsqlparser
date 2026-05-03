@@ -226,6 +226,8 @@ export interface DeclareNode extends NodeLocation, Recoverable {
 export interface SetNode extends NodeLocation, Recoverable {
     type: 'SetStatement';
     variable: string; // e.g., "@ID"
+    variableStart: number;
+    variableEnd: number;
     value: Expression | null;    // e.g., "10" or "@ID + 1"
 }
 
@@ -2366,6 +2368,9 @@ export class Parser {
         let endOffset = startToken.offset + startToken.value.length;
 
         let variable = '';
+        let variableStart = startToken.offset + startToken.value.length;
+        let variableEnd = variableStart;
+
         let value: Expression | null = null;
 
         const first = this.peek();
@@ -2373,8 +2378,13 @@ export class Parser {
         // CASE 1: variable assignment
         if (first?.type === TokenType.Variable) {
             const variableToken = this.consume();
+
             variable = variableToken.value;
-            endOffset = variableToken.offset + variableToken.value.length;
+            variableStart = variableToken.offset;
+            variableEnd =
+                variableToken.offset + variableToken.value.length;
+
+            endOffset = variableEnd;
 
             // expect =
             if (this.peek()?.value === '=') {
@@ -2402,6 +2412,7 @@ export class Parser {
 
                 } catch (e) {
                     incomplete = true;
+
                     errors.push(
                         e instanceof Error ? e.message : String(e)
                     );
@@ -2411,9 +2422,12 @@ export class Parser {
                 errors.push('Expected =');
             }
         }
+
         // CASE 2: session option
         else {
             const parts: string[] = [];
+            let firstToken: Token | null = null;
+            let lastToken: Token | null = null;
 
             while (this.peek()) {
                 const token = this.peek()!;
@@ -2433,11 +2447,25 @@ export class Parser {
                     break;
                 }
 
-                parts.push(this.consume().value);
+                const consumed = this.consume();
+
+                if (!firstToken) {
+                    firstToken = consumed;
+                }
+
+                lastToken = consumed;
+                parts.push(consumed.value);
+
                 endOffset = this.lastConsumedEnd();
             }
 
             variable = parts.join(' ').trim();
+
+            if (firstToken && lastToken) {
+                variableStart = firstToken.offset;
+                variableEnd =
+                    lastToken.offset + lastToken.value.length;
+            }
 
             if (!variable) {
                 incomplete = true;
@@ -2448,6 +2476,8 @@ export class Parser {
         return {
             type: 'SetStatement',
             variable,
+            variableStart,
+            variableEnd,
             value,
             start: startToken.offset,
             end: endOffset,
@@ -3058,7 +3088,7 @@ export class Parser {
                         query,
                         start,
                         end: closeParen.offset + closeParen.value.length
-                    } as any;
+                    } satisfies SubqueryExpression;
                 } else {
                     const inner = this.parseExpression(Precedence.LOWEST);
                     const closeParen = this.match(TokenType.CloseParen);
@@ -3067,7 +3097,7 @@ export class Parser {
                         expression: inner,
                         start,
                         end: closeParen.offset + closeParen.value.length
-                    } as any;
+                    } satisfies GroupingExpression;
                 }
 
             default:
@@ -3084,15 +3114,17 @@ export class Parser {
         const subquery = this.parseSelect() as QueryStatement;
         const closeParen = this.match(TokenType.CloseParen);
 
+        const subqueryExpr: SubqueryExpression = {
+            type: 'SubqueryExpression',
+            query: subquery,
+            start: subquery.start,
+            end: closeParen.offset + closeParen.value.length
+        };
+
         return {
             type: 'UnaryExpression',
             operator: 'EXISTS',
-            right: {
-                type: 'SubqueryExpression',
-                query: subquery,
-                start: subquery.start,
-                end: closeParen.offset + closeParen.value.length
-            } as any,
+            right: subqueryExpr,
             start: existsToken.offset,
             end: closeParen.offset + closeParen.value.length
         };
