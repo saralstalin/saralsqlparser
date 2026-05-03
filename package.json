@@ -1,16 +1,37 @@
 {
-  "name": "saralsqlparser",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "name": "@saralsql/tsql-parser",
+  "version": "0.1.0",
+  "description": "High-fidelity T-SQL parser for LSP tooling",
+  "main": "dist/src/index.js",
+  "exports": {
+    ".": {
+      "import": "./dist/src/index.js",
+      "types": "./dist/src/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "test": "jest --runInBand",
-    "test:watch": "jest --watch"
+    "test:watch": "jest --watch",
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "tsql",
+    "sql-server",
+    "parser",
+    "ast",
+    "lsp"
+  ],
+  "author": "Saral Simon Stalin",
+  "license": "MIT",
   "type": "commonjs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/saralstalin/saralsqlparser.git"
+  },
   "devDependencies": {
     "@types/jest": "^30.0.0",
     "@types/node": "^25.6.0",
