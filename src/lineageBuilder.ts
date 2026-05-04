@@ -126,7 +126,7 @@ export class LineageBuilder {
                 columns: new Map(
                     cols.map(c => [c.name.toLowerCase(), c])
                 ),
-                wildcardSources: []
+                wildcardSources: this.collectWildcardSources(cols)
             });
         }
 
@@ -204,7 +204,7 @@ export class LineageBuilder {
                 columns: new Map(
                     cols.map(c => [c.name.toLowerCase(), c])
                 ),
-                wildcardSources: []
+                wildcardSources: this.collectWildcardSources(cols)
             });
 
             return;
@@ -517,4 +517,31 @@ export class LineageBuilder {
 
         return edges;
     }
+
+    private collectWildcardSources(
+        cols: DerivedColumn[]
+    ): LineageNode[] {
+        const seen = new Set<string>();
+        const nodes: LineageNode[] = [];
+
+        for (const col of cols) {
+            for (const input of col.inputs) {
+                if (!input.wildcard) {
+                    continue;
+                }
+
+                const key = input.name.toLowerCase();
+
+                if (seen.has(key)) {
+                    continue;
+                }
+
+                seen.add(key);
+                nodes.push(input);
+            }
+        }
+
+        return nodes;
+    }
 }
+
