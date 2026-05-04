@@ -31,3 +31,12 @@ export type { Symbol, SymbolKind, SymbolReference, ReferenceKind } from './scope
 
 export { diagnose } from './diagnostics';
 export type { Diagnostic, DiagnosticSeverity, DiagnosticCode } from './diagnostics';
+
+export { LineageBuilder } from './lineageBuilder';
+export type {
+    LineageNode,
+    DerivedColumn,
+    VirtualSource,
+    LineageEdge,
+    LineageResult
+} from './lineage';
