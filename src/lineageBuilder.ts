@@ -430,15 +430,41 @@ export class LineageBuilder {
     private resolveWildcard(
         expr: WildcardExpression
     ): LineageNode[] {
+        // SELECT *
+        // Expand to every visible source in current FROM scope.
         if (!expr.tablePrefix) {
-            return [{
-                kind: 'column',
-                name: '*',
-                wildcard: true,
-                location: expr
-            }];
+            const seen = new Set<string>();
+            const nodes: LineageNode[] = [];
+
+            const current = this.currentSources();
+
+            for (const source of current.values()) {
+                for (const wildcard of source.wildcardSources) {
+                    const key = wildcard.name.toLowerCase();
+
+                    if (seen.has(key)) {
+                        continue;
+                    }
+
+                    seen.add(key);
+                    nodes.push(wildcard);
+                }
+            }
+
+            // fallback (SELECT * with malformed / missing FROM)
+            if (nodes.length === 0) {
+                return [{
+                    kind: 'column',
+                    name: '*',
+                    wildcard: true,
+                    location: expr
+                }];
+            }
+
+            return nodes;
         }
 
+        // SELECT alias.*
         const source =
             this.resolveSource(expr.tablePrefix.name);
 
