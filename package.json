@@ -31,7 +31,7 @@
   "type": "commonjs",
   "repository": {
     "type": "git",
-    "url": "https://github.com/saralstalin/saralsqlparser.git"
+    "url": "git+https://github.com/saralstalin/saralsqlparser.git"
   },
   "devDependencies": {
     "@types/jest": "^30.0.0",
