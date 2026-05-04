@@ -1,5 +1,5 @@
 import { Lexer, TokenType } from '../src/lexer';
-import { Parser, SelectNode, InsertNode, UpdateNode, DeleteNode, DeclareNode, SetNode, CreateNode, SetOperatorNode, IfNode, BlockNode, WithNode, OverExpression, TableReference } from '../src/parser';
+import { Parser, SelectNode, InsertNode, UpdateNode, DeleteNode, DeclareNode, SetNode, CreateNode, SetOperatorNode, IfNode, BlockNode, WithNode, OverExpression, TableReference, MemberExpression, IdentifierNode } from '../src/parser';
 
 
 
@@ -136,8 +136,13 @@ describe('T-SQL Parser', () => {
         const sql = `SELECT [First Name] FROM [Sales].[Customer Orders]`;
         const ast = parse(sql);
         const stmt = ast.body[0] as SelectNode;
-        expect(stmt.columns[0].name).toBe('[First Name]');
-        expect(getTableName(stmt.from?.[0].table)).toBe('[Sales].[Customer Orders]');
+
+        expect(stmt.columns[0].sourceName).toBe('[First Name]');
+        expect(stmt.columns[0].outputName).toBe('[First Name]');
+
+        expect(
+            getTableName(stmt.from?.[0].table)
+        ).toBe('[Sales].[Customer Orders]');
     });
 
     // 5. WHERE with complex operators
@@ -189,7 +194,7 @@ describe('T-SQL Parser', () => {
         const sql = `SELECT ID = UserID FROM Users`;
         const col = (parse(sql).body[0] as SelectNode).columns[0];
         expect(col.alias).toBe('ID');
-        expect(col.name).toBe('UserID');
+        expect(col.sourceName).toBe('UserID');
     });
 
     // 12. Alias: AS Style
@@ -211,10 +216,16 @@ describe('T-SQL Parser', () => {
         const sql = `SELECT u.Name FROM Users u`;
         const col = (parse(sql).body[0] as SelectNode).columns[0];
 
-        // Update this line to check the name property of the Expression node
-        expect((col.tablePrefix as any).name).toBe('u');
+        expect(col.alias).toBeUndefined();
+        expect(col.sourceName).toBe('Name');
+        expect(col.outputName).toBe('Name');
 
-        expect(col.name).toBe('Name');
+        expect(col.expression.type).toBe('Identifier');
+
+        const expr = col.expression as IdentifierNode;
+
+        expect(expr.name).toBe('u.Name');
+        expect(expr.parts).toEqual(['u', 'Name']);
     });
 
     // 15. Table Alias Boundary (WHERE check)
@@ -825,5 +836,5 @@ describe('T-SQL Parser - Deep Expression Validation', () => {
         });
     });
 
-    
+
 });

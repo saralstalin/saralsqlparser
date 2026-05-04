@@ -107,9 +107,10 @@ export interface PrintNode extends NodeLocation, Recoverable {
 export interface ColumnNode extends NodeLocation {
     type: 'Column';
     expression: Expression;
-    tablePrefix?: Expression;
-    name: string;
+    sourceName?: string;
     alias?: string;
+    outputName: string;
+    wildcard?: boolean;
 }
 
 export interface IfNode extends NodeLocation {
@@ -2682,22 +2683,35 @@ export class Parser {
     }
 
     private parseColumn(): ColumnNode {
-        let alias: string | undefined = undefined;
+        let alias: string | undefined;
         let expression: Expression;
-        let tablePrefix: Expression | undefined = undefined; // Expression type
-        let name: string = '';
 
-        const STOP_KEYWORDS = ['FROM', 'WHERE', 'GROUP', 'ORDER', 'HAVING', 'UNION', 'ALL', 'EXCEPT', 'INTERSECT', 'JOIN', 'ON', 'APPLY', 'INTO', 'OUTER', 'VALUES'];
+        let sourceName: string | undefined;
+        let outputName = '';
+        let wildcard = false;
+
+        const STOP_KEYWORDS = [
+            'FROM', 'WHERE', 'GROUP', 'ORDER', 'HAVING',
+            'UNION', 'ALL', 'EXCEPT', 'INTERSECT',
+            'JOIN', 'ON', 'APPLY', 'INTO',
+            'OUTER', 'VALUES'
+        ];
+
         const startOffset = this.peek()?.offset ?? 0;
 
-        // 1. Handle T-SQL Assignment Style (Alias = Expression)
-        // 1. Handle T-SQL Assignment Style (Alias = Expression)
-        if (this.peek()?.type === TokenType.Identifier && this.peek(1)?.value === '=') {
+        // 1) T-SQL assignment style:
+        // Alias = Expression
+        if (
+            this.peek()?.type === TokenType.Identifier &&
+            this.peek(1)?.value === '='
+        ) {
             alias = this.consume().value;
-            this.consume(); // consume '='
+            this.consume(); // =
             expression = this.parseExpression();
-        } else {
-            // 2. Handle Standard Style (Expression [AS] Alias)
+        }
+        else {
+            // 2) Standard style:
+            // Expression [AS] Alias
             expression = this.parseExpression();
 
             const nextToken = this.peek();
@@ -2705,73 +2719,77 @@ export class Parser {
 
             if (nextVal === 'AS') {
                 this.consume();
+
                 const aliasExpr = this.parseMultipartIdentifier();
 
-                // Validation: Column aliases must be identifiers, not wildcards
                 if (aliasExpr.type === 'Identifier') {
                     alias = aliasExpr.name;
                 } else {
-                    throw new Error("Wildcards cannot be used as column aliases");
+                    throw new Error(
+                        'Wildcards cannot be used as column aliases'
+                    );
                 }
-            } else if (
+            }
+            else if (
                 nextToken &&
                 nextToken.type !== TokenType.Semicolon &&
                 nextToken.type !== TokenType.Comma &&
-                (nextToken.type === TokenType.Identifier || nextToken.type === TokenType.Keyword) &&
+                (
+                    nextToken.type === TokenType.Identifier ||
+                    nextToken.type === TokenType.Keyword
+                ) &&
                 !STOP_KEYWORDS.includes(nextVal!)
             ) {
                 const aliasExpr = this.parseMultipartIdentifier();
 
-                // Validation: Implicit aliases must also be identifiers
                 if (aliasExpr.type === 'Identifier') {
                     alias = aliasExpr.name;
                 } else {
-                    throw new Error("Wildcards cannot be used as column aliases");
+                    throw new Error(
+                        'Wildcards cannot be used as column aliases'
+                    );
                 }
             }
         }
 
-        // 3. Extraction logic for name and tablePrefix (Node-based)
-        // Inside parseColumn -> Extraction logic for Identifier
-        if (expression.type === 'Identifier') {
-            if (expression.parts && expression.parts.length > 1) {
-                name = expression.parts[expression.parts.length - 1];
+        // 3) derive sourceName / wildcard
+        switch (expression.type) {
+            case 'Identifier':
+                sourceName =
+                    expression.parts.length > 0
+                        ? expression.parts[expression.parts.length - 1]
+                        : expression.name;
+                break;
 
-                // Everything before the last part
-                const prefixParts = expression.parts.slice(0, -1);
+            case 'MemberExpression':
+                sourceName = expression.property;
+                break;
 
-                tablePrefix = {
-                    type: 'Identifier',
-                    // FIX: Populate the name property here!
-                    name: prefixParts.join('.'),
-                    parts: prefixParts,
-                    start: expression.start,
-                    end: expression.end
-                } as IdentifierNode;
-            } else {
-                name = expression.name;
-            }
-        } else if (expression.type === 'MemberExpression') {
-            name = expression.property;
-            // Directly use the object node as the prefix (e.g. 'u' in 'u.Name')
-            tablePrefix = expression.object;
-        } else if (expression.type === 'FunctionCall') {
-            name = expression.name;
-        } else if (expression.type === 'Literal') {
-            name = String(expression.value);
-        } else {
-            name = 'expression';
+            case 'WildcardExpression':
+                wildcard = true;
+                sourceName = '*';
+                break;
         }
 
-        // 4. Calculate end offset
-        let endOffset = alias ? this.lastConsumedEnd() : expression.end;
+        // 4) final output name
+        outputName =
+            alias ??
+            sourceName ??
+            'expression';
+
+        // 5) end offset
+        const endOffset =
+            alias
+                ? this.lastConsumedEnd()
+                : expression.end;
 
         return {
             type: 'Column',
             expression,
-            name,
-            tablePrefix,
+            sourceName,
             alias,
+            outputName,
+            wildcard,
             start: startOffset,
             end: endOffset
         };
