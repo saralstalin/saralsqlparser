@@ -20,7 +20,7 @@ describe('LineageBuilder', () => {
         expect(
             edgeStrings(`SELECT Id FROM Orders`)
         ).toEqual([
-            'Id -> Id'
+            'Orders.Id -> Id'
         ]);
     });
 
@@ -195,7 +195,7 @@ describe('LineageBuilder', () => {
                 SELECT B.Id FROM B
             `)
         ).toEqual([
-            'Id -> Id'
+            'Orders.Id -> Id'
         ]);
     });
 
@@ -299,7 +299,7 @@ describe('LineageBuilder', () => {
             FROM X
         `)
         ).toEqual([
-            'Amount -> Total'
+            'Orders.Amount -> Total'
         ]);
     });
 
@@ -318,7 +318,7 @@ describe('LineageBuilder', () => {
             FROM B
         `)
         ).toEqual([
-            'Id -> FinalId'
+            'Orders.Id -> FinalId'
         ]);
     });
 
@@ -360,7 +360,7 @@ describe('LineageBuilder', () => {
             FROM Orders
         `)
         ).toEqual([
-            'Amount -> FinalAmount'
+            'Orders.Amount -> FinalAmount'
         ]);
     });
 
@@ -489,7 +489,7 @@ describe('LineageBuilder', () => {
             FROM X
         `)
         ).toEqual([
-            'Amount -> Amount'
+            'Orders.Amount -> Amount'
         ]);
     });
 
@@ -504,7 +504,7 @@ describe('LineageBuilder', () => {
             FROM X
         `)
         ).toEqual([
-            'Amount -> Total'
+            'Orders.Amount -> Total'
         ]);
     });
 
@@ -523,7 +523,7 @@ describe('LineageBuilder', () => {
             FROM B
         `)
         ).toEqual([
-            'Id -> FinalId'
+            'Orders.Id -> FinalId'
         ]);
     });
 
@@ -537,7 +537,7 @@ describe('LineageBuilder', () => {
             ) s
         `)
         ).toEqual([
-            'Amount -> Total'
+            'Orders.Amount -> Total'
         ]);
     });
 
@@ -578,8 +578,202 @@ describe('LineageBuilder', () => {
             FROM Orders
         `)
         ).toEqual([
-            'Amount -> FinalAmount'
+            'Orders.Amount -> FinalAmount'
         ]);
+    });
+
+    describe('OUTPUT lineage', () => {
+        test('insert output inserted column', () => {
+            expect(
+                edgeStrings(`
+                INSERT INTO Users(Name)
+                OUTPUT inserted.Id
+                VALUES ('John')
+            `)
+            ).toEqual([
+                'INSERTED.Id -> Id'
+            ]);
+        });
+
+        test('insert output inserted wildcard', () => {
+            expect(
+                edgeStrings(`
+                INSERT INTO Users(Name)
+                OUTPUT inserted.*
+                VALUES ('John')
+            `)
+            ).toEqual([
+                'INSERTED.* -> *'
+            ]);
+        });
+
+        test('insert output into table', () => {
+            expect(
+                edgeStrings(`
+                INSERT INTO Users(Name)
+                OUTPUT inserted.Id
+                INTO Audit(Id)
+                VALUES ('John')
+            `)
+            ).toEqual([
+                'INSERTED.Id -> Audit.Id'
+            ]);
+        });
+
+        test('insert output multiple columns into table', () => {
+            expect(
+                edgeStrings(`
+                INSERT INTO Users(Name)
+                OUTPUT inserted.Id, inserted.Name
+                INTO Audit(Id, Name)
+                VALUES ('John')
+            `)
+            ).toEqual([
+                'INSERTED.Id -> Audit.Id',
+                'INSERTED.Name -> Audit.Name'
+            ]);
+        });
+
+        test('update output inserted and deleted', () => {
+            expect(
+                edgeStrings(`
+                UPDATE Users
+                SET Name = 'John'
+                OUTPUT inserted.Name, deleted.Name
+                WHERE Id = 1
+            `)
+            ).toEqual([
+                'DELETED.Name -> Name',
+                'INSERTED.Name -> Name'
+            ]);
+        });
+
+        test('update output into table', () => {
+            expect(
+                edgeStrings(`
+                UPDATE Users
+                SET Name = 'John'
+                OUTPUT inserted.Id, deleted.Name
+                INTO Audit(Id, OldName)
+                WHERE Id = 1
+            `)
+            ).toEqual([
+                'DELETED.Name -> Audit.OldName',
+                'INSERTED.Id -> Audit.Id'
+            ]);
+        });
+
+        test('delete output deleted column', () => {
+            expect(
+                edgeStrings(`
+                DELETE FROM Users
+                OUTPUT deleted.Id
+                WHERE Id = 1
+            `)
+            ).toEqual([
+                'DELETED.Id -> Id'
+            ]);
+        });
+
+        test('delete output deleted wildcard', () => {
+            expect(
+                edgeStrings(`
+                DELETE FROM Users
+                OUTPUT deleted.*
+                WHERE Id = 1
+            `)
+            ).toEqual([
+                'DELETED.* -> *'
+            ]);
+        });
+
+        test('delete output into table', () => {
+            expect(
+                edgeStrings(`
+                DELETE FROM Users
+                OUTPUT deleted.Id, deleted.Name
+                INTO Audit(Id, Name)
+                WHERE Id = 1
+            `)
+            ).toEqual([
+                'DELETED.Id -> Audit.Id',
+                'DELETED.Name -> Audit.Name'
+            ]);
+        });
+
+        test('output alias maps target name', () => {
+            expect(
+                edgeStrings(`
+                INSERT INTO Users(Name)
+                OUTPUT inserted.Id AS NewId
+                VALUES ('John')
+            `)
+            ).toEqual([
+                'INSERTED.Id -> NewId'
+            ]);
+        });
+
+        test('output assignment alias maps target name', () => {
+            expect(
+                edgeStrings(`
+                INSERT INTO Users(Name)
+                OUTPUT NewId = inserted.Id
+                VALUES ('John')
+            `)
+            ).toEqual([
+                'INSERTED.Id -> NewId'
+            ]);
+        });
+
+        test('output expression lineage', () => {
+            expect(
+                edgeStrings(`
+                UPDATE Users
+                SET Name = 'John'
+                OUTPUT inserted.Id + deleted.Id AS Delta
+                WHERE Id = 1
+            `)
+            ).toEqual([
+                'DELETED.Id -> Delta',
+                'INSERTED.Id -> Delta'
+            ]);
+        });
+
+        test('output function lineage', () => {
+            expect(
+                edgeStrings(`
+                INSERT INTO Users(Name)
+                OUTPUT LEN(inserted.Name) AS NameLen
+                VALUES ('John')
+            `)
+            ).toEqual([
+                'INSERTED.Name -> NameLen'
+            ]);
+        });
+
+        test('output literal expression', () => {
+            expect(
+                edgeStrings(`
+                INSERT INTO Users(Name)
+                OUTPUT 1 AS Flag
+                VALUES ('John')
+            `)
+            ).toEqual([]);
+        });
+
+        test('insert select plus output emits both lineages', () => {
+            expect(
+                edgeStrings(`
+                INSERT INTO Audit(Id)
+                OUTPUT inserted.Id INTO Log(Id)
+                SELECT Id
+                FROM Users
+            `)
+            ).toEqual([
+                'INSERTED.Id -> Log.Id',
+                'Users.Id -> Audit.Id'
+            ]);
+        });
     });
 
 });

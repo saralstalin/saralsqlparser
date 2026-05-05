@@ -9,6 +9,9 @@ import {
     WithNode,
     InsertNode,
     UpdateNode,
+    DeleteNode,
+    OutputColumnNode,
+    OutputClauseNode,
     TableReference,
     JoinNode,
 } from './parser';
@@ -97,7 +100,124 @@ export class LineageBuilder {
             case 'UpdateStatement':
                 this.visitUpdate(stmt);
                 break;
+            case 'DeleteStatement':
+                this.visitDelete(stmt);
+                break;
         }
+    }
+
+    private defineOutputPseudoSources(): void {
+        for (const name of ['INSERTED', 'DELETED']) {
+            this.defineSource(name, {
+                name,
+                columns: new Map(),
+                wildcardSources: [
+                    {
+                        kind: 'column',
+                        name: `${name}.*`,
+                        source: name,
+                        wildcard: true
+                    }
+                ]
+            });
+        }
+    }
+
+    private visitOutputClause(
+        output: OutputClauseNode | undefined
+    ): void {
+        if (!output) {
+            return;
+        }
+
+        for (let i = 0; i < output.columns.length; i++) {
+            const out = output.columns[i];
+
+            let inputs: LineageNode[];
+
+            // ------------------------------------------------------------
+            // 1. Special-case wildcard: inserted.* / deleted.*
+            // ------------------------------------------------------------
+            if (out.sourceTable && out.column.wildcard) {
+                inputs = [{
+                    kind: 'column',
+                    name: `${out.sourceTable}.*`,
+                    source: out.sourceTable,
+                    wildcard: true,
+                    location: out.column
+                }];
+            } else {
+                // ------------------------------------------------------------
+                // 2. Resolve expression normally
+                // ------------------------------------------------------------
+                inputs = this.resolveExpression(
+                    out.column.expression
+                );
+
+                // ------------------------------------------------------------
+                // 3. Restore INSERTED / DELETED prefix
+                // ------------------------------------------------------------
+                if (out.sourceTable) {
+                    const source = out.sourceTable; // narrowed to non-null
+
+                    inputs = inputs.map(node => {
+                        if (
+                            node.kind === 'column' &&
+                            !node.source
+                        ) {
+                            return {
+                                ...node,
+                                name: `${source}.${node.name}`,
+                                source
+                            } as LineageNode;
+                        }
+
+                        return node;
+                    });
+                }
+            }
+
+            // ------------------------------------------------------------
+            // 4. Target name
+            // ------------------------------------------------------------
+            let target = out.column.outputName;
+
+            if (
+                output.intoTable &&
+                output.intoTable.type === 'Identifier' &&
+                output.intoColumns &&
+                output.intoColumns[i]
+            ) {
+                target =
+                    `${output.intoTable.name}.${output.intoColumns[i]}`;
+            }
+
+            // ------------------------------------------------------------
+            // 5. Emit lineage
+            // ------------------------------------------------------------
+            this.columns.push({
+                name: target,
+                expression: out.column.expression,
+                inputs,
+                location: out
+            });
+        }
+    }
+
+    private visitDelete(stmt: DeleteNode): void {
+        this.pushSources();
+
+        this.defineOutputPseudoSources();
+
+        if (stmt.from) {
+            for (const ref of stmt.from) {
+                this.registerTableReference(ref);
+            }
+        }
+
+        this.visitOutputClause(stmt.output);
+
+        this.popSources();
     }
 
     private visitQuery(
@@ -245,33 +365,44 @@ export class LineageBuilder {
     // ============================================================
 
     private visitInsert(stmt: InsertNode): void {
-        if (!stmt.table || !stmt.selectQuery) {
-            return;
+        // OUTPUT pseudo tables live in statement-local scope
+        this.pushSources();
+        this.defineOutputPseudoSources();
+
+        // INSERT ... SELECT lineage
+        if (
+            stmt.table &&
+            stmt.table.type === 'Identifier' &&
+            stmt.selectQuery &&
+            stmt.columns &&
+            stmt.columns.length > 0
+        ) {
+            const target = stmt.table.name;
+            const sourceCols = this.visitQuery(
+                stmt.selectQuery,
+                false
+            );
+
+            for (let i = 0; i < stmt.columns.length; i++) {
+                const targetCol = stmt.columns[i];
+                const src = sourceCols[i];
+
+                if (!src) {
+                    continue;
+                }
+
+                this.columns.push({
+                    name: `${target}.${targetCol}`,
+                    inputs: src.inputs,
+                    location: stmt
+                });
+            }
         }
 
-        if (stmt.table.type !== 'Identifier') {
-            return;
-        }
+        // INSERT ... OUTPUT ...
+        this.visitOutputClause(stmt.output);
 
-        const target = stmt.table.name;
-        const sourceCols = this.visitQuery(stmt.selectQuery, false);
-
-        if (!stmt.columns || stmt.columns.length === 0) {
-            return;
-        }
-
-        for (let i = 0; i < stmt.columns.length; i++) {
-            const targetCol = stmt.columns[i];
-            const src = sourceCols[i];
-
-            if (!src) continue;
-
-            this.columns.push({
-                name: `${target}.${targetCol}`,
-                inputs: src.inputs,
-                location: stmt
-            });
-        }
+        this.popSources();
     }
 
     // ============================================================
@@ -287,12 +418,17 @@ export class LineageBuilder {
 
         this.pushSources();
 
+        // INSERTED / DELETED pseudo tables for OUTPUT
+        this.defineOutputPseudoSources();
+
+        // FROM sources
         if (stmt.from) {
             for (const ref of stmt.from) {
                 this.registerTableReference(ref);
             }
         }
 
+        // SET lineage
         for (const assignment of stmt.assignments ?? []) {
             this.columns.push({
                 name: `${target}.${assignment.column}`,
@@ -303,6 +439,9 @@ export class LineageBuilder {
                 location: stmt
             });
         }
+
+        // OUTPUT lineage
+        this.visitOutputClause(stmt.output);
 
         this.popSources();
     }
@@ -393,7 +532,9 @@ export class LineageBuilder {
     ): LineageNode[] {
         const parts = expr.parts;
 
-        // alias.column
+        // ------------------------------------------------------------
+        // qualified reference: alias.column / table.column
+        // ------------------------------------------------------------
         if (parts.length >= 2) {
             const qualifier = parts[0];
             const column = parts[parts.length - 1];
@@ -419,7 +560,36 @@ export class LineageBuilder {
             }
         }
 
-        // unqualified
+        // ------------------------------------------------------------
+        // unqualified reference: infer source if exactly one visible
+        // ------------------------------------------------------------
+        const unique = new Map<string, VirtualSource>();
+
+        for (const source of this.currentSources().values()) {
+            unique.set(source.name.toLowerCase(), source);
+        }
+
+        // exactly one visible source → infer ownership
+        if (unique.size === 1) {
+            const source = [...unique.values()][0];
+
+            const derived =
+                source.columns.get(expr.name.toLowerCase());
+
+            // flatten virtual source lineage
+            if (derived) {
+                return derived.inputs;
+            }
+
+            return [{
+                kind: 'column',
+                name: `${source.name}.${expr.name}`,
+                source: source.name,
+                location: expr
+            }];
+        }
+
+        // ambiguous / unknown
         return [{
             kind: 'column',
             name: expr.name,

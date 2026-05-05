@@ -184,6 +184,7 @@ export interface InsertNode extends NodeLocation, Recoverable {
     type: 'InsertStatement';
     table: Expression | null;
     columns: string[] | null;
+    output?: OutputClauseNode;
     values: Expression[][] | null;
     selectQuery: SelectNode | SetOperatorNode | null;
 }
@@ -197,6 +198,7 @@ export interface UpdateNode extends NodeLocation, Recoverable {
     type: 'UpdateStatement';
     target: Expression | null;
     assignments: UpdateAssignment[] | null;
+    output?: OutputClauseNode;
     from: TableReference[] | null;
     where: Expression | null;
 }
@@ -204,6 +206,7 @@ export interface UpdateNode extends NodeLocation, Recoverable {
 export interface DeleteNode extends NodeLocation, Recoverable {
     type: 'DeleteStatement';
     target: Expression | null;         // The table or alias being deleted from
+    output?: OutputClauseNode;
     from: TableReference[] | null;
     where: Expression | null;
 }
@@ -333,6 +336,19 @@ export const JoinTypes = {
 
 export type JoinType =
     typeof JoinTypes[keyof typeof JoinTypes];
+
+export interface OutputColumnNode extends NodeLocation {
+    type: 'OutputColumn';
+    sourceTable?: 'INSERTED' | 'DELETED' | null; // The critical distinction
+    column: ColumnNode;
+}
+
+export interface OutputClauseNode extends NodeLocation {
+    type: 'OutputClause';
+    columns: OutputColumnNode[]; // Use the specialized column node
+    intoTable?: Expression;
+    intoColumns?: string[];
+}
 
 enum Precedence {
     LOWEST,
@@ -1037,6 +1053,7 @@ export class Parser {
 
         let incomplete = false;
         const errors: string[] = [];
+        let output: OutputClauseNode | undefined;
 
         if (this.peekKeyword('INTO')) {
             this.consume();
@@ -1048,7 +1065,6 @@ export class Parser {
 
         try {
             const next = this.peek();
-
             if (
                 next &&
                 !this.isStructuralKeyword(next.value) &&
@@ -1061,18 +1077,13 @@ export class Parser {
                 incomplete = true;
                 errors.push('Expected target table');
             }
-
         } catch (e) {
             incomplete = true;
-
-            errors.push(
-                e instanceof Error ? e.message : String(e)
-            );
+            errors.push(e instanceof Error ? e.message : String(e));
         }
 
         // 2. Column list
         let columns: string[] | null = null;
-
         if (this.peek()?.type === TokenType.OpenParen) {
             const openParen = this.consume();
             endOffset = openParen.offset + openParen.value.length;
@@ -1081,12 +1092,9 @@ export class Parser {
                 if (this.peek()?.type !== TokenType.CloseParen) {
                     columns = this.parseList(() => {
                         const node = this.parseMultipartIdentifier();
-
-                        // Validation: Column lists in INSERT cannot contain wildcards
                         if (node.type === 'Identifier') {
                             return node.name;
                         } else {
-                            // If it's a WildcardExpression, it's a syntax error in this context
                             throw new Error("Wildcards are not allowed in an INSERT column list");
                         }
                     });
@@ -1101,177 +1109,78 @@ export class Parser {
                     incomplete = true;
                     errors.push('Expected ) after column list');
                 }
-
             } catch (e) {
                 columns = [];
                 incomplete = true;
-
-                errors.push(
-                    e instanceof Error ? e.message : String(e)
-                );
-
-                // recover safely
-                while (
-                    this.peek() &&
-                    this.peek()!.type !== TokenType.CloseParen &&
-                    this.peek()!.type !== TokenType.Semicolon &&
-                    this.peek()!.value !== 'VALUES' &&
-                    this.peek()!.value !== 'SELECT' &&
-                    this.peek()!.value !== 'WITH'
-                ) {
-                    this.consume();
-                }
-
-                if (this.peek()?.type === TokenType.CloseParen) {
-                    const closeParen = this.consume();
-                    endOffset = closeParen.offset + closeParen.value.length;
-                }
+                errors.push(e instanceof Error ? e.message : String(e));
+                this.recoverTo(['OUTPUT', 'VALUES', 'SELECT', 'WITH']); // Enhanced recovery
             }
         }
 
-        // 3. VALUES / SELECT
+        // 3. NEW: The OUTPUT Clause
+        // In T-SQL, OUTPUT appears here, before the data source.
+        if (this.peekKeyword('OUTPUT')) {
+            try {
+                output = this.parseOutputClause();
+                endOffset = output.end;
+            } catch (e) {
+                incomplete = true;
+                errors.push(e instanceof Error ? e.message : String(e));
+                this.recoverTo(['VALUES', 'SELECT', 'WITH']);
+            }
+        }
+
+        // 4. VALUES / SELECT / WITH
         let values: Expression[][] | null = null;
         let selectQuery: QueryStatement | null = null;
-
         const nextVal = this.peek()?.value?.toUpperCase();
 
-        // INSERT ... VALUES
         if (nextVal === 'VALUES') {
             const valuesToken = this.consume();
             endOffset = valuesToken.offset + valuesToken.value.length;
-
             values = [];
             let sawValuesRow = false;
 
             try {
-                while (this.peek()) {
-                    const token = this.peek()!;
-
-                    // hard stop at statement boundary
-                    if (token.type === TokenType.Semicolon) {
-                        incomplete = true;
-                        break;
-                    }
-
-                    // comma between rows
-                    if (token.type === TokenType.Comma) {
+                while (this.peek() && this.peek()!.type !== TokenType.Semicolon) {
+                    if (this.peek()!.type === TokenType.Comma) {
                         this.consume();
-                        incomplete = true;
                         continue;
                     }
+                    if (this.peek()!.type !== TokenType.OpenParen) break;
 
-                    // must start row
-                    if (token.type !== TokenType.OpenParen) {
-                        incomplete = true;
-                        errors.push('Expected ( after VALUES');
-                        break;
-                    }
-
-                    const openParen = this.consume();
-                    endOffset = openParen.offset + openParen.value.length;
+                    const openRow = this.consume();
                     sawValuesRow = true;
-
                     const rowValues: Expression[] = [];
 
-                    // parse row manually
-                    while (this.peek()) {
-                        const t = this.peek()!;
-
-                        // row end / statement boundary
-                        if (
-                            t.type === TokenType.CloseParen ||
-                            t.type === TokenType.Semicolon
-                        ) {
-                            break;
-                        }
-
-                        // stray comma
-                        if (t.type === TokenType.Comma) {
+                    while (this.peek() && this.peek()!.type !== TokenType.CloseParen) {
+                        if (this.peek()!.type === TokenType.Comma) {
                             this.consume();
-                            incomplete = true;
                             continue;
                         }
-
-                        try {
-                            const expr = this.parseExpression(Precedence.LOWEST);
-                            rowValues.push(expr);
-                            endOffset = expr.end;
-                        } catch (e) {
-                            incomplete = true;
-
-                            errors.push(
-                                e instanceof Error ? e.message : String(e)
-                            );
-
-                            break;
-                        }
-
-                        // separator
-                        if (this.peek()?.type === TokenType.Comma) {
-                            this.consume();
-
-                            // trailing comma before ) or ;
-                            if (
-                                this.peek()?.type === TokenType.CloseParen ||
-                                this.peek()?.type === TokenType.Semicolon
-                            ) {
-                                incomplete = true;
-                            }
-
-                            continue;
-                        }
-
-                        break;
+                        const expr = this.parseExpression(Precedence.LOWEST);
+                        rowValues.push(expr);
+                        endOffset = expr.end;
                     }
 
                     values.push(rowValues);
-
-                    // close row
                     if (this.peek()?.type === TokenType.CloseParen) {
-                        const closeParen = this.consume();
-                        endOffset =
-                            closeParen.offset + closeParen.value.length;
-                    } else {
-                        incomplete = true;
-                        errors.push('Expected ) after VALUES row');
-                        break;
+                        const closeRow = this.consume();
+                        endOffset = closeRow.offset + closeRow.value.length;
                     }
                 }
-
-                // preserve semantic "VALUES clause exists"
-                if (!sawValuesRow) {
-                    values = [[]];
-                }
-
+                if (!sawValuesRow) values = [[]];
             } catch (e) {
                 incomplete = true;
-
-                errors.push(
-                    e instanceof Error ? e.message : String(e)
-                );
-
-                // preserve VALUES intent even on failure
-                if (!sawValuesRow) {
-                    values = [[]];
-                }
+                errors.push(e instanceof Error ? e.message : String(e));
             }
-        }
-
-        // INSERT ... SELECT / WITH
-        else if (
-            nextVal === 'SELECT' ||
-            nextVal === 'WITH'
-        ) {
+        } else if (nextVal === 'SELECT' || nextVal === 'WITH') {
             try {
                 selectQuery = this.parseQueryExpression();
                 endOffset = selectQuery.end;
-
             } catch (e) {
                 incomplete = true;
-
-                errors.push(
-                    e instanceof Error ? e.message : String(e)
-                );
+                errors.push(e instanceof Error ? e.message : String(e));
             }
         }
 
@@ -1279,6 +1188,7 @@ export class Parser {
             type: 'InsertStatement',
             table: tableNode,
             columns,
+            output,
             values,
             selectQuery,
             start: startToken.offset,
@@ -1293,15 +1203,13 @@ export class Parser {
 
         let incomplete = false;
         const errors: string[] = [];
-
         let endOffset = startToken.offset + startToken.value.length;
+        let output: OutputClauseNode | undefined;
 
         // 1. Target
         let targetNode: Expression | null = null;
-
         try {
             const next = this.peek();
-
             if (next && !this.isStructuralKeyword(next.value)) {
                 targetNode = this.parseMultipartIdentifier();
                 endOffset = targetNode.end;
@@ -1311,201 +1219,131 @@ export class Parser {
             }
         } catch (e) {
             incomplete = true;
-
-            errors.push(
-                e instanceof Error ? e.message : String(e)
-            );
+            errors.push(e instanceof Error ? e.message : String(e));
+            this.recoverTo(['SET']); // Resync at SET
         }
 
         // 2. SET
         let sawSet = false;
-
         try {
             this.matchKeyword('SET');
             endOffset = this.lastConsumedEnd();
             sawSet = true;
         } catch (e) {
             incomplete = true;
-
-            errors.push(
-                e instanceof Error ? e.message : String(e)
-            );
+            errors.push(e instanceof Error ? e.message : String(e));
         }
 
         // 3. Assignments
         let assignments: UpdateAssignment[] = [];
-
         if (sawSet) {
             try {
                 assignments = this.parseList(() => {
                     let columnName = '';
                     let value: Expression | null = null;
 
-                    // 1. column
                     try {
                         const next = this.peek();
-
                         if (!next || this.isStructuralKeyword(next.value)) {
                             incomplete = true;
                             errors.push('Expected assignment column');
-
-                            return {
-                                column: '',
-                                value: null
-                            };
+                            return { column: '', value: null };
                         }
 
                         const columnExpr = this.parseMultipartIdentifier();
-
-                        // Check if the result is a valid identifier for an assignment target
                         if (columnExpr.type === 'Identifier') {
                             columnName = columnExpr.name;
                             endOffset = columnExpr.end;
                         } else {
-                            // Handle WildcardExpression as an error in this context
                             incomplete = true;
-                            errors.push('Wildcards are not allowed as update assignment targets');
-
-                            return {
-                                column: '',
-                                value: null
-                            };
+                            errors.push('Wildcards are not allowed as update targets');
+                            return { column: '', value: null };
                         }
-
                     } catch (e) {
                         incomplete = true;
-
-                        errors.push(
-                            e instanceof Error ? e.message : String(e)
-                        );
-
-                        return {
-                            column: '',
-                            value: null
-                        };
+                        errors.push(e instanceof Error ? e.message : String(e));
+                        return { column: '', value: null };
                     }
 
-                    // 2. =
                     if (this.peek()?.value !== '=') {
                         incomplete = true;
                         errors.push('Expected =');
-
-                        return {
-                            column: columnName,
-                            value: null
-                        };
+                        return { column: columnName, value: null };
                     }
 
                     const eqToken = this.consume();
                     endOffset = eqToken.offset + eqToken.value.length;
 
-                    // 3. value
                     try {
-                        const next = this.peek();
-
-                        if (
-                            !next ||
-                            this.isStructuralKeyword(next.value) ||
-                            next.type === TokenType.Comma
-                        ) {
-                            incomplete = true;
-                            errors.push('Expected expression');
-
-                            return {
-                                column: columnName,
-                                value: null
-                            };
-                        }
-
                         value = this.parseExpression();
-
-                        if (value) {
-                            endOffset = value.end;
-                        }
-
+                        if (value) endOffset = value.end;
                     } catch (e) {
                         incomplete = true;
-
-                        errors.push(
-                            e instanceof Error ? e.message : String(e)
-                        );
+                        errors.push(e instanceof Error ? e.message : String(e));
                     }
 
-                    return {
-                        column: columnName,
-                        value
-                    };
+                    return { column: columnName, value };
                 });
 
-                if (assignments.length === 0) {
-                    incomplete = true;
-                }
-
+                if (assignments.length === 0) incomplete = true;
             } catch (e) {
                 assignments = [];
                 incomplete = true;
-
-                errors.push(
-                    e instanceof Error ? e.message : String(e)
-                );
+                errors.push(e instanceof Error ? e.message : String(e));
+                this.recoverTo(['OUTPUT', 'FROM', 'WHERE']); // Resync point
             }
         }
 
-        // 4. FROM
-        let from: TableReference[] | null = null;
+        // 4. NEW: OUTPUT Clause
+        // Syntax: UPDATE ... SET ... OUTPUT ... FROM ... WHERE ...
+        if (this.peekKeyword('OUTPUT')) {
+            try {
+                output = this.parseOutputClause();
+                endOffset = output.end;
+            } catch (e) {
+                incomplete = true;
+                errors.push(e instanceof Error ? e.message : String(e));
+                this.recoverTo(['FROM', 'WHERE']);
+            }
+        }
 
+        // 5. FROM
+        let from: TableReference[] | null = null;
         if (this.peekKeyword('FROM')) {
             try {
                 from = this.parseFrom();
-
                 if (from.length > 0) {
                     endOffset = from[from.length - 1].end;
                 } else {
                     from = [];
                     incomplete = true;
                 }
-
             } catch (e) {
                 from = [];
                 incomplete = true;
-
-                errors.push(
-                    e instanceof Error ? e.message : String(e)
-                );
+                errors.push(e instanceof Error ? e.message : String(e));
+                this.recoverTo(['WHERE']);
             }
         }
 
-        // 5. WHERE
+        // 6. WHERE
         let where: Expression | null = null;
-
         if (this.peekKeyword('WHERE')) {
             const whereToken = this.consume();
             endOffset = whereToken.offset + whereToken.value.length;
 
             try {
                 const next = this.peek();
-
-                if (
-                    next &&
-                    !this.isStructuralKeyword(next.value) &&
-                    next.type !== TokenType.Comma
-                ) {
+                if (next && !this.isStructuralKeyword(next.value) && next.type !== TokenType.Comma) {
                     where = this.parseExpression();
-
-                    if (where) {
-                        endOffset = where.end;
-                    }
+                    if (where) endOffset = where.end;
                 } else {
                     incomplete = true;
                     errors.push('Expected WHERE expression');
                 }
-
             } catch (e) {
                 incomplete = true;
-
-                errors.push(
-                    e instanceof Error ? e.message : String(e)
-                );
+                errors.push(e instanceof Error ? e.message : String(e));
             }
         }
 
@@ -1513,6 +1351,7 @@ export class Parser {
             type: 'UpdateStatement',
             target: targetNode,
             assignments,
+            output, // Successfully integrated
             from,
             where,
             start: startToken.offset,
@@ -2143,9 +1982,9 @@ export class Parser {
 
         let incomplete = false;
         const errors: string[] = [];
+        let output: OutputClauseNode | undefined;
 
-        // Optional first FROM:
-        // DELETE FROM T ...
+        // Optional first FROM (DELETE FROM T ...)
         if (this.peekKeyword('FROM')) {
             this.consume();
         }
@@ -2159,12 +1998,24 @@ export class Parser {
             endOffset = target.end;
         } catch (e) {
             incomplete = true;
-            errors.push(
-                e instanceof Error ? e.message : String(e)
-            );
+            errors.push(e instanceof Error ? e.message : String(e));
+            this.recoverTo(['OUTPUT', 'FROM', 'WHERE']); // Resync point
         }
 
-        // 2. Optional second FROM
+        // 2. NEW: The OUTPUT Clause
+        // Syntax: DELETE [FROM] Target OUTPUT ... FROM ... WHERE ...
+        if (this.peekKeyword('OUTPUT')) {
+            try {
+                output = this.parseOutputClause();
+                endOffset = output.end;
+            } catch (e) {
+                incomplete = true;
+                errors.push(e instanceof Error ? e.message : String(e));
+                this.recoverTo(['FROM', 'WHERE']); // Resync to next logical block
+            }
+        }
+
+        // 3. Optional second FROM
         // DELETE Alias FROM TableSource ...
         let from: TableReference[] | null = null;
 
@@ -2183,18 +2034,15 @@ export class Parser {
                     from = [];
                     incomplete = true;
                 }
-
             } catch (e) {
                 from = [];
                 incomplete = true;
-
-                errors.push(
-                    e instanceof Error ? e.message : String(e)
-                );
+                errors.push(e instanceof Error ? e.message : String(e));
+                this.recoverTo(['WHERE']);
             }
         }
 
-        // 3. WHERE
+        // 4. WHERE
         let where: Expression | null = null;
 
         if (this.peekKeyword('WHERE')) {
@@ -2202,24 +2050,21 @@ export class Parser {
             endOffset = whereToken.offset + whereToken.value.length;
 
             try {
-                where = this.parseExpression();
+                where = this.parseExpression(Precedence.LOWEST);
 
                 if (where) {
                     endOffset = where.end;
                 }
-
             } catch (e) {
                 incomplete = true;
-
-                errors.push(
-                    e instanceof Error ? e.message : String(e)
-                );
+                errors.push(e instanceof Error ? e.message : String(e));
             }
         }
 
         return {
             type: 'DeleteStatement',
             target,
+            output, // Successfully integrated
             from,
             where,
             start: startToken.offset,
@@ -2694,7 +2539,7 @@ export class Parser {
             'FROM', 'WHERE', 'GROUP', 'ORDER', 'HAVING',
             'UNION', 'ALL', 'EXCEPT', 'INTERSECT',
             'JOIN', 'ON', 'APPLY', 'INTO',
-            'OUTER', 'VALUES'
+            'OUTER', 'VALUES', 'OUTPUT'
         ];
 
         const startOffset = this.peek()?.offset ?? 0;
@@ -3454,6 +3299,85 @@ export class Parser {
             }
         }
         return typeName;
+    }
+
+    private parseOutputClause(): OutputClauseNode {
+        const startToken = this.matchKeyword('OUTPUT');
+
+        const columns = this.parseList(() => {
+            const start = this.peek()?.offset || 0;
+
+            let sourceTable: 'INSERTED' | 'DELETED' | undefined;
+
+            const value = this.peek()?.value?.toUpperCase();
+
+            if (value === 'INSERTED') {
+                sourceTable = 'INSERTED';
+                this.consume();
+                this.match(TokenType.Dot);
+            } else if (value === 'DELETED') {
+                sourceTable = 'DELETED';
+                this.consume();
+                this.match(TokenType.Dot);
+            }
+
+            const column = this.parseColumn();
+
+            return {
+                type: 'OutputColumn',
+                sourceTable,
+                column,
+                start,
+                end: column.end
+            } as OutputColumnNode;
+        });
+
+        let intoTable: Expression | undefined;
+        let intoColumns: string[] | undefined;
+
+        if (this.peekKeyword('INTO')) {
+            this.consume();
+
+            intoTable = this.parseMultipartIdentifier();
+
+            if (this.peek()?.type === TokenType.OpenParen) {
+                this.consume();
+
+                intoColumns =
+                    this.parseList(() =>
+                        this.match(TokenType.Identifier).value
+                    );
+
+                this.match(TokenType.CloseParen);
+            }
+        }
+
+        return {
+            type: 'OutputClause',
+            columns,
+            intoTable,
+            intoColumns,
+            start: startToken.offset,
+            end: this.lastConsumedEnd()
+        };
+    }
+
+    private recoverTo(keywords: string[]): void {
+        while (this.peek()) {
+            const token = this.peek()!;
+
+            // Stop if we hit a statement boundary
+            if (token.type === TokenType.Semicolon) {
+                break;
+            }
+
+            // Stop if we hit one of our target "anchor" keywords
+            if (keywords.includes(token.value.toUpperCase())) {
+                break;
+            }
+
+            this.consume();
+        }
     }
 
     private stringifyExpression(expr: Expression | null): string {
