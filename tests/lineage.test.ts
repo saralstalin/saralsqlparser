@@ -364,4 +364,222 @@ describe('LineageBuilder', () => {
         ]);
     });
 
+    test('select star with where preserves source', () => {
+        expect(
+            edgeStrings(`
+            SELECT *
+            FROM Users
+            WHERE Id = @Id
+        `)
+        ).toEqual([
+            'Users.* -> *'
+        ]);
+    });
+
+    test('select star with alias preserves physical table', () => {
+        expect(
+            edgeStrings(`
+            SELECT *
+            FROM Users u
+            WHERE u.Id = @Id
+        `)
+        ).toEqual([
+            'Users.* -> *'
+        ]);
+    });
+
+    test('qualified wildcard resolves physical table', () => {
+        expect(
+            edgeStrings(`
+            SELECT u.*
+            FROM Users u
+        `)
+        ).toEqual([
+            'Users.* -> *'
+        ]);
+    });
+
+    test('star across multiple joins', () => {
+        expect(
+            edgeStrings(`
+            SELECT *
+            FROM Orders o
+            JOIN Customer c
+                ON o.CustomerId = c.Id
+            JOIN Region r
+                ON c.RegionId = r.Id
+        `)
+        ).toEqual([
+            'Customer.* -> *',
+            'Orders.* -> *',
+            'Region.* -> *'
+        ]);
+    });
+
+    test('mixed wildcard and explicit column', () => {
+        expect(
+            edgeStrings(`
+            SELECT o.*, c.Name
+            FROM Orders o
+            JOIN Customer c
+                ON o.CustomerId = c.Id
+        `)
+        ).toEqual([
+            'Customer.Name -> Name',
+            'Orders.* -> *'
+        ]);
+    });
+
+    test('cte star flattening preserves base table', () => {
+        expect(
+            edgeStrings(`
+            WITH X AS (
+                SELECT *
+                FROM Orders
+            )
+            SELECT *
+            FROM X
+        `)
+        ).toEqual([
+            'Orders.* -> *'
+        ]);
+    });
+
+    test('subquery star flattening preserves base table', () => {
+        expect(
+            edgeStrings(`
+            SELECT *
+            FROM (
+                SELECT *
+                FROM Orders
+            ) s
+        `)
+        ).toEqual([
+            'Orders.* -> *'
+        ]);
+    });
+
+    test('nested cte star flattening', () => {
+        expect(
+            edgeStrings(`
+            WITH A AS (
+                SELECT *
+                FROM Orders
+            ),
+            B AS (
+                SELECT *
+                FROM A
+            )
+            SELECT *
+            FROM B
+        `)
+        ).toEqual([
+            'Orders.* -> *'
+        ]);
+    });
+
+    test('cte explicit column flattening', () => {
+        expect(
+            edgeStrings(`
+            WITH X AS (
+                SELECT Amount
+                FROM Orders
+            )
+            SELECT X.Amount
+            FROM X
+        `)
+        ).toEqual([
+            'Amount -> Amount'
+        ]);
+    });
+
+    test('cte alias flattening', () => {
+        expect(
+            edgeStrings(`
+            WITH X AS (
+                SELECT Amount AS Total
+                FROM Orders
+            )
+            SELECT X.Total
+            FROM X
+        `)
+        ).toEqual([
+            'Amount -> Total'
+        ]);
+    });
+
+    test('nested cte alias flattening', () => {
+        expect(
+            edgeStrings(`
+            WITH A AS (
+                SELECT Id AS OrderId
+                FROM Orders
+            ),
+            B AS (
+                SELECT A.OrderId AS FinalId
+                FROM A
+            )
+            SELECT B.FinalId
+            FROM B
+        `)
+        ).toEqual([
+            'Id -> FinalId'
+        ]);
+    });
+
+    test('subquery alias flattening', () => {
+        expect(
+            edgeStrings(`
+            SELECT s.Total
+            FROM (
+                SELECT Amount AS Total
+                FROM Orders
+            ) s
+        `)
+        ).toEqual([
+            'Amount -> Total'
+        ]);
+    });
+
+    test('insert select wildcard lineage', () => {
+        expect(
+            edgeStrings(`
+            INSERT INTO Audit(Id)
+            SELECT *
+            FROM Orders
+        `)
+        ).toEqual([
+            'Orders.* -> Audit.Id'
+        ]);
+    });
+
+    test('update from wildcard expression source', () => {
+        expect(
+            edgeStrings(`
+            UPDATE t
+            SET JsonBlob = c.*
+            FROM Target t
+            JOIN Customer c
+                ON c.Id = t.Id
+        `)
+        ).toEqual([
+            'Customer.* -> t.JsonBlob'
+        ]);
+    });
+
+    test('case expression dedupes repeated dependency', () => {
+        expect(
+            edgeStrings(`
+            SELECT
+                CASE
+                    WHEN Amount > 100 THEN Amount
+                    ELSE Amount
+                END AS FinalAmount
+            FROM Orders
+        `)
+        ).toEqual([
+            'Amount -> FinalAmount'
+        ]);
+    });
+
 });
