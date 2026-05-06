@@ -18,6 +18,8 @@ import {
     JoinNode,
     NodeLocation,
     SubqueryExpression,
+    OutputClauseNode,
+    IdentifierNode
 } from './parser';
 
 import { Scope, Symbol, SymbolKind, SymbolReference, ReferenceKind } from './scope';
@@ -227,6 +229,11 @@ export class ScopeBuilder {
     }
 
     private visitInsert(stmt: InsertNode): void {
+        this.pushScope(stmt.start, stmt.end, 'insert');
+
+        if (stmt.output) {
+            this.declareOutputPseudoTables();
+        }
         if (stmt.table) {
             this.visitExpression(stmt.table);
         }
@@ -242,6 +249,10 @@ export class ScopeBuilder {
         if (stmt.selectQuery) {
             this.visitQuery(stmt.selectQuery);
         }
+
+        this.visitOutputClause(stmt.output);
+
+        this.popScope();
     }
 
     private visitUpdate(stmt: UpdateNode): void {
@@ -249,35 +260,29 @@ export class ScopeBuilder {
             this.visitExpression(stmt.target);
         }
 
-        if (stmt.from) {
-            this.pushScope(stmt.start, stmt.end, 'update');
+        this.pushScope(stmt.start, stmt.end, 'update');
 
+        this.declareOutputPseudoTables();
+
+        if (stmt.from) {
             for (const table of stmt.from) {
                 this.visitTableReference(table);
             }
+        }
 
-            if (stmt.assignments) {
-                for (const assignment of stmt.assignments) {
-                    this.visitExpression(assignment.value);
-                }
-            }
-
-            if (stmt.where) {
-                this.visitExpression(stmt.where);
-            }
-
-            this.popScope();
-        } else {
-            if (stmt.assignments) {
-                for (const assignment of stmt.assignments) {
-                    this.visitExpression(assignment.value);
-                }
-            }
-
-            if (stmt.where) {
-                this.visitExpression(stmt.where);
+        if (stmt.assignments) {
+            for (const assignment of stmt.assignments) {
+                this.visitExpression(assignment.value);
             }
         }
+
+        if (stmt.where) {
+            this.visitExpression(stmt.where);
+        }
+
+        this.visitOutputClause(stmt.output);
+
+        this.popScope();
     }
 
     private visitDelete(stmt: DeleteNode): void {
@@ -285,23 +290,23 @@ export class ScopeBuilder {
             this.visitExpression(stmt.target);
         }
 
-        if (stmt.from) {
-            this.pushScope(stmt.start, stmt.end, 'delete');
+        this.pushScope(stmt.start, stmt.end, 'delete');
 
+        this.declareOutputPseudoTables();
+
+        if (stmt.from) {
             for (const table of stmt.from) {
                 this.visitTableReference(table);
             }
-
-            if (stmt.where) {
-                this.visitExpression(stmt.where);
-            }
-
-            this.popScope();
-        } else {
-            if (stmt.where) {
-                this.visitExpression(stmt.where);
-            }
         }
+
+        if (stmt.where) {
+            this.visitExpression(stmt.where);
+        }
+
+        this.visitOutputClause(stmt.output);
+
+        this.popScope();
     }
 
     // ── CREATE ────────────────────────────────────────────────────────────────
@@ -548,6 +553,9 @@ export class ScopeBuilder {
                 break;
 
             case 'Identifier':
+                this.recordIdentifierReference(expr);
+                break;
+
             case 'Literal':
                 break;
 
@@ -636,6 +644,60 @@ export class ScopeBuilder {
 
             default:
                 break;
+        }
+    }
+
+    private declareOutputPseudoTables(): void {
+        this.declare({
+            name: 'INSERTED',
+            kind: SymbolKind.Table,
+            location: { start: 0, end: 0 },
+            references: [],
+        });
+
+        this.declare({
+            name: 'DELETED',
+            kind: SymbolKind.Table,
+            location: { start: 0, end: 0 },
+            references: [],
+        });
+    }
+
+    private visitOutputClause(output?: OutputClauseNode): void {
+        if (!output) {
+            return;
+        }
+
+        for (const col of output.columns) {
+            if (col.sourceTable) {
+                this.recordReference(col.sourceTable, col);
+            }
+
+            this.visitExpression(col.column.expression);
+        }
+
+        if (output.intoTable) {
+            this.visitExpression(output.intoTable);
+        }
+    }
+
+    private recordIdentifierReference(expr: IdentifierNode): void {
+        const parts = expr.parts;
+
+        // qualified identifier
+        if (parts.length >= 2) {
+            const qualifier = parts[0];
+
+            if (this.current.resolve(qualifier)) {
+                this.recordReference(qualifier, expr);
+            }
+
+            return;
+        }
+
+        // single-part symbol reference only
+        if (this.current.resolve(expr.name)) {
+            this.recordReference(expr.name, expr);
         }
     }
 }
