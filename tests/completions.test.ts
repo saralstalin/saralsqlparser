@@ -38,4 +38,26 @@ describe('completion helpers', () => {
             })
         );
     });
+
+    test('returns qualified column completions for temp table alias', () => {
+        const sql = `
+CREATE TABLE #TempUsers (
+  Id INT,
+  Name NVARCHAR(100)
+);
+
+SELECT *
+FROM #TempUsers t
+WHERE t.
+`;
+        const offset = sql.lastIndexOf('t.') + 2;
+        const completions = getCompletionsAt(sql, offset);
+
+        expect(completions).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({ label: 'Id', kind: 'column' }),
+                expect.objectContaining({ label: 'Name', kind: 'column' })
+            ])
+        );
+    });
 });

@@ -116,9 +116,31 @@ export function getCompletionsAt(
     positionOrOffset: Position | number
 ): CompletionItem[] {
     const context = getCompletionContext(sql, positionOrOffset);
-    const replaceStart = context.offset - context.prefix.length;
     const seen = new Set<string>();
     const items: CompletionItem[] = [];
+    const qualified = getQualifiedPrefix(context.prefix);
+
+    if (qualified) {
+        const aliasSymbol = context.scope.resolve(qualified.qualifier);
+        const columns = getQualifiedSymbolColumns(aliasSymbol, context.scope);
+
+        if (columns) {
+            const replaceStart = context.offset - qualified.filter.length;
+
+            for (const column of columns) {
+                pushCompletion(items, seen, {
+                    label: column,
+                    kind: 'column',
+                    start: replaceStart,
+                    end: context.offset
+                }, qualified.filter);
+            }
+
+            return items.sort((a, b) => a.label.localeCompare(b.label));
+        }
+    }
+
+    const replaceStart = context.offset - context.prefix.length;
 
     for (const keyword of context.keywords) {
         pushCompletion(items, seen, {
@@ -145,6 +167,44 @@ export function getCompletionsAt(
         if (b.kind === 'keyword') return -1;
         return a.kind.localeCompare(b.kind);
     });
+}
+
+function getQualifiedPrefix(prefix: string): { qualifier: string; filter: string } | null {
+    const dotIndex = prefix.lastIndexOf('.');
+    if (dotIndex < 1) {
+        return null;
+    }
+
+    return {
+        qualifier: prefix.slice(0, dotIndex),
+        filter: prefix.slice(dotIndex + 1)
+    };
+}
+
+function getQualifiedSymbolColumns(
+    symbol: Symbol | undefined,
+    scope: Scope
+): string[] | null {
+    if (!symbol) {
+        return null;
+    }
+
+    if (symbol.columns && symbol.columns.length > 0) {
+        return symbol.columns;
+    }
+
+    if (
+        symbol.kind === 'Alias' &&
+        symbol.metadata?.tableName &&
+        typeof symbol.metadata.tableName === 'string'
+    ) {
+        const tableSymbol = scope.resolve(symbol.metadata.tableName);
+        if (tableSymbol?.columns && tableSymbol.columns.length > 0) {
+            return tableSymbol.columns;
+        }
+    }
+
+    return null;
 }
 
 function pushCompletion(

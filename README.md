@@ -98,19 +98,36 @@ console.log(result.columns.resolutions);
 
 ## Completion Support
 
-This package provides local completion context based on the parsed file.
+This package provides local completion context based on a single SQL document.
 
 ```ts
-import { getCompletionsAt } from '@saralsql/tsql-parser';
+import { getCompletionContext, getCompletionsAt } from '@saralsql/tsql-parser';
 
-const sql = 'SELECT Id, Name FROM Users u WHERE u.';
-const completions = getCompletionsAt(sql, { line: 1, character: 33 });
+const sql = `
+CREATE TABLE #TempUsers (
+  Id INT,
+  Name NVARCHAR(100)
+);
+
+SELECT *
+FROM #TempUsers t
+WHERE t.
+`;
+
+const offset = sql.lastIndexOf('t.') + 2;
+
+const context = getCompletionContext(sql, offset);
+console.log(context.prefix); // 't.'
+console.log(context.visibleSymbols.map(symbol => symbol.name));
+console.log(context.diagnostics);
+
+const completions = getCompletionsAt(sql, offset);
 console.log(completions);
 ```
 
 ### Completion API
 
-* `getCompletionContext(sql, positionOrOffset)` — returns the completion context, visible symbols, node, scope, diagnostics, and keyword candidates
+* `getCompletionContext(sql, positionOrOffset)` — returns the completion context, visible symbols, AST node, scope, diagnostics, and keyword candidates
 * `getCompletionsAt(sql, positionOrOffset)` — returns completion items for the current document position
 
 ---
