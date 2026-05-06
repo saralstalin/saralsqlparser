@@ -232,7 +232,7 @@ export class ScopeBuilder {
         this.pushScope(stmt.start, stmt.end, 'insert');
 
         if (stmt.output) {
-            this.declareOutputPseudoTables();
+            this.declareOutputPseudoTables(stmt.output);
         }
         if (stmt.table) {
             this.visitExpression(stmt.table);
@@ -262,7 +262,9 @@ export class ScopeBuilder {
 
         this.pushScope(stmt.start, stmt.end, 'update');
 
-        this.declareOutputPseudoTables();
+        if (stmt.output) {
+            this.declareOutputPseudoTables(stmt.output);
+        }
 
         if (stmt.from) {
             for (const table of stmt.from) {
@@ -292,7 +294,9 @@ export class ScopeBuilder {
 
         this.pushScope(stmt.start, stmt.end, 'delete');
 
-        this.declareOutputPseudoTables();
+        if (stmt.output) {
+            this.declareOutputPseudoTables(stmt.output);
+        }
 
         if (stmt.from) {
             for (const table of stmt.from) {
@@ -647,18 +651,18 @@ export class ScopeBuilder {
         }
     }
 
-    private declareOutputPseudoTables(): void {
+    private declareOutputPseudoTables(location: NodeLocation): void {
         this.declare({
             name: 'INSERTED',
             kind: SymbolKind.Table,
-            location: { start: 0, end: 0 },
+            location,
             references: [],
         });
 
         this.declare({
             name: 'DELETED',
             kind: SymbolKind.Table,
-            location: { start: 0, end: 0 },
+            location,
             references: [],
         });
     }

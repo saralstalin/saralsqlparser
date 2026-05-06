@@ -339,7 +339,8 @@ export type JoinType =
 
 export interface OutputColumnNode extends NodeLocation {
     type: 'OutputColumn';
-    sourceTable?: 'INSERTED' | 'DELETED' | null; // The critical distinction
+    sourceTable: 'INSERTED' | 'DELETED' | null;
+    sourceLocation?: NodeLocation;
     column: ColumnNode;
 }
 
@@ -3305,19 +3306,32 @@ export class Parser {
         const startToken = this.matchKeyword('OUTPUT');
 
         const columns = this.parseList(() => {
-            const start = this.peek()?.offset || 0;
+            const start = this.peek()?.offset ?? startToken.offset;
 
-            let sourceTable: 'INSERTED' | 'DELETED' | undefined;
+            let sourceTable: 'INSERTED' | 'DELETED' | null = null;
+            let sourceLocation: NodeLocation | undefined;
 
             const value = this.peek()?.value?.toUpperCase();
 
             if (value === 'INSERTED') {
+                const token = this.consume();
+
                 sourceTable = 'INSERTED';
-                this.consume();
+                sourceLocation = {
+                    start: token.offset,
+                    end: token.offset + token.value.length
+                };
+
                 this.match(TokenType.Dot);
             } else if (value === 'DELETED') {
+                const token = this.consume();
+
                 sourceTable = 'DELETED';
-                this.consume();
+                sourceLocation = {
+                    start: token.offset,
+                    end: token.offset + token.value.length
+                };
+
                 this.match(TokenType.Dot);
             }
 
@@ -3326,6 +3340,7 @@ export class Parser {
             return {
                 type: 'OutputColumn',
                 sourceTable,
+                sourceLocation,
                 column,
                 start,
                 end: column.end
@@ -3343,10 +3358,9 @@ export class Parser {
             if (this.peek()?.type === TokenType.OpenParen) {
                 this.consume();
 
-                intoColumns =
-                    this.parseList(() =>
-                        this.match(TokenType.Identifier).value
-                    );
+                intoColumns = this.parseList(() =>
+                    this.match(TokenType.Identifier).value
+                );
 
                 this.match(TokenType.CloseParen);
             }
