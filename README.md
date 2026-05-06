@@ -294,30 +294,30 @@ DiagnosticEngine
 
 ## Project Structure
 
-```text
+```
 tests/
 src/
-  analyze.ts
-  completions.ts
-  documentSymbols.ts
-  extractors.ts
-  index.ts
-  position.ts
-  ast/
-    astWalker.ts
-    types.ts
-  diagnostics/
-    diagnostics.ts
-  lineage/
-    lineage.ts
-    lineageBuilder.ts
-  parser/
-    lexer.ts
-    parser.ts
-  semantic/
-    columnAnalyzer.ts
-    scope.ts
-    scopeBuilder.ts
+├── analyze.ts
+├── completions.ts
+├── documentSymbols.ts
+├── extractors.ts
+├── index.ts
+├── position.ts
+├── ast/
+│   ├── astWalker.ts
+│   └── types.ts
+├── diagnostics/
+│   └── diagnostics.ts
+├── lineage/
+│   ├── lineage.ts
+│   └── lineageBuilder.ts
+├── parser/
+│   ├── lexer.ts
+│   └── parser.ts
+└── semantic/
+    ├── columnAnalyzer.ts
+    ├── scope.ts
+    └── scopeBuilder.ts
 ```
 
 ---
