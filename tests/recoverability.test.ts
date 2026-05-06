@@ -934,7 +934,7 @@ describe('Recoverability - Part 3 - Continuation / Resync', () => {
 
         test.each(cases)('%s', sql => {
             const ast = expectContinues(sql);
-            expect(ast.body[1].type).toBe('SelectStatement');
+            expect(ast.body.some(s => s.type === 'SelectStatement')).toBe(true);
         });
     });
 

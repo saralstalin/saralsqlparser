@@ -109,4 +109,14 @@ export class Scope {
         }
         return [...merged.values()];
     }
+
+    toJSON() {
+        return {
+            start: this.start,
+            end: this.end,
+            name: this.name,
+            symbols: Object.fromEntries(this.symbols),
+            children: this.children
+        };
+    }
 }
