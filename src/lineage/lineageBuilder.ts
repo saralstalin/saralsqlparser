@@ -14,7 +14,7 @@ import {
     OutputClauseNode,
     TableReference,
     JoinNode,
-} from './parser';
+} from '@/ast/types';
 
 import {
     LineageNode,
@@ -450,7 +450,7 @@ export class LineageBuilder {
     // expression resolution
     // ============================================================
 
-    private resolveExpression(expr: Expression | null): LineageNode[] {
+    private resolveExpression(expr: Expression | null| undefined): LineageNode[] {
         if (!expr) {
             return [];
         }
@@ -712,6 +712,12 @@ export class LineageBuilder {
         }
 
         return nodes;
+    }
+
+    public resolveExpressionPublic(
+        expr: Expression | null | undefined
+    ): LineageNode[] {
+        return this.resolveExpression(expr);
     }
 }
 

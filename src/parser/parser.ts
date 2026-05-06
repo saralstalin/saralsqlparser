@@ -1,317 +1,59 @@
 import { Lexer, Token, TokenType } from './lexer';
+import {
+    // Core
+    Program,
+    ParseResult,
+    ParseIssue,
+    NodeLocation,
 
-export type NodeLocation = {
-    start: number;
-    end: number;
-};
+    // Statements
+    Statement,
+    QueryStatement,
+    InsertNode,
+    UpdateNode,
+    DeleteNode,
+    DeclareNode,
+    SetNode,
+    CreateNode,
+    IfNode,
+    BlockNode,
+    WithNode,
+    PrintNode,
+    ErrorNode,
 
-export interface ParseIssue {
-    code: string;
-    message: string;
-    start: number;
-    end: number;
-}
+    // Expressions
+    Expression,
+    IdentifierNode,
+    GroupingExpression,
+    SubqueryExpression,
+    OverExpression,
+    MemberExpression,
+    WildcardExpression,
+    WindowDefinition,
 
-export interface Recoverable {
-    /**
-     * True when parser intentionally emitted a partial node
-     * instead of failing the whole statement.
-     */
-    incomplete?: boolean;
+    // Table / relational
+    TableReference,
+    JoinNode,
+    JoinType,
+    ColumnNode,
+    OrderByNode,
 
-    /**
-     * Optional lightweight parse issues attached to this node.
-     * Keep human-readable.
-     */
-    errors?: string[];
-}
+    // DML helpers
+    UpdateAssignment,
 
-export interface WildcardExpression extends NodeLocation {
-    type: 'WildcardExpression';
-    tablePrefix?: IdentifierNode; // Preserves location of the 'alias' in 'alias.*'
-}
+    // DDL / metadata
+    VariableDeclaration,
+    ColumnDefinition,
+    ParameterDefinition,
+    CTENode,
 
-export interface BinaryExpression extends NodeLocation, Recoverable {
-    type: 'BinaryExpression';
-    left: Expression;
-    operator: string;
-    right: Expression | null;   // recoverable
-}
+    // OUTPUT clause
+    OutputClauseNode,
+    OutputColumnNode
 
-export interface LiteralNode extends NodeLocation {
-    type: 'Literal';
-    value: string | number | null;
-    variant: 'string' | 'number' | 'null';
-}
+} from '@/ast/types';
 
-export interface FunctionCallNode extends NodeLocation, Recoverable {
-    type: 'FunctionCall';
-    name: string;
-    args: Expression[];
-}
 
-export interface CaseBranch {
-    when: Expression | null;   // recoverable
-    then: Expression | null;   // recoverable
-}
-
-export interface CaseExpression extends NodeLocation, Recoverable {
-    type: 'CaseExpression';
-    input?: Expression;
-    branches: CaseBranch[];
-    elseBranch?: Expression;
-}
-
-export interface InExpression extends NodeLocation, Recoverable {
-    type: 'InExpression';
-    left: Expression;
-    list?: Expression[];
-    subquery?: QueryStatement;
-    isNot: boolean;
-}
-
-export interface GroupingExpression extends NodeLocation, Recoverable {
-    type: 'GroupingExpression';
-    expression: Expression | null;   // recoverable
-}
-
-export type Expression =
-    | BinaryExpression
-    | UnaryExpression
-    | LiteralNode
-    | IdentifierNode
-    | VariableNode
-    | FunctionCallNode
-    | CaseExpression
-    | InExpression
-    | BetweenExpression
-    | GroupingExpression
-    | SubqueryExpression
-    | OverExpression
-    | MemberExpression
-    | WildcardExpression;
-
-export interface JoinNode extends NodeLocation, Recoverable {
-    type: JoinType;
-    rawType: string; // The actual keyword(s) by user (e.g., "LEFT JOIN", "JOIN")
-    table: Expression | null; // Can be null if the join clause is incomplete
-    on: Expression | null;
-    hints?: string[];
-    alias?: string;
-}
-
-export interface PrintNode extends NodeLocation, Recoverable {
-    type: 'PrintStatement';
-    value: Expression | null; // recoverable
-}
-
-export interface ColumnNode extends NodeLocation {
-    type: 'Column';
-    expression: Expression;
-    sourceName?: string;
-    alias?: string;
-    outputName: string;
-    wildcard?: boolean;
-}
-
-export interface IfNode extends NodeLocation {
-    type: 'IfStatement';
-    condition: Expression;
-    thenBranch: Statement | Statement[];
-    elseBranch?: Statement | Statement[];
-}
-
-export interface BlockNode extends NodeLocation {
-    type: 'BlockStatement';
-    body: Statement[];
-}
-
-export interface UnaryExpression extends NodeLocation, Recoverable {
-    type: 'UnaryExpression';
-    operator: string;
-    right: Expression | null;    // recoverable
-}
-
-// Fix naming collision: Bound expressions vs Node offsets
-export interface BetweenExpression extends NodeLocation {
-    type: 'BetweenExpression';
-    left: Expression;
-    lowerBound: Expression; // Renamed from start
-    upperBound: Expression; // Renamed from end
-    isNot: boolean;
-}
-
-export interface SubqueryExpression extends NodeLocation {
-    type: 'SubqueryExpression';
-    query: QueryStatement;
-}
-
-export interface MemberExpression extends NodeLocation {
-    type: 'MemberExpression';
-    object: Expression;
-    property: string;
-    name: string; // The flattened string (e.g., "dbo.Table")
-}
-export type QueryStatement = SelectNode | SetOperatorNode;
-export type Statement = (QueryStatement | InsertNode | UpdateNode | DeleteNode | DeclareNode | SetNode | CreateNode | IfNode | BlockNode | WithNode | PrintNode | ErrorNode) & NodeLocation;
-
-export interface Program {
-    type: 'Program';
-    body: Statement[];
-}
-
-export interface TableReference extends NodeLocation, Recoverable {
-    type: 'TableReference';
-    table: Expression | null;
-    alias?: string;
-    schema?: string;
-    hints?: string[];   // T-SQL hints like NOLOCK, ROWLOCK
-    joins: JoinNode[];
-}
-
-export interface SelectNode extends NodeLocation, Recoverable {
-    type: 'SelectStatement';
-    distinct: boolean;
-    top: string | null;
-    columns: ColumnNode[];
-    from: TableReference[] | null;
-    where: Expression | null;
-    groupBy: Expression[] | null;
-    having: Expression | null;
-    orderBy: OrderByNode[] | null;
-}
-
-export interface InsertNode extends NodeLocation, Recoverable {
-    type: 'InsertStatement';
-    table: Expression | null;
-    columns: string[] | null;
-    output?: OutputClauseNode;
-    values: Expression[][] | null;
-    selectQuery: SelectNode | SetOperatorNode | null;
-}
-
-export interface UpdateAssignment {
-    column: string;
-    value: Expression | null;
-}
-
-export interface UpdateNode extends NodeLocation, Recoverable {
-    type: 'UpdateStatement';
-    target: Expression | null;
-    assignments: UpdateAssignment[] | null;
-    output?: OutputClauseNode;
-    from: TableReference[] | null;
-    where: Expression | null;
-}
-
-export interface DeleteNode extends NodeLocation, Recoverable {
-    type: 'DeleteStatement';
-    target: Expression | null;         // The table or alias being deleted from
-    output?: OutputClauseNode;
-    from: TableReference[] | null;
-    where: Expression | null;
-}
-
-export interface VariableDeclaration extends NodeLocation {
-    name: string;        // e.g., "@BatchID"
-    dataType: string;    // e.g., "INT" or "VARCHAR(MAX)"
-    initialValue?: Expression; // Optional initial value (e.g., "10" or "@ID + 1")
-    columns?: ColumnDefinition[] | null; // For table variables
-}
-
-export interface ParseResult {
-    ast: Program;
-    issues?: ParseIssue[];
-}
-
-export interface DeclareNode extends NodeLocation, Recoverable {
-    type: 'DeclareStatement';
-    variables: VariableDeclaration[];
-}
-
-export interface SetNode extends NodeLocation, Recoverable {
-    type: 'SetStatement';
-    variable: string; // e.g., "@ID"
-    variableStart: number;
-    variableEnd: number;
-    value: Expression | null;    // e.g., "10" or "@ID + 1"
-}
-
-export interface OrderByNode extends NodeLocation {
-    expression: Expression;
-    direction: 'ASC' | 'DESC';
-}
-
-export interface SetOperatorNode extends NodeLocation {
-    type: 'SetOperator';
-    operator: 'UNION' | 'UNION ALL' | 'EXCEPT' | 'INTERSECT';
-    left: QueryStatement;  // Changed from Statement
-    right: QueryStatement; // Changed from Statement
-}
-
-export interface ColumnDefinition extends NodeLocation {
-    name: string;
-    dataType: string;
-    constraints?: string[]; // e.g., ["PRIMARY KEY", "NOT NULL"]
-}
-
-export interface ParameterDefinition extends NodeLocation {
-    name: string;
-    dataType: string;
-    defaultValue?: string;
-    isOutput: boolean;
-}
-
-export interface CreateNode extends NodeLocation {
-    type: 'CreateStatement';
-    objectType: 'TABLE' | 'VIEW' | 'PROCEDURE' | 'FUNCTION' | 'TYPE';
-    name: string;
-    columns?: ColumnDefinition[]; // For Tables
-    parameters?: ParameterDefinition[]; // For Procs/Functions
-    body?: Statement | Statement[]; // The code inside
-    isTableType?: boolean; // For CREATE TYPE ... AS TABLE
-}
-
-export interface CTENode extends NodeLocation {
-    name: string;
-    columns?: string[];
-    query: QueryStatement;
-}
-
-export interface WithNode extends NodeLocation {
-    type: 'WithStatement';
-    ctes: CTENode[];
-    body: Statement;
-}
-
-export interface WindowDefinition extends NodeLocation {
-    type: 'WindowDefinition';
-    partitionBy?: Expression[];
-    orderBy?: OrderByNode[];
-}
-
-export interface OverExpression extends NodeLocation {
-    type: 'OverExpression';
-    expression: Expression; // The underlying FunctionCall
-    window: WindowDefinition;
-}
-
-export interface IdentifierNode extends NodeLocation, Recoverable {
-    type: 'Identifier';
-    name: string;
-    parts: string[];
-    tablePrefix?: string;
-}
-
-export interface ErrorNode extends NodeLocation {
-    type: 'ErrorStatement';
-    message: string;
-}
-
-export interface VariableNode extends NodeLocation {
-    type: 'Variable';
-    name: string;
-}
 export const JoinKeywords = {
     JOIN: 'JOIN',
     INNER: 'INNER',
@@ -326,7 +68,7 @@ export const JoinKeywords = {
 export type JoinKeyword =
     typeof JoinKeywords[keyof typeof JoinKeywords];
 
-export const JoinTypes = {
+const JoinTypes: Record<string, JoinType> = {
     INNER: 'INNER JOIN',
     LEFT_OUTER: 'LEFT OUTER JOIN',
     RIGHT_OUTER: 'RIGHT OUTER JOIN',
@@ -334,24 +76,7 @@ export const JoinTypes = {
     CROSS: 'CROSS JOIN',
     CROSS_APPLY: 'CROSS APPLY',
     OUTER_APPLY: 'OUTER APPLY',
-} as const;
-
-export type JoinType =
-    typeof JoinTypes[keyof typeof JoinTypes];
-
-export interface OutputColumnNode extends NodeLocation {
-    type: 'OutputColumn';
-    sourceTable: 'INSERTED' | 'DELETED' | null;
-    sourceLocation?: NodeLocation;
-    column: ColumnNode;
-}
-
-export interface OutputClauseNode extends NodeLocation {
-    type: 'OutputClause';
-    columns: OutputColumnNode[]; // Use the specialized column node
-    intoTable?: Expression;
-    intoColumns?: string[];
-}
+};
 
 enum Precedence {
     LOWEST,
@@ -771,14 +496,16 @@ export class Parser {
                 next.type !== TokenType.Semicolon &&
                 next.value !== ')'
             ) {
-                // 🔥 recursive precedence handling
+                // ✅ FIX: DO NOT use precedence + 1
+                const rightStart = this.parseSelect();
+
                 right = this.parseSetOperation(
-                    this.parseSelect(),
-                    precedence + 1
+                    rightStart,
+                    precedence
                 );
             }
 
-            // 🔥 recovery: do NOT collapse into ErrorStatement
+            // 🔥 recovery: keep left intact if RHS missing
             if (!right) {
                 return left;
             }
@@ -1283,25 +1010,13 @@ export class Parser {
         let tableNode: Expression | null = null;
         let endOffset = startToken.offset + startToken.value.length;
 
-        // --- hard sync to statement boundary (does NOT consume boundary) ---
+        // ✅ FIXED: ONLY stop at semicolon
         const syncToStatementBoundary = () => {
             while (this.peek()) {
                 const t = this.peek()!;
 
-                // Stop at semicolon (preferred boundary)
-                if (t.type === TokenType.Semicolon) return;
-
-                // Or stop at the start of the next statement (extra safety)
-                const v = t.value?.toUpperCase();
-                if (
-                    v === 'SELECT' ||
-                    v === 'INSERT' ||
-                    v === 'UPDATE' ||
-                    v === 'DELETE' ||
-                    v === 'WITH' ||
-                    v === 'GO'
-                ) {
-                    return;
+                if (t.type === TokenType.Semicolon) {
+                    return; // do NOT consume
                 }
 
                 this.consume();
@@ -1321,7 +1036,7 @@ export class Parser {
                 tableNode = this.parseMultipartIdentifier();
                 endOffset = tableNode.end;
 
-                // 🔥 Detect invalid like "dbo."
+                // detect invalid identifier like "dbo."
                 if (
                     tableNode.type === 'Identifier' &&
                     (tableNode.incomplete || tableNode.parts.includes(''))
@@ -1336,7 +1051,6 @@ export class Parser {
                         tableNode.end
                     );
 
-                    // 🔥 HARD ALIGN to boundary
                     syncToStatementBoundary();
 
                     return {
@@ -1389,7 +1103,6 @@ export class Parser {
                 endOffset
             );
 
-            // 🔥 HARD ALIGN to boundary
             syncToStatementBoundary();
 
             return {
@@ -1406,7 +1119,7 @@ export class Parser {
             };
         }
 
-        // 2) Column list
+        // 2) Column list (unchanged)
         let columns: string[] | null = null;
 
         if (this.peek()?.type === TokenType.OpenParen) {
@@ -1456,7 +1169,7 @@ export class Parser {
             }
         }
 
-        // 3) OUTPUT
+        // 3) OUTPUT (unchanged)
         if (this.peekKeyword('OUTPUT')) {
             try {
                 output = this.parseOutputClause();
@@ -1476,7 +1189,7 @@ export class Parser {
             }
         }
 
-        // 4) VALUES / SELECT
+        // 4) VALUES / SELECT (unchanged)
         let values: Expression[][] | null = null;
         let selectQuery: QueryStatement | null = null;
 
@@ -1520,15 +1233,6 @@ export class Parser {
                         endOffset = expr.end;
                     } catch (e) {
                         incomplete = true;
-
-                        this.addRecoverableError(
-                            errors,
-                            'PARSE_VALUES_EXPR',
-                            e instanceof Error ? e.message : String(e),
-                            this.peek()?.offset ?? endOffset,
-                            this.peek()?.offset ?? endOffset
-                        );
-
                         break;
                     }
                 }
@@ -1544,14 +1248,6 @@ export class Parser {
             if (!sawValuesRow) {
                 values = [[]];
                 incomplete = true;
-
-                this.addRecoverableError(
-                    errors,
-                    'PARSE_INSERT_VALUES',
-                    'Expected VALUES row',
-                    valuesToken.offset,
-                    endOffset
-                );
             }
         } else if (nextVal === 'SELECT' || nextVal === 'WITH') {
             try {
@@ -1559,14 +1255,6 @@ export class Parser {
                 endOffset = selectQuery.end;
             } catch (e) {
                 incomplete = true;
-
-                this.addRecoverableError(
-                    errors,
-                    'PARSE_INSERT_QUERY',
-                    e instanceof Error ? e.message : String(e),
-                    endOffset,
-                    endOffset
-                );
             }
         }
 

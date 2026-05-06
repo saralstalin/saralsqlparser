@@ -1,6 +1,5 @@
-import { Lexer } from '../src/lexer';
+import { Lexer } from '../src/parser/lexer';
 import {
-    Parser,
     Statement,
     SelectNode,
     InsertNode,
@@ -9,7 +8,8 @@ import {
     DeclareNode,
     SetNode,
     PrintNode
-} from '../src/parser';
+} from '@/ast/types';
+import { Parser } from '../src/parser/parser';
 
 const parse = (sql: string) => {
     const lexer = new Lexer(sql);

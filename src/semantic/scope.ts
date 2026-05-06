@@ -1,4 +1,4 @@
-import { NodeLocation } from './parser';
+import { NodeLocation } from '@/ast/types';
 
 export enum SymbolKind {
     Variable = 'Variable',

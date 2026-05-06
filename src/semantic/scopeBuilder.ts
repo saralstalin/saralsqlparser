@@ -20,7 +20,7 @@ import {
     SubqueryExpression,
     OutputClauseNode,
     IdentifierNode
-} from './parser';
+} from '@/ast/types';
 
 import { Scope, Symbol, SymbolKind, SymbolReference, ReferenceKind } from './scope';
 
@@ -491,17 +491,32 @@ export class ScopeBuilder {
     }
 
     private visitTableReference(ref: TableReference): void {
+        const table = ref.table;
+
+        // -----------------------------------------
+        // Alias (WITH metadata)
+        // -----------------------------------------
         if (ref.alias) {
+            let tableName: string | undefined;
+
+            if (table?.type === 'Identifier') {
+                tableName = table.name;
+            }
+
             this.declare({
                 name: ref.alias,
-                kind: SymbolKind.Alias,
+                kind: SymbolKind.Alias, // ✅ DO NOT CHANGE
                 location: ref,
                 references: [],
+                metadata: tableName
+                    ? { tableName }
+                    : undefined,
             });
         }
 
-        const table = ref.table;
-
+        // -----------------------------------------
+        // Visit table
+        // -----------------------------------------
         if (table) {
             if (table.type === 'SubqueryExpression') {
                 this.visitSubquery(table);
@@ -510,10 +525,14 @@ export class ScopeBuilder {
             }
         }
 
+        // -----------------------------------------
+        // Joins
+        // -----------------------------------------
         for (const join of ref.joins) {
             this.visitJoin(join);
         }
     }
+
 
     private visitJoin(join: JoinNode): void {
         if (join.alias) {
@@ -688,20 +707,34 @@ export class ScopeBuilder {
     private recordIdentifierReference(expr: IdentifierNode): void {
         const parts = expr.parts;
 
-        // qualified identifier
+        // -----------------------------------------
+        // CASE 1: Qualified identifier (u.Id)
+        // -----------------------------------------
         if (parts.length >= 2) {
             const qualifier = parts[0];
 
             if (this.current.resolve(qualifier)) {
+                //  only record qualifier (alias/table symbol)
                 this.recordReference(qualifier, expr);
             }
 
             return;
         }
 
-        // single-part symbol reference only
-        if (this.current.resolve(expr.name)) {
-            this.recordReference(expr.name, expr);
+        // -----------------------------------------
+        // CASE 2: Single identifier
+        // -----------------------------------------
+        const name = expr.name;
+
+        // ONLY resolve declared symbols (variables, alias, params, etc.)
+        if (this.current.resolve(name)) {
+            this.recordReference(name, expr);
         }
+
+        //  DO NOT attempt column resolution here
+        //  DO NOT push undeclared for identifiers
     }
+
+
+
 }

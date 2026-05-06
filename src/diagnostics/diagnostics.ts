@@ -13,10 +13,10 @@ import {
     QueryStatement,
     NodeLocation,
     ColumnNode,
-} from './parser';
+} from '../ast/types';
 
-import { ScopeBuilderResult, DuplicateDeclaration } from './scopeBuilder';
-import { SymbolKind, Scope } from './scope';
+import { ScopeBuilderResult, DuplicateDeclaration } from '../semantic/scopeBuilder';
+import { SymbolKind, Scope } from '../semantic/scope';
 
 // ─── Core types ───────────────────────────────────────────────────────────────
 

@@ -1,5 +1,5 @@
-import { Lexer, TokenType } from '../src/lexer';
-import { Parser } from '../src/parser';
+import { Lexer, TokenType } from '../src/parser/lexer';
+import { Parser } from '../src/parser/parser';
 
 describe('Parser Fault Tolerance', () => {
     test('should recover from a missing FROM clause', () => {

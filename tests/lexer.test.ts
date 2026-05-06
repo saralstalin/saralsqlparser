@@ -1,4 +1,4 @@
-import { Lexer, TokenType } from '../src/lexer';
+import { Lexer, TokenType } from '../src/parser/lexer';
 
 describe('T-SQL Lexer - Tests', () => {
     

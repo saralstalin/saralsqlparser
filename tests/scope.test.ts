@@ -1,7 +1,7 @@
-import { Lexer } from '../src/lexer';
-import { Parser } from '../src/parser';
-import { ScopeBuilder, ScopeBuilderResult } from '../src/scopeBuilder';
-import { SymbolKind } from '../src/scope';
+import { Lexer } from '../src/parser/lexer';
+import { Parser } from '../src/parser/parser';
+import { ScopeBuilder, ScopeBuilderResult } from '../src/semantic/scopeBuilder';
+import { SymbolKind } from '../src/semantic/scope';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 

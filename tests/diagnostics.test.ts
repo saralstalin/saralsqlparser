@@ -1,7 +1,7 @@
-import { Lexer } from '../src/lexer';
-import { Parser } from '../src/parser';
-import { ScopeBuilder } from '../src/scopeBuilder';
-import { diagnose, DiagnosticCode, Diagnostic } from '../src/diagnostics';
+import { Lexer } from '../src/parser/lexer';
+import { Parser } from '../src/parser/parser';
+import { ScopeBuilder } from '../src/semantic/scopeBuilder';
+import { diagnose, DiagnosticCode, Diagnostic } from '../src/diagnostics/diagnostics';
 
 beforeAll(() => jest.spyOn(console, 'error').mockImplementation(() => { }));
 afterAll(() => jest.restoreAllMocks());

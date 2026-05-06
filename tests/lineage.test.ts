@@ -1,5 +1,5 @@
 import { Parser, Lexer } from '../src';
-import { LineageBuilder } from '../src/lineageBuilder';
+import { LineageBuilder } from '../src/lineage/lineageBuilder';
 
 function lineage(sql: string) {
     const parser = new Parser(new Lexer(sql));

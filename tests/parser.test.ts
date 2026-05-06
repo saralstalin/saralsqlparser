@@ -1,7 +1,6 @@
-import { Lexer, TokenType } from '../src/lexer';
-import { Parser, SelectNode, InsertNode, UpdateNode, DeleteNode, DeclareNode, SetNode, CreateNode, SetOperatorNode, IfNode, BlockNode, WithNode, OverExpression, TableReference, MemberExpression, IdentifierNode } from '../src/parser';
-
-
+import { Lexer, TokenType } from '../src/parser/lexer';
+import { SelectNode, InsertNode, UpdateNode, DeleteNode, DeclareNode, SetNode, CreateNode, SetOperatorNode, IfNode, BlockNode, WithNode, OverExpression, TableReference, MemberExpression, IdentifierNode } from '@/ast/types';
+import { Parser } from '../src/parser/parser';
 
 /**
     * Test Serializer

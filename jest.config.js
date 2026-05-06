@@ -14,4 +14,9 @@ module.exports = {
     testMatch: ["**/tests/**/*.test.ts"],
     // Cache transformed modules between runs
     cache: true,
+
+    moduleNameMapper: {
+        '^@/(.*)$': '<rootDir>/src/$1',
+    },
+
 };

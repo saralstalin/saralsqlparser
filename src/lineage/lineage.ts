@@ -1,4 +1,4 @@
-import { Expression, NodeLocation } from './parser';
+import { Expression, NodeLocation } from '@/ast/types';
 
 export type LineageNodeKind =
     | 'table'
