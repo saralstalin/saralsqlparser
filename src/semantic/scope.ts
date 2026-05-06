@@ -1,4 +1,4 @@
-import { NodeLocation } from '@/ast/types';
+import { NodeLocation } from '../ast/types';
 
 export enum SymbolKind {
     Variable = 'Variable',

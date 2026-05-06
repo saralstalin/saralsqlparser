@@ -2,10 +2,10 @@ import {
     Program,
     Expression,
     IdentifierNode
-} from '@/ast/types';
+} from '../ast/types';
 
-import { LineageBuilder } from '@/lineage/lineageBuilder';
-import { LineageNode } from '@/lineage/lineage';
+import { LineageBuilder } from '../lineage/lineageBuilder';
+import { LineageNode } from '../lineage/lineage';
 
 // ---------------------------------------------
 // Public types

@@ -14,7 +14,7 @@ import {
     OutputClauseNode,
     TableReference,
     JoinNode,
-} from '@/ast/types';
+} from '../ast/types';
 
 import {
     LineageNode,
