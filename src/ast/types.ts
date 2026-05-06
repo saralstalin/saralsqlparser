@@ -27,7 +27,7 @@ export interface ParseIssue {
 // Program Root
 // ===============================
 
-export interface Program {
+export interface Program extends NodeLocation {
     type: 'Program';
     body: Statement[];
 }
@@ -216,13 +216,16 @@ export interface InsertNode extends NodeLocation, Recoverable {
     type: 'InsertStatement';
     table: Expression | null;
     columns: string[] | null;
+    columnNodes: IdentifierNode[] | null;
     output?: OutputClauseNode;
     values: Expression[][] | null;
     selectQuery: QueryStatement | null;
 }
 
-export interface UpdateAssignment {
+export interface UpdateAssignment extends NodeLocation {
+    type: 'UpdateAssignment';
     column: string;
+    columnNode: IdentifierNode | null;
     value: Expression | null;
 }
 
@@ -304,6 +307,7 @@ export interface CreateNode extends NodeLocation {
     type: 'CreateStatement';
     objectType: 'TABLE' | 'VIEW' | 'PROCEDURE' | 'FUNCTION' | 'TYPE';
     name: string;
+    nameNode: IdentifierNode;
     columns?: ColumnDefinition[];
     parameters?: ParameterDefinition[];
     body?: Statement | Statement[];
@@ -405,4 +409,5 @@ export interface OutputClauseNode extends NodeLocation {
     columns: OutputColumnNode[];
     intoTable?: Expression;
     intoColumns?: string[];
+    intoColumnNodes?: IdentifierNode[];
 }

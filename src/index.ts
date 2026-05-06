@@ -18,10 +18,56 @@ export type {
     GroupingExpression, SubqueryExpression, OverExpression,
     MemberExpression, WildcardExpression,
     // Structural
-    NodeLocation, TableReference, JoinNode, JoinType,
+    ASTNode, NodeLocation, TableReference, JoinNode, JoinType,
     ColumnNode, ColumnDefinition, ParameterDefinition,
     QueryStatement
-} from '@/ast/types';
+} from './ast/types';
+
+export { analyze } from './analyze';
+export type { AnalysisResult } from './analyze';
+
+export {
+    collectNodes,
+    findFirst,
+    findNodeAt,
+    findParent,
+    getChildren,
+    walkAST
+} from './ast/astWalker';
+export type { ASTVisitor } from './ast/astWalker';
+
+export { getDocumentSymbols } from './documentSymbols';
+export type { DocumentSymbol, DocumentSymbolKind } from './documentSymbols';
+
+export { getCompletionContext, getCompletionsAt } from './completions';
+export type {
+    CompletionContext,
+    CompletionItem,
+    CompletionItemKind
+} from './completions';
+
+export {
+    extractDeclarations,
+    extractDependencies,
+    extractReferences
+} from './extractors';
+export type {
+    ExtractedDeclaration,
+    ExtractedDeclarationKind,
+    ExtractedDependency,
+    ExtractedReference,
+    ExtractedReferenceContext,
+    ExtractedReferenceKind
+} from './extractors';
+
+export {
+    LineIndex,
+    createLineIndex,
+    locationToRange,
+    offsetToPosition,
+    positionToOffset
+} from './position';
+export type { Position, Range } from './position';
 
 export { ScopeBuilder } from './semantic/scopeBuilder';
 export type { ScopeBuilderResult, DuplicateDeclaration } from './semantic/scopeBuilder';
@@ -29,8 +75,8 @@ export type { ScopeBuilderResult, DuplicateDeclaration } from './semantic/scopeB
 export { Scope } from './semantic/scope';
 export type { Symbol, SymbolKind, SymbolReference, ReferenceKind } from './semantic/scope';
 
-export { diagnose } from './diagnostics/diagnostics';
-export type { Diagnostic, DiagnosticSeverity, DiagnosticCode } from './diagnostics/diagnostics';
+export { DiagnosticCode, diagnose } from './diagnostics/diagnostics';
+export type { Diagnostic, DiagnosticSeverity } from './diagnostics/diagnostics';
 
 export { LineageBuilder } from './lineage/lineageBuilder';
 export type {
@@ -42,4 +88,4 @@ export type {
 } from './lineage/lineage';
 
 export { ColumnAnalyzer } from './semantic/columnAnalyzer';
-export type { ColumnResolution } from './semantic/columnAnalyzer';
+export type { ColumnAnalysisResult, ColumnResolution } from './semantic/columnAnalyzer';

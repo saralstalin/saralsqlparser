@@ -30,7 +30,7 @@ export interface Diagnostic {
     end: number;
 }
 
-export const enum DiagnosticCode {
+export enum DiagnosticCode {
     UndeclaredVariable = 'VAR001',
     UnusedVariable = 'VAR002',
     UnusedParameter = 'VAR003',

@@ -268,7 +268,15 @@ describe('T-SQL Parser', () => {
     // 21. INSERT Standard
     test('should handle INSERT INTO ... VALUES', () => {
         const sql = `INSERT INTO Users (Name) VALUES ('Saral')`;
-        expect(parse(sql).body[0].type).toBe('InsertStatement');
+        const node = parse(sql).body[0] as InsertNode;
+        expect(node.type).toBe('InsertStatement');
+        expect(node.columns).toEqual(['Name']);
+        expect(node.columnNodes?.[0]).toMatchObject({
+            type: 'Identifier',
+            name: 'Name',
+            start: sql.indexOf('Name'),
+            end: sql.indexOf('Name') + 'Name'.length
+        });
     });
 
     // 22. INSERT from SELECT
@@ -281,7 +289,20 @@ describe('T-SQL Parser', () => {
     // 23. UPDATE Standard
     test('should handle standard UPDATE', () => {
         const sql = `UPDATE Users SET Status = 1 WHERE ID = 1`;
-        expect(parse(sql).body[0].type).toBe('UpdateStatement');
+        const node = parse(sql).body[0] as UpdateNode;
+        expect(node.type).toBe('UpdateStatement');
+        expect(node.assignments?.[0]).toMatchObject({
+            type: 'UpdateAssignment',
+            column: 'Status',
+            start: sql.indexOf('Status'),
+            end: sql.indexOf('1') + 1
+        });
+        expect(node.assignments?.[0].columnNode).toMatchObject({
+            type: 'Identifier',
+            name: 'Status',
+            start: sql.indexOf('Status'),
+            end: sql.indexOf('Status') + 'Status'.length
+        });
     });
 
     // 24. UPDATE with JOIN (T-SQL style)
@@ -322,7 +343,15 @@ describe('T-SQL Parser', () => {
     // 29. CREATE TABLE
     test('should handle CREATE TABLE', () => {
         const sql = `CREATE TABLE T (ID INT PRIMARY KEY)`;
-        expect((parse(sql).body[0] as CreateNode).objectType).toBe('TABLE');
+        const node = parse(sql).body[0] as CreateNode;
+        expect(node.objectType).toBe('TABLE');
+        expect(node.name).toBe('T');
+        expect(node.nameNode).toMatchObject({
+            type: 'Identifier',
+            name: 'T',
+            start: sql.indexOf('T ('),
+            end: sql.indexOf('T (') + 1
+        });
     });
 
     // 30. CREATE PROC / VIEW

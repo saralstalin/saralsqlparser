@@ -20,7 +20,7 @@ import {
     SubqueryExpression,
     OutputClauseNode,
     IdentifierNode
-} from '@/ast/types';
+} from '../ast/types';
 
 import { Scope, Symbol, SymbolKind, SymbolReference, ReferenceKind } from './scope';
 

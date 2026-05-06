@@ -51,7 +51,7 @@ import {
     OutputClauseNode,
     OutputColumnNode
 
-} from '@/ast/types';
+} from '../ast/types';
 
 
 export const JoinKeywords = {
@@ -149,12 +149,14 @@ export class Parser {
     private tokens: Token[] = [];
     private pos = 0;
     private issues: ParseIssue[] = [];
+    private inputLength = 0;
 
     constructor(private lexer: Lexer) {
-        let t;
+        let t: Token;
         while ((t = lexer.nextToken()).type !== TokenType.EOF) {
             this.tokens.push(t);
         }
+        this.inputLength = t.offset;
     }
 
     private peek(offset: number = 0) {
@@ -253,6 +255,8 @@ export class Parser {
 
         const ast: Program = {
             type: 'Program',
+            start: 0,
+            end: this.inputLength,
             body: statements
         };
 
@@ -1057,6 +1061,7 @@ export class Parser {
                         type: 'InsertStatement',
                         table: tableNode,
                         columns: null,
+                        columnNodes: null,
                         output: undefined,
                         values: null,
                         selectQuery: null,
@@ -1083,6 +1088,7 @@ export class Parser {
                     type: 'InsertStatement',
                     table: tableNode,
                     columns: null,
+                    columnNodes: null,
                     output: undefined,
                     values: null,
                     selectQuery: null,
@@ -1109,6 +1115,7 @@ export class Parser {
                 type: 'InsertStatement',
                 table: tableNode,
                 columns: null,
+                columnNodes: null,
                 output: undefined,
                 values: null,
                 selectQuery: null,
@@ -1121,6 +1128,7 @@ export class Parser {
 
         // 2) Column list (unchanged)
         let columns: string[] | null = null;
+        let columnNodes: IdentifierNode[] | null = null;
 
         if (this.peek()?.type === TokenType.OpenParen) {
             const openParen = this.consume();
@@ -1128,15 +1136,17 @@ export class Parser {
 
             try {
                 if (this.peek()?.type !== TokenType.CloseParen) {
-                    columns = this.parseList(() => {
+                    columnNodes = this.parseList(() => {
                         const node = this.parseMultipartIdentifier();
-                        if (node.type === 'Identifier') return node.name;
+                        if (node.type === 'Identifier') return node;
                         throw new Error(
                             'Wildcards are not allowed in an INSERT column list'
                         );
                     });
+                    columns = columnNodes.map(node => node.name);
                 } else {
                     columns = [];
+                    columnNodes = [];
                 }
 
                 if (this.peek()?.type === TokenType.CloseParen) {
@@ -1155,6 +1165,7 @@ export class Parser {
                 }
             } catch (e) {
                 columns = [];
+                columnNodes = [];
                 incomplete = true;
 
                 this.addRecoverableError(
@@ -1262,6 +1273,7 @@ export class Parser {
             type: 'InsertStatement',
             table: tableNode,
             columns,
+            columnNodes,
             output,
             values,
             selectQuery,
@@ -1346,8 +1358,11 @@ export class Parser {
         if (sawSet) {
             try {
                 assignments = this.parseList(() => {
+                    const assignmentStart = this.peek()?.offset ?? endOffset;
                     let columnName = '';
+                    let columnNode: IdentifierNode | null = null;
                     let value: Expression | null = null;
+                    let assignmentEnd = assignmentStart;
 
                     // column
                     try {
@@ -1367,7 +1382,11 @@ export class Parser {
                             );
 
                             return {
+                                type: 'UpdateAssignment',
                                 column: '',
+                                columnNode: null,
+                                start: assignmentStart,
+                                end: assignmentEnd,
                                 value: null
                             };
                         }
@@ -1379,7 +1398,9 @@ export class Parser {
                             columnExpr.type === 'Identifier'
                         ) {
                             columnName = columnExpr.name;
+                            columnNode = columnExpr;
                             endOffset = columnExpr.end;
+                            assignmentEnd = columnExpr.end;
                         } else {
                             incomplete = true;
 
@@ -1391,7 +1412,11 @@ export class Parser {
                             );
 
                             return {
+                                type: 'UpdateAssignment',
                                 column: '',
+                                columnNode: null,
+                                start: assignmentStart,
+                                end: assignmentEnd,
                                 value: null
                             };
                         }
@@ -1409,7 +1434,11 @@ export class Parser {
                         );
 
                         return {
+                            type: 'UpdateAssignment',
                             column: '',
+                            columnNode: null,
+                            start: assignmentStart,
+                            end: assignmentEnd,
                             value: null
                         };
                     }
@@ -1426,7 +1455,11 @@ export class Parser {
                         );
 
                         return {
+                            type: 'UpdateAssignment',
                             column: columnName,
+                            columnNode,
+                            start: assignmentStart,
+                            end: assignmentEnd,
                             value: null
                         };
                     }
@@ -1434,6 +1467,7 @@ export class Parser {
                     const eqToken = this.consume();
                     endOffset =
                         eqToken.offset + eqToken.value.length;
+                    assignmentEnd = endOffset;
 
                     // value
                     try {
@@ -1441,6 +1475,7 @@ export class Parser {
 
                         if (value) {
                             endOffset = value.end;
+                            assignmentEnd = value.end;
                         }
 
                     } catch (e) {
@@ -1457,7 +1492,11 @@ export class Parser {
                     }
 
                     return {
+                        type: 'UpdateAssignment',
                         column: columnName,
+                        columnNode,
+                        start: assignmentStart,
+                        end: assignmentEnd,
                         value
                     };
                 });
@@ -3086,19 +3125,20 @@ export class Parser {
 
         // 2. Name
         let name = '';
-        let nameExpr: Expression = {
+        let nameNode: IdentifierNode = {
             type: 'Identifier',
             name: '',
             parts: [],
             start: endOffset,
             end: endOffset
-        } as IdentifierNode;
+        };
 
         try {
-            nameExpr = this.parseMultipartIdentifier();
+            const nameExpr = this.parseMultipartIdentifier();
 
             if (nameExpr.type === 'Identifier') {
                 name = nameExpr.name;
+                nameNode = nameExpr;
                 endOffset = nameExpr.end;
             } else {
                 incomplete = true;
@@ -3362,6 +3402,7 @@ export class Parser {
             type: 'CreateStatement',
             objectType,
             name,
+            nameNode,
             columns,
             parameters,
             body,
@@ -4413,6 +4454,7 @@ export class Parser {
         // 2. INTO
         let intoTable: Expression | undefined;
         let intoColumns: string[] | undefined;
+        let intoColumnNodes: IdentifierNode[] | undefined;
 
         if (this.peekKeyword('INTO')) {
             const intoToken = this.consume();
@@ -4461,11 +4503,17 @@ export class Parser {
 
                 try {
                     if (this.peek()?.type !== TokenType.CloseParen) {
-                        intoColumns = this.parseList(() =>
-                            this.match(TokenType.Identifier).value
-                        );
+                        intoColumnNodes = this.parseList(() => {
+                            const node = this.parseMultipartIdentifier();
+                            if (node.type === 'Identifier') return node;
+                            throw new Error(
+                                'Wildcards are not allowed in an OUTPUT INTO column list'
+                            );
+                        });
+                        intoColumns = intoColumnNodes.map(node => node.name);
                     } else {
                         intoColumns = [];
+                        intoColumnNodes = [];
                     }
 
                     if (this.peek()?.type === TokenType.CloseParen) {
@@ -4486,6 +4534,7 @@ export class Parser {
 
                 } catch (e) {
                     intoColumns = [];
+                    intoColumnNodes = [];
                     incomplete = true;
 
                     this.addRecoverableError(
@@ -4504,6 +4553,7 @@ export class Parser {
             columns,
             intoTable,
             intoColumns,
+            intoColumnNodes,
             start: startToken.offset,
             end: endOffset,
             ...(incomplete ? { incomplete: true } : {}),
