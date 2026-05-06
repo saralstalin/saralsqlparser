@@ -7,6 +7,7 @@ export type NodeLocation = {
 
 export interface ParseIssue {
     code: string;
+    message: string;
     start: number;
     end: number;
 }
@@ -220,6 +221,7 @@ export interface VariableDeclaration extends NodeLocation {
 
 export interface ParseResult {
     ast: Program;
+    issues?: ParseIssue[];
 }
 
 export interface DeclareNode extends NodeLocation, Recoverable {
@@ -421,6 +423,7 @@ const PRECEDENCE_MAP: Record<string, Precedence> = {
 export class Parser {
     private tokens: Token[] = [];
     private pos = 0;
+    private issues: ParseIssue[] = [];
 
     constructor(private lexer: Lexer) {
         let t;
@@ -697,7 +700,18 @@ export class Parser {
                             next.type === TokenType.Semicolon
                         ) {
                             incomplete = true;
-                            errors.push('Expected PRINT expression');
+
+                            const msg = 'Expected PRINT expression';
+                            errors.push(msg);
+
+                            //  emit structured issue
+                            this.issues.push({
+                                code: 'PARSE_EXPECTED_PRINT_EXPR',
+                                message: msg,
+                                start: printToken.offset,
+                                end: endOffset
+                            });
+
                         } else {
                             value = this.parseExpression();
                             endOffset = value.end;
@@ -706,9 +720,20 @@ export class Parser {
                     } catch (e) {
                         incomplete = true;
 
-                        errors.push(
-                            e instanceof Error ? e.message : String(e)
-                        );
+                        const msg =
+                            e instanceof Error ? e.message : String(e);
+
+                        errors.push(msg);
+
+                        //  emit structured issue
+                        this.issues.push({
+                            code: 'PARSE_PRINT_ERROR',
+                            message: msg,
+                            start: printToken.offset,
+                            end: this.peek()
+                                ? this.peek()!.offset + this.peek()!.value.length
+                                : endOffset
+                        });
                     }
 
                     stmt = {
@@ -731,7 +756,9 @@ export class Parser {
                 case 'THEN':
                 case 'ELSE':
                 case 'END':
-                    throw new Error(`Unexpected keyword: ${token.value}. This must be part of an expression.`);
+                    throw new Error(
+                        `Unexpected keyword: ${token.value}. This must be part of an expression.`
+                    );
 
                 default:
                     if (token.type === TokenType.Semicolon) {
@@ -741,9 +768,21 @@ export class Parser {
                     throw new Error(`Unexpected token: ${token.value}`);
             }
         } catch (e) {
-            const errorMsg = e instanceof Error ? e.message : String(e);
+            const errorMsg =
+                e instanceof Error ? e.message : String(e);
 
-            const errorEnd = this.peek() ? this.peek()!.offset + this.peek()!.value.length : startOffset + 1;
+            const errorEnd = this.peek()
+                ? this.peek()!.offset + this.peek()!.value.length
+                : startOffset + 1;
+
+            //  emit structured issue
+            this.issues.push({
+                code: 'PARSE_STATEMENT_ERROR',
+                message: errorMsg,
+                start: startOffset,
+                end: errorEnd
+            });
+
             this.resync();
 
             return {
@@ -754,17 +793,36 @@ export class Parser {
             } as ErrorNode;
         }
 
-        /**
-         * FIX: Precise Range Logic
-         * Consume the semicolon if it exists so the parser moves forward,
-         * but DO NOT update stmt.end. This keeps the statement bounds 
-         * limited to the actual SQL text (excluding the punctuation).
-         */
+        // Preserve your semicolon handling
         if (stmt && this.peek()?.type === TokenType.Semicolon) {
             this.consume();
         }
 
         return stmt;
+    }
+
+    private addRecoverableError(
+        errors: string[],
+        code: string,
+        message: string,
+        fallbackStart?: number,
+        fallbackEnd?: number
+    ): void {
+        errors.push(message);
+
+        const token = this.peek();
+
+        this.addIssue(
+            code,
+            message,
+            fallbackStart ?? token?.offset ?? 0,
+            fallbackEnd ??
+            (
+                token
+                    ? token.offset + token.value.length
+                    : (fallbackStart ?? 0) + 1
+            )
+        );
     }
 
     private parseSelect(): SelectNode {
@@ -786,7 +844,9 @@ export class Parser {
         if (this.peekKeyword('TOP')) {
             this.consume();
 
-            const hasParens = this.peek()?.type === TokenType.OpenParen;
+            const hasParens =
+                this.peek()?.type === TokenType.OpenParen;
+
             if (hasParens) {
                 this.consume();
             }
@@ -797,7 +857,10 @@ export class Parser {
                 top = null;
             }
 
-            if (hasParens && this.peek()?.type === TokenType.CloseParen) {
+            if (
+                hasParens &&
+                this.peek()?.type === TokenType.CloseParen
+            ) {
                 this.consume();
             }
 
@@ -819,14 +882,25 @@ export class Parser {
 
             if (columns.length === 0) {
                 incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_SELECT_EMPTY_COLUMNS',
+                    'Expected SELECT column list',
+                    startToken.offset,
+                    startToken.offset + startToken.value.length
+                );
             }
 
         } catch (e) {
             columns = [];
             incomplete = true;
 
-            errors.push(
-                e instanceof Error ? e.message : String(e)
+            this.addRecoverableError(
+                errors,
+                'PARSE_SELECT_COLUMNS',
+                e instanceof Error ? e.message : String(e),
+                startToken.offset
             );
         }
 
@@ -848,14 +922,24 @@ export class Parser {
                 } else {
                     from = [];
                     incomplete = true;
+
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_SELECT_EMPTY_FROM',
+                        'Expected FROM source',
+                        endOffset
+                    );
                 }
 
             } catch (e) {
                 from = [];
                 incomplete = true;
 
-                errors.push(
-                    e instanceof Error ? e.message : String(e)
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_SELECT_FROM',
+                    e instanceof Error ? e.message : String(e),
+                    endOffset
                 );
             }
         }
@@ -865,7 +949,8 @@ export class Parser {
 
         if (this.peekKeyword('WHERE')) {
             const whereToken = this.consume();
-            endOffset = whereToken.offset + whereToken.value.length;
+            endOffset =
+                whereToken.offset + whereToken.value.length;
 
             try {
                 where = this.parseExpression();
@@ -877,8 +962,12 @@ export class Parser {
             } catch (e) {
                 incomplete = true;
 
-                errors.push(
-                    e instanceof Error ? e.message : String(e)
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_SELECT_WHERE',
+                    e instanceof Error ? e.message : String(e),
+                    whereToken.offset,
+                    endOffset
                 );
             }
         }
@@ -888,7 +977,8 @@ export class Parser {
 
         if (this.peekKeyword('GROUP')) {
             const groupToken = this.consume();
-            endOffset = groupToken.offset + groupToken.value.length;
+            endOffset =
+                groupToken.offset + groupToken.value.length;
 
             let hasBy = false;
 
@@ -899,28 +989,45 @@ export class Parser {
             } catch (e) {
                 incomplete = true;
 
-                errors.push(
-                    e instanceof Error ? e.message : String(e)
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_SELECT_GROUP_BY',
+                    e instanceof Error ? e.message : String(e),
+                    groupToken.offset,
+                    endOffset
                 );
             }
 
             if (hasBy) {
                 try {
-                    groupBy = this.parseList(() => this.parseExpression());
+                    groupBy = this.parseList(() =>
+                        this.parseExpression()
+                    );
 
                     if (groupBy.length > 0) {
-                        endOffset = groupBy[groupBy.length - 1].end;
+                        endOffset =
+                            groupBy[groupBy.length - 1].end;
                     } else {
                         groupBy = [];
                         incomplete = true;
+
+                        this.addRecoverableError(
+                            errors,
+                            'PARSE_SELECT_EMPTY_GROUP_BY',
+                            'Expected GROUP BY expression',
+                            endOffset
+                        );
                     }
 
                 } catch (e) {
                     groupBy = [];
                     incomplete = true;
 
-                    errors.push(
-                        e instanceof Error ? e.message : String(e)
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_SELECT_GROUP_EXPR',
+                        e instanceof Error ? e.message : String(e),
+                        endOffset
                     );
                 }
             } else {
@@ -933,7 +1040,8 @@ export class Parser {
 
         if (this.peekKeyword('HAVING')) {
             const havingToken = this.consume();
-            endOffset = havingToken.offset + havingToken.value.length;
+            endOffset =
+                havingToken.offset + havingToken.value.length;
 
             try {
                 having = this.parseExpression();
@@ -945,8 +1053,12 @@ export class Parser {
             } catch (e) {
                 incomplete = true;
 
-                errors.push(
-                    e instanceof Error ? e.message : String(e)
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_SELECT_HAVING',
+                    e instanceof Error ? e.message : String(e),
+                    havingToken.offset,
+                    endOffset
                 );
             }
         }
@@ -956,7 +1068,8 @@ export class Parser {
 
         if (this.peekKeyword('ORDER')) {
             const orderToken = this.consume();
-            endOffset = orderToken.offset + orderToken.value.length;
+            endOffset =
+                orderToken.offset + orderToken.value.length;
 
             let hasBy = false;
 
@@ -967,8 +1080,12 @@ export class Parser {
             } catch (e) {
                 incomplete = true;
 
-                errors.push(
-                    e instanceof Error ? e.message : String(e)
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_SELECT_ORDER_BY',
+                    e instanceof Error ? e.message : String(e),
+                    orderToken.offset,
+                    endOffset
                 );
             }
 
@@ -984,12 +1101,14 @@ export class Parser {
                             const dirToken = this.consume();
                             direction = 'DESC';
                             itemEnd =
-                                dirToken.offset + dirToken.value.length;
+                                dirToken.offset +
+                                dirToken.value.length;
                         } else if (this.peekKeyword('ASC')) {
                             const dirToken = this.consume();
                             direction = 'ASC';
                             itemEnd =
-                                dirToken.offset + dirToken.value.length;
+                                dirToken.offset +
+                                dirToken.value.length;
                         }
 
                         return {
@@ -1001,18 +1120,29 @@ export class Parser {
                     });
 
                     if (orderBy.length > 0) {
-                        endOffset = orderBy[orderBy.length - 1].end;
+                        endOffset =
+                            orderBy[orderBy.length - 1].end;
                     } else {
                         orderBy = [];
                         incomplete = true;
+
+                        this.addRecoverableError(
+                            errors,
+                            'PARSE_SELECT_EMPTY_ORDER_BY',
+                            'Expected ORDER BY expression',
+                            endOffset
+                        );
                     }
 
                 } catch (e) {
                     orderBy = [];
                     incomplete = true;
 
-                    errors.push(
-                        e instanceof Error ? e.message : String(e)
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_SELECT_ORDER_EXPR',
+                        e instanceof Error ? e.message : String(e),
+                        endOffset
                     );
                 }
             } else {
@@ -3392,6 +3522,20 @@ export class Parser {
 
             this.consume();
         }
+    }
+
+    private addIssue(
+        code: string,
+        message: string,
+        start: number,
+        end: number
+    ): void {
+        this.issues.push({
+            code,
+            message,
+            start,
+            end
+        });
     }
 
     private stringifyExpression(expr: Expression | null): string {
