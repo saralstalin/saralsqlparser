@@ -1,8 +1,8 @@
 # @saralsql/tsql-parser
 
-High-fidelity TypeScript parser, semantic engine, and lineage analyzer for Microsoft SQL Server T-SQL.
+High-fidelity parser and semantic analysis engine for Microsoft SQL Server T-SQL.
 
-Built for **language tooling**, **static analysis**, **linting**, **refactoring**, and **IDE integrations** — not just parsing valid SQL.
+This package is intended as a file-level toolkit for editor tooling and LSP integrations. It parses, analyzes, and enriches a single SQL document; workspace-level schema cataloging belongs in the host LSP server.
 
 ---
 
@@ -19,13 +19,12 @@ Generic SQL parsers treat T-SQL as one of many dialects. SaralSQL is built speci
 
 It is designed as a foundation for:
 
-* LSP servers and IDE extensions
-* Static analysis and linting
-* Refactoring tools
-* Autocomplete engines
-* Query quality analysis
-* Column lineage and impact analysis
-* Schema-aware editor features
+* editor integrations
+* LSP servers
+* static analysis and linting
+* refactoring tools
+* completion and diagnostics
+* column lineage and impact analysis
 
 ---
 
@@ -45,21 +44,28 @@ All APIs are exported from a single entry point:
 import {
   Lexer,
   Parser,
+  analyze,
+  diagnose,
+  getCompletionContext,
+  getCompletionsAt,
+  getDocumentSymbols,
   ScopeBuilder,
   LineageBuilder,
   ColumnAnalyzer,
-  diagnose
-} from "@saralsql/tsql-parser";
+  extractDeclarations,
+  extractDependencies,
+  extractReferences
+} from '@saralsql/tsql-parser';
 ```
+
+Most examples in this README use `analyze(sql)` for a complete single-file workflow. The low-level `Lexer` and `Parser` implementations are still exported separately for advanced or custom token/AST scenarios.
 
 ---
 
-# Usage
-
-## Parse SQL
+## Analyze SQL
 
 ```ts
-import { Lexer, Parser } from "@saralsql/tsql-parser";
+import { analyze } from '@saralsql/tsql-parser';
 
 const sql = `
 SELECT Id, Name
@@ -67,122 +73,142 @@ FROM Users
 WHERE Id = @Id;
 `;
 
-const ast = new Parser(new Lexer(sql)).parse().ast;
+const result = analyze(sql);
 
-console.log(ast);
+console.log(result.ast);
+console.log(result.issues);              // raw parser issues
+console.log(result.semanticDiagnostics); // raw semantic diagnostics
+console.log(result.diagnostics);         // combined parser + semantic diagnostics
+console.log(result.scope.root);
+console.log(result.lineage.edges);
+console.log(result.columns.resolutions);
 ```
+
+### `analyze(sql)` returns
+
+* `ast` — parsed `Program`
+* `issues` — raw parser issues
+* `scope` — semantic scope structure
+* `semanticDiagnostics` — raw semantic diagnostics
+* `diagnostics` — combined parser + semantic diagnostics
+* `lineage` — lineage result for the document
+* `columns` — column analysis result
 
 ---
 
-## Build Scope
+## Completion Support
 
-ScopeBuilder models **symbol visibility and references**.
-
-Supports:
-
-* variables
-* parameters
-* aliases
-* CTEs
-* nested scopes
-* read/write tracking
+This package provides local completion context based on the parsed file.
 
 ```ts
-import {
-  Lexer,
-  Parser,
-  ScopeBuilder
-} from "@saralsql/tsql-parser";
+import { getCompletionsAt } from '@saralsql/tsql-parser';
 
-const ast = new Parser(new Lexer(sql)).parse().ast;
-
-const scope = new ScopeBuilder().build(ast);
-
-console.log(scope.root);
-console.log(scope.undeclared);
-console.log(scope.duplicates);
+const sql = 'SELECT Id, Name FROM Users u WHERE u.';
+const completions = getCompletionsAt(sql, { line: 1, character: 33 });
+console.log(completions);
 ```
 
-### ScopeBuilderResult
+### Completion API
 
-| Field        | Description            |
-| ------------ | ---------------------- |
-| `root`       | Root scope             |
-| `references` | All symbol references  |
-| `undeclared` | Missing declarations   |
-| `duplicates` | Duplicate declarations |
+* `getCompletionContext(sql, positionOrOffset)` — returns the completion context, visible symbols, node, scope, diagnostics, and keyword candidates
+* `getCompletionsAt(sql, positionOrOffset)` — returns completion items for the current document position
 
 ---
 
-## Column Analysis (NEW)
+## Document Symbols
 
-ColumnAnalyzer provides **column-level resolution**, built on top of lineage.
-
-It answers:
-
-* What does this column refer to?
-* Which table does it come from?
-* How does it propagate through expressions?
+Generate document outline symbols from a parsed AST.
 
 ```ts
-import {
-  Lexer,
-  Parser,
-  ColumnAnalyzer
-} from "@saralsql/tsql-parser";
+import { analyze, getDocumentSymbols } from '@saralsql/tsql-parser';
 
 const sql = `
-SELECT u.Id, Name
-FROM Users u
+CREATE PROCEDURE dbo.MyProc
+AS
+BEGIN
+  SELECT 1;
+END
 `;
 
-const ast = new Parser(new Lexer(sql)).parse().ast;
-
-const analyzer = new ColumnAnalyzer();
-const result = analyzer.analyze(ast);
-
-console.log(result.resolutions);
+const result = analyze(sql);
+const symbols = getDocumentSymbols(result.ast);
+console.log(symbols);
 ```
 
-### Example Output
+---
+
+## Diagnostics
+
+Analyze returns both raw semantic diagnostics and a combined diagnostics stream.
+
+```ts
+import { analyze } from '@saralsql/tsql-parser';
+
+const sql = `
+UPDATE Users
+SET Name = 'x'
+`;
+
+const result = analyze(sql);
+console.log(result.semanticDiagnostics);
+console.log(result.diagnostics);
+```
+
+### Example output
 
 ```ts
 [
   {
-    location: IdentifierNode,
-    inputs: [
-      { name: "Users.Id", source: "Users" }
-    ]
+    code: 'DML001',
+    message: 'UPDATE statement has no WHERE clause — all rows will be affected',
+    severity: 'warning',
+    start: 0,
+    end: 6
   }
 ]
 ```
 
 ---
 
-## Build Lineage
+## Scope Model
 
-LineageBuilder computes **flattened column-level lineage**.
+ScopeBuilder models T-SQL symbol visibility and references.
 
-Supports:
+Supported symbol types include:
 
-* joins
+* variables
+* parameters
+* temp tables
 * aliases
-* subqueries
-* CTE flattening
-* wildcard (`*`, `alias.*`)
-* INSERT / UPDATE propagation
-* computed expressions
-* CASE expressions
-* aggregates
+* CTEs
+* query-local scope
 
-### Example
+---
+
+## Column Analysis
+
+Analyze returns column resolution results as part of the document analysis.
 
 ```ts
-import {
-  Lexer,
-  Parser,
-  LineageBuilder
-} from "@saralsql/tsql-parser";
+import { analyze } from '@saralsql/tsql-parser';
+
+const sql = `
+SELECT u.Id, Name
+FROM Users u
+`;
+
+const result = analyze(sql);
+console.log(result.columns.resolutions);
+```
+
+---
+
+## Lineage
+
+Analyze returns lineage information for a single document.
+
+```ts
+import { analyze } from '@saralsql/tsql-parser';
 
 const sql = `
 WITH X AS (
@@ -193,57 +219,31 @@ SELECT X.Amount AS Total
 FROM X;
 `;
 
-const ast = new Parser(new Lexer(sql)).parse().ast;
-
-const lineage = new LineageBuilder().build(ast);
-
-console.log(lineage.edges);
-```
-
-### Output
-
-```ts
-[
-  {
-    from: { name: "Orders.Amount", source: "Orders" },
-    to: { name: "Total" }
-  }
-]
+const result = analyze(sql);
+console.log(result.lineage.edges);
 ```
 
 ---
 
-## Run Diagnostics
+## Extractors
+
+The package also exposes helpers for declaration and dependency extraction.
 
 ```ts
 import {
-  diagnose
-} from "@saralsql/tsql-parser";
-
-const diagnostics = diagnose(ast, scope);
-
-console.log(diagnostics);
-```
-
-### Example
-
-```ts
-[
-  {
-    code: "DML001",
-    message: "UPDATE without WHERE clause",
-    severity: "warning"
-  }
-]
+  extractDeclarations,
+  extractDependencies,
+  extractReferences
+} from '@saralsql/tsql-parser';
 ```
 
 ---
 
-# Fault-Tolerant Parsing
+## Fault-Tolerant Parsing
 
 SaralSQL is designed for editors.
 
-Parsing **never stops on errors**.
+Parsing **continues through errors** and still returns a usable AST.
 
 Example:
 
@@ -253,31 +253,11 @@ FROM Users
 WHERE
 ```
 
-Produces usable AST:
-
-```ts
-{
-  type: "SelectStatement",
-  incomplete: true,
-  where: null
-}
-```
+This produces an incomplete but usable AST node for the broken query.
 
 ---
 
-# Scope Model
-
-Models real T-SQL behavior:
-
-* batch scope
-* procedure / function scope
-* query-local aliases
-* variables and parameters
-* nested visibility
-
----
-
-# Architecture
+## Architecture
 
 ```text
 Lexer
@@ -295,23 +275,37 @@ DiagnosticEngine
 
 ---
 
-# Project Structure
+## Project Structure
 
 ```text
+tests/
 src/
-  ast/
-  parser/
-  semantic/
-    scopeBuilder.ts
-    columnAnalyzer.ts
-  lineage/
-  diagnostics/
+  analyze.ts
+  completions.ts
+  documentSymbols.ts
+  extractors.ts
   index.ts
+  position.ts
+  ast/
+    astWalker.ts
+    types.ts
+  diagnostics/
+    diagnostics.ts
+  lineage/
+    lineage.ts
+    lineageBuilder.ts
+  parser/
+    lexer.ts
+    parser.ts
+  semantic/
+    columnAnalyzer.ts
+    scope.ts
+    scopeBuilder.ts
 ```
 
 ---
 
-# Design Principles
+## Design Principles
 
 ### 1. Layered semantics
 
@@ -319,61 +313,17 @@ src/
 Scope → Lineage → Column Analysis
 ```
 
-Each layer builds on the previous one.
-
----
-
 ### 2. No duplicated logic
 
-ColumnAnalyzer **reuses lineage**, it does not re-implement resolution.
+ColumnAnalyzer reuses lineage information instead of re-implementing it.
+
+### 3. Editor-first resilience
+
+All semantic layers tolerate incomplete or broken AST nodes.
 
 ---
 
-### 3. Fault-tolerant by design
-
-All semantic layers accept:
-
-```ts
-Expression | null | undefined
-```
-
----
-
-# T-SQL Coverage
-
-## Query
-
-SELECT, DISTINCT, TOP, WHERE, GROUP BY, HAVING, ORDER BY
-UNION, EXCEPT, INTERSECT
-CTEs, subqueries
-
-## Joins
-
-INNER, LEFT, RIGHT, FULL
-CROSS, APPLY
-
-## DML
-
-INSERT, UPDATE, DELETE
-
-## DDL
-
-CREATE TABLE, VIEW, PROCEDURE, FUNCTION
-
-## Procedural
-
-IF, ELSE, BEGIN, END
-DECLARE, SET, PRINT
-
-## Expressions
-
-CASE, BETWEEN, IN, EXISTS, LIKE
-IS NULL, functions, wildcards
-OVER / PARTITION BY
-
----
-
-# Roadmap
+## Roadmap
 
 ## Near term
 
