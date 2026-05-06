@@ -246,7 +246,7 @@ export interface SetOperatorNode extends NodeLocation {
     type: 'SetOperator';
     operator: 'UNION' | 'UNION ALL' | 'EXCEPT' | 'INTERSECT';
     left: QueryStatement;  // Changed from Statement
-    right: QueryStatement | null; // Changed from Statement
+    right: QueryStatement; // Changed from Statement
 }
 
 export interface ColumnDefinition extends NodeLocation {
@@ -469,193 +469,345 @@ export class Parser {
         while (this.pos < this.tokens.length) {
             const token = this.peek();
 
-            // Handle T-SQL Batch Separator 'GO'
+            // Handle T-SQL batch separator
             if (token?.value === 'GO') {
                 this.consume();
                 continue;
             }
 
-            let stmt: Statement | null = this.parseStatement();
+            const beforePos = this.pos;
+
+            let stmt: Statement | null = null;
+
+            try {
+                stmt = this.parseStatement();
+            } catch (e) {
+                // Defensive catch — should be rare now
+                const message =
+                    e instanceof Error ? e.message : String(e);
+
+                this.addIssue(
+                    'PARSE_FATAL',
+                    message,
+                    token?.offset ?? 0,
+                    token
+                        ? token.offset + token.value.length
+                        : 0
+                );
+
+                this.resync();
+            }
 
             if (stmt) {
                 statements.push(stmt);
             }
 
+            // Ensure forward progress (VERY important)
+            if (this.pos === beforePos) {
+                const stuckToken = this.peek();
+
+                if (stuckToken) {
+                    this.addIssue(
+                        'PARSE_STUCK',
+                        `Parser could not consume token: ${stuckToken.value}`,
+                        stuckToken.offset,
+                        stuckToken.offset + stuckToken.value.length
+                    );
+
+                    this.consume(); // force advance
+                } else {
+                    break;
+                }
+            }
+
+            // consume semicolon
             if (this.peek()?.type === TokenType.Semicolon) {
                 this.consume();
             }
         }
 
-        const ast: Program = { type: 'Program', body: statements };
+        const ast: Program = {
+            type: 'Program',
+            body: statements
+        };
 
         return {
-            ast: ast
+            ast,
+            issues: this.issues
         };
     }
 
     private parseMultipartIdentifier(): Expression {
         const segments: Token[] = [];
 
-        // 1. First segment must be identifier-like
-        const first = this.match(
-            TokenType.Identifier,
-            TokenType.Keyword,
-            TokenType.Variable,
-            TokenType.TempTable
-        );
+        const startToken = this.peek();
+        let startOffset = startToken?.offset ?? 0;
+        let endOffset = startOffset;
 
-        // Reject structural keywords
+        // --- 1. First segment (never throw) ---
+        const first = this.peek();
+
         if (
-            first.type === TokenType.Keyword &&
-            this.isStructuralKeyword(first.value)
+            !first ||
+            ![
+                TokenType.Identifier,
+                TokenType.Keyword,
+                TokenType.Variable,
+                TokenType.TempTable
+            ].includes(first.type) ||
+            (first.type === TokenType.Keyword &&
+                this.isStructuralKeyword(first.value))
         ) {
-            throw new Error(`Expected identifier but found ${first.value}`);
+            const message = `Expected identifier`;
+
+            this.addRecoverableError(
+                [],
+                'PARSE_IDENTIFIER',
+                message,
+                startOffset,
+                startOffset + 1
+            );
+
+            return {
+                type: 'Identifier',
+                name: '',
+                parts: [],
+                start: startOffset,
+                end: startOffset,
+                incomplete: true,
+                errors: [message]
+            } as IdentifierNode;
         }
 
-        segments.push(first);
+        const consumedFirst = this.consume();
+        segments.push(consumedFirst);
 
-        // 2. Handle dots: dbo.Table, alias.*, etc.
+        startOffset = consumedFirst.offset;
+        endOffset = consumedFirst.offset + consumedFirst.value.length;
+
+        // --- 2. Dot chain ---
         while (this.peek()?.type === TokenType.Dot) {
             const dot = this.consume();
+            endOffset = dot.offset + dot.value.length;
 
-            try {
-                // Check for wildcard after dot (e.g., alias.*)
-                if (this.peek()?.value === '*') {
-                    const star = this.consume();
+            // wildcard: alias.*
+            if (this.peek()?.value === '*') {
+                const star = this.consume();
 
-                    // Create a prefix node from existing segments
-                    const prefixParts = segments.map(t => t.value);
-                    const prefixNode: IdentifierNode = {
-                        type: 'Identifier',
-                        name: prefixParts.join('.'),
-                        parts: prefixParts,
-                        start: segments[0].offset,
-                        end: segments[segments.length - 1].offset + segments[segments.length - 1].value.length
-                    };
+                const prefixParts = segments.map(t => t.value);
 
-                    return {
-                        type: 'WildcardExpression',
-                        tablePrefix: prefixNode,
-                        start: segments[0].offset,
-                        end: star.offset + star.value.length
-                    } as WildcardExpression;
-                }
+                const prefixNode: IdentifierNode = {
+                    type: 'Identifier',
+                    name: prefixParts.join('.'),
+                    parts: prefixParts,
+                    start: startOffset,
+                    end:
+                        segments[segments.length - 1].offset +
+                        segments[segments.length - 1].value.length
+                };
 
-                const next = this.match(
-                    TokenType.Identifier,
-                    TokenType.Keyword,
-                    TokenType.Variable,
-                    TokenType.TempTable
+                return {
+                    type: 'WildcardExpression',
+                    tablePrefix: prefixNode,
+                    start: startOffset,
+                    end: star.offset + star.value.length
+                } as WildcardExpression;
+            }
+
+            const next = this.peek();
+
+            // ❗ Missing segment (dbo.)
+            if (
+                !next ||
+                next.type === TokenType.Semicolon ||
+                this.isStructuralKeyword(next.value)
+            ) {
+                const message = 'Expected identifier after dot';
+
+                this.addRecoverableError(
+                    [],
+                    'PARSE_IDENTIFIER_DOT',
+                    message,
+                    dot.offset,
+                    endOffset
                 );
-
-                // Reject structural keyword segment
-                if (
-                    next.type === TokenType.Keyword &&
-                    this.isStructuralKeyword(next.value)
-                ) {
-                    throw new Error(`Expected identifier after dot but found ${next.value}`);
-                }
-
-                segments.push(next);
-
-            } catch (e) {
-                // Error recovery for incomplete paths (e.g., "dbo.")
-                const name = segments.map(t => t.value).join('.') + '.';
 
                 return {
                     type: 'Identifier',
-                    name,
+                    name:
+                        segments.map(t => t.value).join('.') + '.',
                     parts: [...segments.map(t => t.value), ''],
-                    start: segments[0].offset,
-                    end: dot.offset + dot.value.length,
+                    start: startOffset,
+                    end: endOffset,
                     incomplete: true,
-                    errors: [e instanceof Error ? e.message : 'Expected identifier after dot']
+                    errors: [message]
                 } as IdentifierNode;
             }
+
+            // consume next segment safely
+            const consumedNext = this.consume();
+
+            if (
+                consumedNext.type === TokenType.Keyword &&
+                this.isStructuralKeyword(consumedNext.value)
+            ) {
+                const message = `Expected identifier after dot but found ${consumedNext.value}`;
+
+                this.addRecoverableError(
+                    [],
+                    'PARSE_IDENTIFIER_DOT',
+                    message,
+                    consumedNext.offset,
+                    consumedNext.offset + consumedNext.value.length
+                );
+
+                return {
+                    type: 'Identifier',
+                    name:
+                        segments.map(t => t.value).join('.') + '.',
+                    parts: [...segments.map(t => t.value), ''],
+                    start: startOffset,
+                    end: consumedNext.offset + consumedNext.value.length,
+                    incomplete: true,
+                    errors: [message]
+                } as IdentifierNode;
+            }
+
+            segments.push(consumedNext);
+            endOffset =
+                consumedNext.offset + consumedNext.value.length;
         }
 
+        // --- 3. Final node ---
         const last = segments[segments.length - 1];
 
-        // Standard multi-part identifier
         return {
             type: 'Identifier',
             name: segments.map(t => t.value).join('.'),
             parts: segments.map(t => t.value),
-            start: segments[0].offset,
+            start: startOffset,
             end: last.offset + last.value.length
         } as IdentifierNode;
     }
 
-    private parseSetOperation(left: QueryStatement): SetOperatorNode {
-        const operatorToken = this.consume(); // UNION / EXCEPT / INTERSECT
-
-        let incomplete = false;
-        const errors: string[] = [];
-
-        let operator = operatorToken.value.toUpperCase();
-
-        // UNION ALL
-        if (
-            operator === 'UNION' &&
-            this.peekKeyword('ALL')
-        ) {
-            const allToken = this.consume();
-            operator = 'UNION ALL';
+    private normalizeSetTree(node: QueryStatement): QueryStatement {
+        if (node.type !== 'SetOperator') {
+            return node;
         }
 
-        let right: QueryStatement | null = null;
-        let endOffset = operatorToken.offset + operatorToken.value.length;
+        // normalize children first
+        const left = this.normalizeSetTree(node.left);
+        const right = this.normalizeSetTree(node.right);
 
-        // RHS (recoverable)
-        try {
+        // 🔥 rotate left-deep → right-deep
+        if (left.type === 'SetOperator') {
+            return {
+                type: 'SetOperator',
+                operator: left.operator,
+                left: left.left,
+                right: this.normalizeSetTree({
+                    type: 'SetOperator',
+                    operator: node.operator,
+                    left: left.right,
+                    right: right,
+                    start: left.right.start,
+                    end: right.end
+                }),
+                start: left.start,
+                end: right.end
+            };
+        }
+
+        return {
+            ...node,
+            left,
+            right
+        };
+    }
+
+    private parseSetOperation(
+        left: QueryStatement,
+        minPrecedence: number = 1
+    ): QueryStatement {
+
+        while (true) {
+            const token = this.peek();
+            if (!token) break;
+
+            let op = token.value.toUpperCase();
+
+            if (!['UNION', 'EXCEPT', 'INTERSECT'].includes(op)) {
+                break;
+            }
+
+            // detect UNION ALL (lookahead only)
+            let fullOp = op;
+            let isUnionAll = false;
+
+            if (
+                op === 'UNION' &&
+                this.peek(1)?.value?.toUpperCase() === 'ALL'
+            ) {
+                fullOp = 'UNION ALL';
+                isUnionAll = true;
+            }
+
+            const precedence = this.getSetPrecedence(fullOp);
+
+            // 🔥 precedence guard BEFORE consuming
+            if (precedence < minPrecedence) {
+                break;
+            }
+
+            // consume operator
+            this.consume();
+            if (isUnionAll) this.consume();
+
+            let right: QueryStatement | null = null;
+
             const next = this.peek();
-
             if (
                 next &&
                 next.type !== TokenType.Semicolon &&
                 next.value !== ')'
             ) {
-                right = this.parseSelect();
-                endOffset = right.end;
-            } else {
-                incomplete = true;
-                errors.push(`Expected SELECT after ${operator}`);
+                // 🔥 recursive precedence handling
+                right = this.parseSetOperation(
+                    this.parseSelect(),
+                    precedence + 1
+                );
             }
 
-        } catch (e) {
-            incomplete = true;
+            // 🔥 recovery: do NOT collapse into ErrorStatement
+            if (!right) {
+                return left;
+            }
 
-            errors.push(
-                e instanceof Error ? e.message : String(e)
-            );
+            left = {
+                type: 'SetOperator',
+                operator: fullOp as
+                    | 'UNION'
+                    | 'UNION ALL'
+                    | 'EXCEPT'
+                    | 'INTERSECT',
+                left,
+                right,
+                start: left.start,
+                end: right.end
+            };
         }
 
-        const node: SetOperatorNode = {
-            type: 'SetOperator',
-            operator: operator as
-                | 'UNION'
-                | 'UNION ALL'
-                | 'EXCEPT'
-                | 'INTERSECT',
-            left,
-            right,
-            start: left.start,
-            end: endOffset,
-            ...(incomplete ? { incomplete: true } : {}),
-            ...(errors.length ? { errors } : {})
-        };
+        return left;
+    }
 
-        // chained operators
-        const next = this.peek()?.value?.toUpperCase();
-
-        if (
-            next &&
-            ['UNION', 'EXCEPT', 'INTERSECT'].includes(next)
-        ) {
-            return this.parseSetOperation(node);
+    private getSetPrecedence(op: string): number {
+        switch (op) {
+            case 'INTERSECT': return 2;
+            case 'UNION':
+            case 'UNION ALL':
+            case 'EXCEPT': return 1;
+            default: return 0;
         }
-
-        return node;
     }
 
     private parseStatement(): Statement | null {
@@ -678,78 +830,11 @@ export class Parser {
                 case 'CREATE': stmt = this.parseCreate(); break;
                 case 'IF': stmt = this.parseIf(); break;
                 case 'BEGIN': stmt = this.parseBlock(); break;
-
-                case 'WITH':
-                    stmt = this.parseWith();
-                    break;
-
-                case 'PRINT': {
-                    const printToken = this.consume();
-
-                    let value: Expression | null = null;
-                    let endOffset = printToken.offset + printToken.value.length;
-                    let incomplete = false;
-                    const errors: string[] = [];
-
-                    try {
-                        const next = this.peek();
-
-                        if (
-                            !next ||
-                            this.isStructuralKeyword(next.value) ||
-                            next.type === TokenType.Semicolon
-                        ) {
-                            incomplete = true;
-
-                            const msg = 'Expected PRINT expression';
-                            errors.push(msg);
-
-                            //  emit structured issue
-                            this.issues.push({
-                                code: 'PARSE_EXPECTED_PRINT_EXPR',
-                                message: msg,
-                                start: printToken.offset,
-                                end: endOffset
-                            });
-
-                        } else {
-                            value = this.parseExpression();
-                            endOffset = value.end;
-                        }
-
-                    } catch (e) {
-                        incomplete = true;
-
-                        const msg =
-                            e instanceof Error ? e.message : String(e);
-
-                        errors.push(msg);
-
-                        //  emit structured issue
-                        this.issues.push({
-                            code: 'PARSE_PRINT_ERROR',
-                            message: msg,
-                            start: printToken.offset,
-                            end: this.peek()
-                                ? this.peek()!.offset + this.peek()!.value.length
-                                : endOffset
-                        });
-                    }
-
-                    stmt = {
-                        type: 'PrintStatement',
-                        value,
-                        start: startOffset,
-                        end: endOffset,
-                        ...(incomplete ? { incomplete: true } : {}),
-                        ...(errors.length ? { errors } : {})
-                    } as PrintNode;
-
-                    break;
-                }
+                case 'WITH': stmt = this.parseWith(); break;
+                case 'PRINT': stmt = this.parsePrint(); break;
 
                 case 'GO':
-                    this.consume(); // Batch separator
+                    this.consume();
                     return null;
 
                 case 'WHEN':
@@ -767,6 +852,7 @@ export class Parser {
                     }
                     throw new Error(`Unexpected token: ${token.value}`);
             }
+
         } catch (e) {
             const errorMsg =
                 e instanceof Error ? e.message : String(e);
@@ -775,13 +861,16 @@ export class Parser {
                 ? this.peek()!.offset + this.peek()!.value.length
                 : startOffset + 1;
 
-            //  emit structured issue
-            this.issues.push({
-                code: 'PARSE_STATEMENT_ERROR',
-                message: errorMsg,
-                start: startOffset,
-                end: errorEnd
-            });
+            const errors: string[] = [];
+
+            // ✅ FIX: use centralized error pipeline
+            this.addRecoverableError(
+                errors,
+                'PARSE_STATEMENT_ERROR',
+                errorMsg,
+                startOffset,
+                errorEnd
+            );
 
             this.resync();
 
@@ -789,11 +878,12 @@ export class Parser {
                 type: 'ErrorStatement',
                 message: errorMsg,
                 start: startOffset,
-                end: errorEnd
+                end: errorEnd,
+                ...(errors.length ? { errors } : {})
             } as ErrorNode;
         }
 
-        // Preserve your semicolon handling
+        // Preserve semicolon handling
         if (stmt && this.peek()?.type === TokenType.Semicolon) {
             this.consume();
         }
@@ -825,7 +915,7 @@ export class Parser {
         );
     }
 
-    private parseSelect(): SelectNode {
+    private parseSelect(): QueryStatement {
         const startToken = this.matchKeyword('SELECT');
 
         // 1. DISTINCT / ALL
@@ -1190,12 +1280,38 @@ export class Parser {
             this.consume();
         }
 
-        // 1. Target table (recoverable)
         let tableNode: Expression | null = null;
         let endOffset = startToken.offset + startToken.value.length;
 
+        // --- hard sync to statement boundary (does NOT consume boundary) ---
+        const syncToStatementBoundary = () => {
+            while (this.peek()) {
+                const t = this.peek()!;
+
+                // Stop at semicolon (preferred boundary)
+                if (t.type === TokenType.Semicolon) return;
+
+                // Or stop at the start of the next statement (extra safety)
+                const v = t.value?.toUpperCase();
+                if (
+                    v === 'SELECT' ||
+                    v === 'INSERT' ||
+                    v === 'UPDATE' ||
+                    v === 'DELETE' ||
+                    v === 'WITH' ||
+                    v === 'GO'
+                ) {
+                    return;
+                }
+
+                this.consume();
+            }
+        };
+
+        // 1) Target table
         try {
             const next = this.peek();
+
             if (
                 next &&
                 !this.isStructuralKeyword(next.value) &&
@@ -1204,17 +1320,95 @@ export class Parser {
             ) {
                 tableNode = this.parseMultipartIdentifier();
                 endOffset = tableNode.end;
+
+                // 🔥 Detect invalid like "dbo."
+                if (
+                    tableNode.type === 'Identifier' &&
+                    (tableNode.incomplete || tableNode.parts.includes(''))
+                ) {
+                    incomplete = true;
+
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_INSERT_TABLE',
+                        'Invalid table name in INSERT',
+                        tableNode.start,
+                        tableNode.end
+                    );
+
+                    // 🔥 HARD ALIGN to boundary
+                    syncToStatementBoundary();
+
+                    return {
+                        type: 'InsertStatement',
+                        table: tableNode,
+                        columns: null,
+                        output: undefined,
+                        values: null,
+                        selectQuery: null,
+                        start: startToken.offset,
+                        end: endOffset,
+                        incomplete: true,
+                        ...(errors.length ? { errors } : {})
+                    };
+                }
             } else {
                 incomplete = true;
-                errors.push('Expected target table');
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_INSERT_TARGET',
+                    'Expected target table',
+                    startToken.offset,
+                    endOffset
+                );
+
+                syncToStatementBoundary();
+
+                return {
+                    type: 'InsertStatement',
+                    table: tableNode,
+                    columns: null,
+                    output: undefined,
+                    values: null,
+                    selectQuery: null,
+                    start: startToken.offset,
+                    end: endOffset,
+                    incomplete: true,
+                    ...(errors.length ? { errors } : {})
+                };
             }
         } catch (e) {
             incomplete = true;
-            errors.push(e instanceof Error ? e.message : String(e));
+
+            this.addRecoverableError(
+                errors,
+                'PARSE_INSERT_TARGET',
+                e instanceof Error ? e.message : String(e),
+                startToken.offset,
+                endOffset
+            );
+
+            // 🔥 HARD ALIGN to boundary
+            syncToStatementBoundary();
+
+            return {
+                type: 'InsertStatement',
+                table: tableNode,
+                columns: null,
+                output: undefined,
+                values: null,
+                selectQuery: null,
+                start: startToken.offset,
+                end: endOffset,
+                incomplete: true,
+                ...(errors.length ? { errors } : {})
+            };
         }
 
-        // 2. Column list
+        // 2) Column list
         let columns: string[] | null = null;
+
         if (this.peek()?.type === TokenType.OpenParen) {
             const openParen = this.consume();
             endOffset = openParen.offset + openParen.value.length;
@@ -1223,11 +1417,10 @@ export class Parser {
                 if (this.peek()?.type !== TokenType.CloseParen) {
                     columns = this.parseList(() => {
                         const node = this.parseMultipartIdentifier();
-                        if (node.type === 'Identifier') {
-                            return node.name;
-                        } else {
-                            throw new Error("Wildcards are not allowed in an INSERT column list");
-                        }
+                        if (node.type === 'Identifier') return node.name;
+                        throw new Error(
+                            'Wildcards are not allowed in an INSERT column list'
+                        );
                     });
                 } else {
                     columns = [];
@@ -1238,72 +1431,127 @@ export class Parser {
                     endOffset = closeParen.offset + closeParen.value.length;
                 } else {
                     incomplete = true;
-                    errors.push('Expected ) after column list');
+
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_INSERT_COLUMNS_CLOSE',
+                        'Expected ) after column list',
+                        endOffset,
+                        endOffset
+                    );
                 }
             } catch (e) {
                 columns = [];
                 incomplete = true;
-                errors.push(e instanceof Error ? e.message : String(e));
-                this.recoverTo(['OUTPUT', 'VALUES', 'SELECT', 'WITH']); // Enhanced recovery
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_INSERT_COLUMNS',
+                    e instanceof Error ? e.message : String(e),
+                    openParen.offset,
+                    endOffset
+                );
+
+                this.recoverTo(['OUTPUT', 'VALUES', 'SELECT', 'WITH', ';']);
             }
         }
 
-        // 3. NEW: The OUTPUT Clause
-        // In T-SQL, OUTPUT appears here, before the data source.
+        // 3) OUTPUT
         if (this.peekKeyword('OUTPUT')) {
             try {
                 output = this.parseOutputClause();
                 endOffset = output.end;
             } catch (e) {
                 incomplete = true;
-                errors.push(e instanceof Error ? e.message : String(e));
-                this.recoverTo(['VALUES', 'SELECT', 'WITH']);
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_INSERT_OUTPUT',
+                    e instanceof Error ? e.message : String(e),
+                    endOffset,
+                    endOffset
+                );
+
+                this.recoverTo(['VALUES', 'SELECT', 'WITH', ';']);
             }
         }
 
-        // 4. VALUES / SELECT / WITH
+        // 4) VALUES / SELECT
         let values: Expression[][] | null = null;
         let selectQuery: QueryStatement | null = null;
+
         const nextVal = this.peek()?.value?.toUpperCase();
 
         if (nextVal === 'VALUES') {
             const valuesToken = this.consume();
             endOffset = valuesToken.offset + valuesToken.value.length;
+
             values = [];
             let sawValuesRow = false;
 
-            try {
-                while (this.peek() && this.peek()!.type !== TokenType.Semicolon) {
+            while (
+                this.peek() &&
+                this.peek()!.type !== TokenType.Semicolon
+            ) {
+                if (this.peek()!.type === TokenType.Comma) {
+                    this.consume();
+                    continue;
+                }
+
+                if (this.peek()!.type !== TokenType.OpenParen) break;
+
+                this.consume();
+                sawValuesRow = true;
+
+                const row: Expression[] = [];
+
+                while (
+                    this.peek() &&
+                    this.peek()!.type !== TokenType.CloseParen
+                ) {
                     if (this.peek()!.type === TokenType.Comma) {
                         this.consume();
                         continue;
                     }
-                    if (this.peek()!.type !== TokenType.OpenParen) break;
 
-                    const openRow = this.consume();
-                    sawValuesRow = true;
-                    const rowValues: Expression[] = [];
-
-                    while (this.peek() && this.peek()!.type !== TokenType.CloseParen) {
-                        if (this.peek()!.type === TokenType.Comma) {
-                            this.consume();
-                            continue;
-                        }
+                    try {
                         const expr = this.parseExpression(Precedence.LOWEST);
-                        rowValues.push(expr);
+                        row.push(expr);
                         endOffset = expr.end;
-                    }
+                    } catch (e) {
+                        incomplete = true;
 
-                    values.push(rowValues);
-                    if (this.peek()?.type === TokenType.CloseParen) {
-                        const closeRow = this.consume();
-                        endOffset = closeRow.offset + closeRow.value.length;
+                        this.addRecoverableError(
+                            errors,
+                            'PARSE_VALUES_EXPR',
+                            e instanceof Error ? e.message : String(e),
+                            this.peek()?.offset ?? endOffset,
+                            this.peek()?.offset ?? endOffset
+                        );
+
+                        break;
                     }
                 }
-                if (!sawValuesRow) values = [[]];
-            } catch (e) {
+
+                values.push(row);
+
+                if (this.peek()?.type === TokenType.CloseParen) {
+                    const close = this.consume();
+                    endOffset = close.offset + close.value.length;
+                }
+            }
+
+            if (!sawValuesRow) {
+                values = [[]];
                 incomplete = true;
-                errors.push(e instanceof Error ? e.message : String(e));
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_INSERT_VALUES',
+                    'Expected VALUES row',
+                    valuesToken.offset,
+                    endOffset
+                );
             }
         } else if (nextVal === 'SELECT' || nextVal === 'WITH') {
             try {
@@ -1311,7 +1559,14 @@ export class Parser {
                 endOffset = selectQuery.end;
             } catch (e) {
                 incomplete = true;
-                errors.push(e instanceof Error ? e.message : String(e));
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_INSERT_QUERY',
+                    e instanceof Error ? e.message : String(e),
+                    endOffset,
+                    endOffset
+                );
             }
         }
 
@@ -1334,147 +1589,325 @@ export class Parser {
 
         let incomplete = false;
         const errors: string[] = [];
-        let endOffset = startToken.offset + startToken.value.length;
+        let endOffset =
+            startToken.offset + startToken.value.length;
         let output: OutputClauseNode | undefined;
 
         // 1. Target
         let targetNode: Expression | null = null;
+
         try {
             const next = this.peek();
-            if (next && !this.isStructuralKeyword(next.value)) {
-                targetNode = this.parseMultipartIdentifier();
+
+            if (
+                next &&
+                !this.isStructuralKeyword(next.value)
+            ) {
+                targetNode =
+                    this.parseMultipartIdentifier();
+
                 endOffset = targetNode.end;
             } else {
                 incomplete = true;
-                errors.push('Expected update target');
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_UPDATE_TARGET',
+                    'Expected update target',
+                    startToken.offset,
+                    endOffset
+                );
             }
+
         } catch (e) {
             incomplete = true;
-            errors.push(e instanceof Error ? e.message : String(e));
-            this.recoverTo(['SET']); // Resync at SET
+
+            this.addRecoverableError(
+                errors,
+                'PARSE_UPDATE_TARGET',
+                e instanceof Error ? e.message : String(e),
+                startToken.offset,
+                endOffset
+            );
+
+            this.recoverTo(['SET']);
         }
 
         // 2. SET
         let sawSet = false;
+
         try {
             this.matchKeyword('SET');
             endOffset = this.lastConsumedEnd();
             sawSet = true;
+
         } catch (e) {
             incomplete = true;
-            errors.push(e instanceof Error ? e.message : String(e));
+
+            this.addRecoverableError(
+                errors,
+                'PARSE_UPDATE_SET',
+                e instanceof Error ? e.message : String(e),
+                endOffset
+            );
         }
 
         // 3. Assignments
         let assignments: UpdateAssignment[] = [];
+
         if (sawSet) {
             try {
                 assignments = this.parseList(() => {
                     let columnName = '';
                     let value: Expression | null = null;
 
+                    // column
                     try {
                         const next = this.peek();
-                        if (!next || this.isStructuralKeyword(next.value)) {
+
+                        if (
+                            !next ||
+                            this.isStructuralKeyword(next.value)
+                        ) {
                             incomplete = true;
-                            errors.push('Expected assignment column');
-                            return { column: '', value: null };
+
+                            this.addRecoverableError(
+                                errors,
+                                'PARSE_UPDATE_ASSIGNMENT_COLUMN',
+                                'Expected assignment column',
+                                endOffset
+                            );
+
+                            return {
+                                column: '',
+                                value: null
+                            };
                         }
 
-                        const columnExpr = this.parseMultipartIdentifier();
-                        if (columnExpr.type === 'Identifier') {
+                        const columnExpr =
+                            this.parseMultipartIdentifier();
+
+                        if (
+                            columnExpr.type === 'Identifier'
+                        ) {
                             columnName = columnExpr.name;
                             endOffset = columnExpr.end;
                         } else {
                             incomplete = true;
-                            errors.push('Wildcards are not allowed as update targets');
-                            return { column: '', value: null };
+
+                            this.addRecoverableError(
+                                errors,
+                                'PARSE_UPDATE_ASSIGNMENT_TARGET',
+                                'Wildcards are not allowed as update targets',
+                                endOffset
+                            );
+
+                            return {
+                                column: '',
+                                value: null
+                            };
                         }
+
                     } catch (e) {
                         incomplete = true;
-                        errors.push(e instanceof Error ? e.message : String(e));
-                        return { column: '', value: null };
+
+                        this.addRecoverableError(
+                            errors,
+                            'PARSE_UPDATE_ASSIGNMENT_COLUMN',
+                            e instanceof Error
+                                ? e.message
+                                : String(e),
+                            endOffset
+                        );
+
+                        return {
+                            column: '',
+                            value: null
+                        };
                     }
 
+                    // =
                     if (this.peek()?.value !== '=') {
                         incomplete = true;
-                        errors.push('Expected =');
-                        return { column: columnName, value: null };
+
+                        this.addRecoverableError(
+                            errors,
+                            'PARSE_UPDATE_ASSIGNMENT_EQUALS',
+                            'Expected =',
+                            endOffset
+                        );
+
+                        return {
+                            column: columnName,
+                            value: null
+                        };
                     }
 
                     const eqToken = this.consume();
-                    endOffset = eqToken.offset + eqToken.value.length;
+                    endOffset =
+                        eqToken.offset + eqToken.value.length;
 
+                    // value
                     try {
                         value = this.parseExpression();
-                        if (value) endOffset = value.end;
+
+                        if (value) {
+                            endOffset = value.end;
+                        }
+
                     } catch (e) {
                         incomplete = true;
-                        errors.push(e instanceof Error ? e.message : String(e));
+
+                        this.addRecoverableError(
+                            errors,
+                            'PARSE_UPDATE_ASSIGNMENT_VALUE',
+                            e instanceof Error
+                                ? e.message
+                                : String(e),
+                            endOffset
+                        );
                     }
 
-                    return { column: columnName, value };
+                    return {
+                        column: columnName,
+                        value
+                    };
                 });
 
-                if (assignments.length === 0) incomplete = true;
+                if (assignments.length === 0) {
+                    incomplete = true;
+
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_UPDATE_EMPTY_ASSIGNMENTS',
+                        'Expected SET assignment',
+                        endOffset
+                    );
+                }
+
             } catch (e) {
                 assignments = [];
                 incomplete = true;
-                errors.push(e instanceof Error ? e.message : String(e));
-                this.recoverTo(['OUTPUT', 'FROM', 'WHERE']); // Resync point
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_UPDATE_ASSIGNMENTS',
+                    e instanceof Error ? e.message : String(e),
+                    endOffset
+                );
+
+                this.recoverTo([
+                    'OUTPUT',
+                    'FROM',
+                    'WHERE'
+                ]);
             }
         }
 
-        // 4. NEW: OUTPUT Clause
-        // Syntax: UPDATE ... SET ... OUTPUT ... FROM ... WHERE ...
+        // 4. OUTPUT
         if (this.peekKeyword('OUTPUT')) {
             try {
                 output = this.parseOutputClause();
                 endOffset = output.end;
+
             } catch (e) {
                 incomplete = true;
-                errors.push(e instanceof Error ? e.message : String(e));
-                this.recoverTo(['FROM', 'WHERE']);
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_UPDATE_OUTPUT',
+                    e instanceof Error ? e.message : String(e),
+                    endOffset
+                );
+
+                this.recoverTo([
+                    'FROM',
+                    'WHERE'
+                ]);
             }
         }
 
         // 5. FROM
         let from: TableReference[] | null = null;
+
         if (this.peekKeyword('FROM')) {
             try {
                 from = this.parseFrom();
+
                 if (from.length > 0) {
-                    endOffset = from[from.length - 1].end;
+                    endOffset =
+                        from[from.length - 1].end;
                 } else {
                     from = [];
                     incomplete = true;
+
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_UPDATE_EMPTY_FROM',
+                        'Expected FROM source',
+                        endOffset
+                    );
                 }
+
             } catch (e) {
                 from = [];
                 incomplete = true;
-                errors.push(e instanceof Error ? e.message : String(e));
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_UPDATE_FROM',
+                    e instanceof Error ? e.message : String(e),
+                    endOffset
+                );
+
                 this.recoverTo(['WHERE']);
             }
         }
 
         // 6. WHERE
         let where: Expression | null = null;
+
         if (this.peekKeyword('WHERE')) {
             const whereToken = this.consume();
-            endOffset = whereToken.offset + whereToken.value.length;
+            endOffset =
+                whereToken.offset + whereToken.value.length;
 
             try {
                 const next = this.peek();
-                if (next && !this.isStructuralKeyword(next.value) && next.type !== TokenType.Comma) {
+
+                if (
+                    next &&
+                    !this.isStructuralKeyword(next.value) &&
+                    next.type !== TokenType.Comma
+                ) {
                     where = this.parseExpression();
-                    if (where) endOffset = where.end;
+
+                    if (where) {
+                        endOffset = where.end;
+                    }
+
                 } else {
                     incomplete = true;
-                    errors.push('Expected WHERE expression');
+
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_UPDATE_WHERE',
+                        'Expected WHERE expression',
+                        whereToken.offset,
+                        endOffset
+                    );
                 }
+
             } catch (e) {
                 incomplete = true;
-                errors.push(e instanceof Error ? e.message : String(e));
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_UPDATE_WHERE',
+                    e instanceof Error ? e.message : String(e),
+                    whereToken.offset,
+                    endOffset
+                );
             }
         }
 
@@ -1482,7 +1915,7 @@ export class Parser {
             type: 'UpdateStatement',
             target: targetNode,
             assignments,
-            output, // Successfully integrated
+            output,
             from,
             where,
             start: startToken.offset,
@@ -1495,8 +1928,13 @@ export class Parser {
     private parseFrom(): TableReference[] {
         const fromToken = this.matchKeyword('FROM');
 
+        let incomplete = false;
+        const errors: string[] = [];
+
+        let refs: TableReference[] = [];
+
         try {
-            const refs = this.parseList(() =>
+            refs = this.parseList(() =>
                 this.parseTableSource(fromToken.offset)
             );
 
@@ -1504,14 +1942,39 @@ export class Parser {
                 return refs;
             }
 
-        } catch {
-            // fall through to recovery
+            // empty list case
+            incomplete = true;
+
+            this.addRecoverableError(
+                errors,
+                'PARSE_FROM_EMPTY',
+                'Expected table source after FROM',
+                fromToken.offset,
+                fromToken.offset + fromToken.value.length
+            );
+
+        } catch (e) {
+            incomplete = true;
+
+            this.addRecoverableError(
+                errors,
+                'PARSE_FROM',
+                e instanceof Error ? e.message : String(e),
+                fromToken.offset,
+                fromToken.offset + fromToken.value.length
+            );
+
+            // attempt resync
+            this.recoverTo([
+                'WHERE',
+                'GROUP',
+                'HAVING',
+                'ORDER',
+                'OUTPUT'
+            ]);
         }
 
-        // Recover:
-        // SELECT * FROM
-        // SELECT * FROM ,
-        // SELECT * FROM WHERE ...
+        // Recovery fallback
         return [
             {
                 type: 'TableReference',
@@ -1520,7 +1983,10 @@ export class Parser {
                 start: fromToken.offset,
                 end: fromToken.offset + fromToken.value.length,
                 incomplete: true,
-                errors: ['Expected table source after FROM']
+                errors: [
+                    'Expected table source after FROM',
+                    ...errors
+                ]
             }
         ];
     }
@@ -1537,7 +2003,7 @@ export class Parser {
         const startOffset = forcedStart ?? startToken?.offset ?? 0;
         let endOffset = startOffset;
 
-        // 1. Parse source (subquery / identifier)
+        // 1. SOURCE (table or subquery)
         try {
             const next = this.peek();
             const nextNext = this.peek(1);
@@ -1551,45 +2017,85 @@ export class Parser {
 
                 const subquery = this.parseQueryExpression();
 
-                const closeParen = this.match(TokenType.CloseParen);
+                if (this.peek()?.type === TokenType.CloseParen) {
+                    const closeParen = this.consume();
 
-                source = {
-                    type: 'SubqueryExpression',
-                    query: subquery,
-                    start: openParen.offset,
-                    end: closeParen.offset + closeParen.value.length
-                };
+                    source = {
+                        type: 'SubqueryExpression',
+                        query: subquery,
+                        start: openParen.offset,
+                        end: closeParen.offset + closeParen.value.length
+                    };
 
-                endOffset = source.end;
-            }
-            else {
-                source = this.parseMultipartIdentifier();
-                endOffset = source.end;
+                    endOffset = source.end;
+                } else {
+                    incomplete = true;
+
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_TABLE_SUBQUERY_CLOSE',
+                        'Expected ) after subquery',
+                        openParen.offset,
+                        endOffset
+                    );
+
+                    source = {
+                        type: 'SubqueryExpression',
+                        query: subquery,
+                        start: openParen.offset,
+                        end: endOffset
+                    };
+                }
+            } else {
+                const nextToken = this.peek();
+
+                if (
+                    nextToken &&
+                    !this.isStructuralKeyword(nextToken.value)
+                ) {
+                    source = this.parseMultipartIdentifier();
+                    endOffset = source.end;
+                } else {
+                    incomplete = true;
+
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_TABLE_SOURCE',
+                        'Expected table source',
+                        startOffset,
+                        endOffset
+                    );
+                }
             }
 
         } catch (e) {
             incomplete = true;
 
-            errors.push(
-                e instanceof Error ? e.message : String(e)
+            this.addRecoverableError(
+                errors,
+                'PARSE_TABLE_SOURCE',
+                e instanceof Error ? e.message : String(e),
+                startOffset,
+                endOffset
             );
+
+            this.recoverTo(['JOIN', 'WHERE', 'GROUP', 'ORDER']);
         }
 
-        // 2. Alias
-        const aliasToken = this.peek();
-
+        // 2. ALIAS
         try {
+            const aliasToken = this.peek();
+
             if (source && aliasToken?.value === 'AS') {
                 this.consume();
 
                 const aliasExpr = this.parseMultipartIdentifier();
 
-                // Validation: Aliases must be identifiers, not wildcards
                 if (aliasExpr.type === 'Identifier') {
                     alias = aliasExpr.name;
                     endOffset = aliasExpr.end;
                 } else {
-                    throw new Error("Wildcards cannot be used as table aliases");
+                    throw new Error('Invalid alias');
                 }
             }
             else if (
@@ -1603,24 +2109,27 @@ export class Parser {
             ) {
                 const aliasExpr = this.parseMultipartIdentifier();
 
-                // Validation: Implicit aliases must also be identifiers
                 if (aliasExpr.type === 'Identifier') {
                     alias = aliasExpr.name;
                     endOffset = aliasExpr.end;
                 } else {
-                    throw new Error("Wildcards cannot be used as table aliases");
+                    throw new Error('Invalid alias');
                 }
             }
 
         } catch (e) {
             incomplete = true;
 
-            errors.push(
-                e instanceof Error ? e.message : String(e)
+            this.addRecoverableError(
+                errors,
+                'PARSE_TABLE_ALIAS',
+                e instanceof Error ? e.message : String(e),
+                endOffset,
+                endOffset
             );
         }
 
-        // 3. Hints
+        // 3. HINTS
         try {
             if (source?.type === 'Identifier') {
                 const nextToken = this.peek();
@@ -1637,26 +2146,49 @@ export class Parser {
         } catch (e) {
             incomplete = true;
 
-            errors.push(
-                e instanceof Error ? e.message : String(e)
+            this.addRecoverableError(
+                errors,
+                'PARSE_TABLE_HINTS',
+                e instanceof Error ? e.message : String(e),
+                endOffset,
+                endOffset
             );
         }
 
-        // 4. Joins
+        // 4. JOINS
         const joins: JoinNode[] = [];
 
         try {
             while (this.isJoinToken(this.peek())) {
-                const join = this.parseJoin();
-                joins.push(join);
-                endOffset = join.end;
+                try {
+                    const join = this.parseJoin();
+                    joins.push(join);
+                    endOffset = join.end;
+                } catch (e) {
+                    incomplete = true;
+
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_JOIN',
+                        e instanceof Error ? e.message : String(e),
+                        endOffset,
+                        endOffset
+                    );
+
+                    this.recoverTo(['JOIN', 'WHERE', 'GROUP', 'ORDER']);
+                    break;
+                }
             }
 
         } catch (e) {
             incomplete = true;
 
-            errors.push(
-                e instanceof Error ? e.message : String(e)
+            this.addRecoverableError(
+                errors,
+                'PARSE_JOIN',
+                e instanceof Error ? e.message : String(e),
+                endOffset,
+                endOffset
             );
         }
 
@@ -2115,34 +2647,80 @@ export class Parser {
         const errors: string[] = [];
         let output: OutputClauseNode | undefined;
 
-        // Optional first FROM (DELETE FROM T ...)
+        // Optional first FROM
+        // DELETE FROM T ...
         if (this.peekKeyword('FROM')) {
             this.consume();
         }
 
         // 1. Target
         let target: Expression | null = null;
-        let endOffset = startToken.offset + startToken.value.length;
+        let endOffset =
+            startToken.offset + startToken.value.length;
 
         try {
-            target = this.parseMultipartIdentifier();
-            endOffset = target.end;
+            const next = this.peek();
+
+            if (
+                next &&
+                !this.isStructuralKeyword(next.value) &&
+                next.type !== TokenType.Semicolon
+            ) {
+                target =
+                    this.parseMultipartIdentifier();
+
+                endOffset = target.end;
+            } else {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_DELETE_TARGET',
+                    'Expected delete target',
+                    startToken.offset,
+                    endOffset
+                );
+            }
+
         } catch (e) {
             incomplete = true;
-            errors.push(e instanceof Error ? e.message : String(e));
-            this.recoverTo(['OUTPUT', 'FROM', 'WHERE']); // Resync point
+
+            this.addRecoverableError(
+                errors,
+                'PARSE_DELETE_TARGET',
+                e instanceof Error ? e.message : String(e),
+                startToken.offset,
+                endOffset
+            );
+
+            this.recoverTo([
+                'OUTPUT',
+                'FROM',
+                'WHERE'
+            ]);
         }
 
-        // 2. NEW: The OUTPUT Clause
-        // Syntax: DELETE [FROM] Target OUTPUT ... FROM ... WHERE ...
+        // 2. OUTPUT
+        // DELETE ... OUTPUT ...
         if (this.peekKeyword('OUTPUT')) {
             try {
                 output = this.parseOutputClause();
                 endOffset = output.end;
+
             } catch (e) {
                 incomplete = true;
-                errors.push(e instanceof Error ? e.message : String(e));
-                this.recoverTo(['FROM', 'WHERE']); // Resync to next logical block
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_DELETE_OUTPUT',
+                    e instanceof Error ? e.message : String(e),
+                    endOffset
+                );
+
+                this.recoverTo([
+                    'FROM',
+                    'WHERE'
+                ]);
             }
         }
 
@@ -2152,23 +2730,44 @@ export class Parser {
 
         if (this.peekKeyword('FROM')) {
             const fromToken = this.consume();
-            endOffset = fromToken.offset + fromToken.value.length;
+            endOffset =
+                fromToken.offset + fromToken.value.length;
 
             try {
                 from = this.parseList(() =>
-                    this.parseTableSource(fromToken.offset)
+                    this.parseTableSource(
+                        fromToken.offset
+                    )
                 );
 
                 if (from.length > 0) {
-                    endOffset = from[from.length - 1].end;
+                    endOffset =
+                        from[from.length - 1].end;
                 } else {
                     from = [];
                     incomplete = true;
+
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_DELETE_EMPTY_FROM',
+                        'Expected FROM source',
+                        fromToken.offset,
+                        endOffset
+                    );
                 }
+
             } catch (e) {
                 from = [];
                 incomplete = true;
-                errors.push(e instanceof Error ? e.message : String(e));
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_DELETE_FROM',
+                    e instanceof Error ? e.message : String(e),
+                    fromToken.offset,
+                    endOffset
+                );
+
                 this.recoverTo(['WHERE']);
             }
         }
@@ -2178,24 +2777,55 @@ export class Parser {
 
         if (this.peekKeyword('WHERE')) {
             const whereToken = this.consume();
-            endOffset = whereToken.offset + whereToken.value.length;
+            endOffset =
+                whereToken.offset + whereToken.value.length;
 
             try {
-                where = this.parseExpression(Precedence.LOWEST);
+                const next = this.peek();
 
-                if (where) {
-                    endOffset = where.end;
+                if (
+                    next &&
+                    !this.isStructuralKeyword(next.value) &&
+                    next.type !== TokenType.Comma &&
+                    next.type !== TokenType.Semicolon
+                ) {
+                    where = this.parseExpression(
+                        Precedence.LOWEST
+                    );
+
+                    if (where) {
+                        endOffset = where.end;
+                    }
+
+                } else {
+                    incomplete = true;
+
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_DELETE_WHERE',
+                        'Expected WHERE expression',
+                        whereToken.offset,
+                        endOffset
+                    );
                 }
+
             } catch (e) {
                 incomplete = true;
-                errors.push(e instanceof Error ? e.message : String(e));
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_DELETE_WHERE',
+                    e instanceof Error ? e.message : String(e),
+                    whereToken.offset,
+                    endOffset
+                );
             }
         }
 
         return {
             type: 'DeleteStatement',
             target,
-            output, // Successfully integrated
+            output,
             from,
             where,
             start: startToken.offset,
@@ -2210,13 +2840,15 @@ export class Parser {
 
         let incomplete = false;
         const errors: string[] = [];
-        let endOffset = startToken.offset + startToken.value.length;
+        let endOffset =
+            startToken.offset + startToken.value.length;
 
         let variables: VariableDeclaration[] = [];
 
         try {
             variables = this.parseList<VariableDeclaration>(() => {
-                const declStart = this.peek()?.offset ?? endOffset;
+                const declStart =
+                    this.peek()?.offset ?? endOffset;
 
                 let name = '';
                 let dataType = '';
@@ -2225,14 +2857,26 @@ export class Parser {
 
                 // 1. variable name
                 try {
-                    const nameToken = this.match(TokenType.Variable);
+                    const nameToken =
+                        this.match(TokenType.Variable);
+
                     name = nameToken.value;
-                    endOffset = nameToken.offset + nameToken.value.length;
+
+                    endOffset =
+                        nameToken.offset +
+                        nameToken.value.length;
+
                 } catch (e) {
                     incomplete = true;
 
-                    errors.push(
-                        e instanceof Error ? e.message : String(e)
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_DECLARE_NAME',
+                        e instanceof Error
+                            ? e.message
+                            : String(e),
+                        declStart,
+                        endOffset
                     );
                 }
 
@@ -2240,17 +2884,30 @@ export class Parser {
                 if (this.peekKeyword('TABLE')) {
                     const tableToken = this.consume();
                     dataType = 'TABLE';
-                    endOffset = tableToken.offset + tableToken.value.length;
+
+                    endOffset =
+                        tableToken.offset +
+                        tableToken.value.length;
 
                     try {
-                        columns = this.parseTableColumns();
-                        endOffset = this.lastConsumedEnd();
+                        columns =
+                            this.parseTableColumns();
+
+                        endOffset =
+                            this.lastConsumedEnd();
+
                     } catch (e) {
                         columns = [];
                         incomplete = true;
 
-                        errors.push(
-                            e instanceof Error ? e.message : String(e)
+                        this.addRecoverableError(
+                            errors,
+                            'PARSE_DECLARE_TABLE_COLUMNS',
+                            e instanceof Error
+                                ? e.message
+                                : String(e),
+                            tableToken.offset,
+                            endOffset
                         );
                     }
 
@@ -2275,31 +2932,82 @@ export class Parser {
                     ) {
                         dataType = this.parseDataType();
                         endOffset = this.lastConsumedEnd();
+                    } else {
+                        // missing datatype is valid in some contexts,
+                        // so do NOT force error unless name exists
+                        if (name) {
+                            incomplete = true;
+
+                            this.addRecoverableError(
+                                errors,
+                                'PARSE_DECLARE_DATATYPE',
+                                'Expected datatype',
+                                declStart,
+                                endOffset
+                            );
+                        }
                     }
+
                 } catch (e) {
                     incomplete = true;
 
-                    errors.push(
-                        e instanceof Error ? e.message : String(e)
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_DECLARE_DATATYPE',
+                        e instanceof Error
+                            ? e.message
+                            : String(e),
+                        declStart,
+                        endOffset
                     );
                 }
 
                 // 4. initializer
                 if (this.peek()?.value === '=') {
                     const eqToken = this.consume();
-                    endOffset = eqToken.offset + eqToken.value.length;
+
+                    endOffset =
+                        eqToken.offset + eqToken.value.length;
 
                     try {
-                        initialValue = this.parseExpression();
+                        const next = this.peek();
 
-                        if (initialValue) {
-                            endOffset = initialValue.end;
+                        if (
+                            next &&
+                            next.type !== TokenType.Comma &&
+                            next.type !== TokenType.Semicolon &&
+                            !this.isStructuralKeyword(next.value)
+                        ) {
+                            initialValue =
+                                this.parseExpression();
+
+                            if (initialValue) {
+                                endOffset =
+                                    initialValue.end;
+                            }
+                        } else {
+                            incomplete = true;
+
+                            this.addRecoverableError(
+                                errors,
+                                'PARSE_DECLARE_INITIALIZER',
+                                'Expected expression',
+                                eqToken.offset,
+                                endOffset
+                            );
                         }
+
                     } catch (e) {
                         incomplete = true;
 
-                        errors.push(
-                            e instanceof Error ? e.message : String(e)
+                        this.addRecoverableError(
+                            errors,
+                            'PARSE_DECLARE_INITIALIZER',
+                            e instanceof Error
+                                ? e.message
+                                : String(e),
+                            eqToken.offset,
+                            endOffset
                         );
                     }
                 }
@@ -2315,14 +3023,26 @@ export class Parser {
 
             if (variables.length === 0) {
                 incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_DECLARE_EMPTY',
+                    'Expected variable declaration',
+                    startToken.offset,
+                    endOffset
+                );
             }
 
         } catch (e) {
             variables = [];
             incomplete = true;
 
-            errors.push(
-                e instanceof Error ? e.message : String(e)
+            this.addRecoverableError(
+                errors,
+                'PARSE_DECLARE',
+                e instanceof Error ? e.message : String(e),
+                startToken.offset,
+                endOffset
             );
         }
 
@@ -2336,17 +3056,75 @@ export class Parser {
         };
     }
 
+    private parsePrint(): PrintNode {
+        const printToken = this.matchKeyword('PRINT');
+
+        let value: Expression | null = null;
+        let endOffset =
+            printToken.offset + printToken.value.length;
+
+        let incomplete = false;
+        const errors: string[] = [];
+
+        try {
+            const next = this.peek();
+
+            if (
+                !next ||
+                next.type === TokenType.Semicolon ||
+                this.isStructuralKeyword(next.value)
+            ) {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_PRINT_EXPRESSION',
+                    'Expected PRINT expression',
+                    printToken.offset,
+                    endOffset
+                );
+            } else {
+                value = this.parseExpression();
+
+                if (value) {
+                    endOffset = value.end;
+                }
+            }
+
+        } catch (e) {
+            incomplete = true;
+
+            this.addRecoverableError(
+                errors,
+                'PARSE_PRINT_EXPRESSION',
+                e instanceof Error ? e.message : String(e),
+                printToken.offset,
+                endOffset
+            );
+        }
+
+        return {
+            type: 'PrintStatement',
+            value,
+            start: printToken.offset,
+            end: endOffset,
+            ...(incomplete ? { incomplete: true } : {}),
+            ...(errors.length ? { errors } : {})
+        };
+    }
+
     private parseSet(): SetNode {
         const startToken = this.matchKeyword('SET');
 
         let incomplete = false;
         const errors: string[] = [];
 
-        let endOffset = startToken.offset + startToken.value.length;
+        let endOffset =
+            startToken.offset + startToken.value.length;
 
         let variable = '';
-        let variableStart = startToken.offset + startToken.value.length;
-        let variableEnd = variableStart;
+        let variableStart = endOffset;
+        let variableEnd = endOffset;
 
         let value: Expression | null = null;
 
@@ -2366,7 +3144,8 @@ export class Parser {
             // expect =
             if (this.peek()?.value === '=') {
                 const eqToken = this.consume();
-                endOffset = eqToken.offset + eqToken.value.length;
+                endOffset =
+                    eqToken.offset + eqToken.value.length;
 
                 try {
                     const next = this.peek();
@@ -2384,23 +3163,44 @@ export class Parser {
                         }
                     } else {
                         incomplete = true;
-                        errors.push('Expected expression');
+
+                        this.addRecoverableError(
+                            errors,
+                            'PARSE_SET_EXPRESSION',
+                            'Expected expression',
+                            eqToken.offset,
+                            endOffset
+                        );
                     }
 
                 } catch (e) {
                     incomplete = true;
 
-                    errors.push(
-                        e instanceof Error ? e.message : String(e)
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_SET_EXPRESSION',
+                        e instanceof Error
+                            ? e.message
+                            : String(e),
+                        eqToken.offset,
+                        endOffset
                     );
                 }
+
             } else {
                 incomplete = true;
-                errors.push('Expected =');
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_SET_EQUALS',
+                    'Expected =',
+                    variableEnd,
+                    variableEnd
+                );
             }
         }
 
-        // CASE 2: session option
+        // CASE 2: session option (SET ANSI_NULLS ON, etc.)
         else {
             const parts: string[] = [];
             let firstToken: Token | null = null;
@@ -2446,7 +3246,14 @@ export class Parser {
 
             if (!variable) {
                 incomplete = true;
-                errors.push('Expected SET target');
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_SET_TARGET',
+                    'Expected SET target',
+                    startToken.offset,
+                    endOffset
+                );
             }
         }
 
@@ -2542,107 +3349,325 @@ export class Parser {
 
     private parseCreate(): CreateNode {
         const startToken = this.matchKeyword('CREATE');
-        const rawType = this.consume().value.toUpperCase();
 
-        let objectType = CREATE_OBJECT_TYPES[rawType];
+        let incomplete = false;
+        const errors: string[] = [];
+        let endOffset =
+            startToken.offset + startToken.value.length;
 
-        const nameExpr = this.parseMultipartIdentifier();
-        let name = '';
+        // 1. Object type
+        let objectType: CreateNode['objectType'] = 'TABLE';
 
-        // Validation: Created objects must have identifiers, not wildcards
-        if (nameExpr.type === 'Identifier') {
-            name = nameExpr.name;
-        } else {
-            throw new Error(`Wildcards are not allowed as names for ${objectType} definitions`);
+        try {
+            const typeToken = this.consume();
+            const rawType = typeToken.value.toUpperCase();
+
+            const mapped =
+                CREATE_OBJECT_TYPES[
+                rawType as keyof typeof CREATE_OBJECT_TYPES
+                ];
+
+            if (mapped) {
+                objectType = mapped;
+            } else {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_CREATE_TYPE',
+                    `Unsupported CREATE object type: ${rawType}`,
+                    typeToken.offset,
+                    typeToken.offset + typeToken.value.length
+                );
+            }
+
+            endOffset =
+                typeToken.offset + typeToken.value.length;
+
+        } catch (e) {
+            incomplete = true;
+
+            this.addRecoverableError(
+                errors,
+                'PARSE_CREATE_TYPE',
+                e instanceof Error ? e.message : String(e),
+                startToken.offset,
+                endOffset
+            );
         }
 
+        // 2. Name
+        let name = '';
+        let nameExpr: Expression = {
+            type: 'Identifier',
+            name: '',
+            parts: [],
+            start: endOffset,
+            end: endOffset
+        } as IdentifierNode;
 
-        let columns: ColumnDefinition[] | undefined = undefined;
-        let parameters: ParameterDefinition[] | undefined = undefined;
-        let body: Statement | Statement[] | undefined = undefined;
-        let isTableType: boolean | undefined = undefined;
+        try {
+            nameExpr = this.parseMultipartIdentifier();
 
+            if (nameExpr.type === 'Identifier') {
+                name = nameExpr.name;
+                endOffset = nameExpr.end;
+            } else {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_CREATE_NAME',
+                    `Wildcards are not allowed as names for ${objectType} definitions`,
+                    nameExpr.start,
+                    nameExpr.end
+                );
+            }
+
+        } catch (e) {
+            incomplete = true;
+
+            this.addRecoverableError(
+                errors,
+                'PARSE_CREATE_NAME',
+                e instanceof Error ? e.message : String(e),
+                endOffset
+            );
+        }
+
+        let columns: ColumnDefinition[] | undefined;
+        let parameters: ParameterDefinition[] | undefined;
+        let body: Statement | Statement[] | undefined;
+        let isTableType: boolean | undefined;
+
+        // 3. TYPE
         if (objectType === 'TYPE') {
-            if (this.peekKeyword('AS')) {
-                this.consume();
-                if (this.peekKeyword('TABLE')) {
+            try {
+                if (this.peekKeyword('AS')) {
                     this.consume();
-                    columns = this.parseTableColumns();
-                    isTableType = true;
+                    endOffset = this.lastConsumedEnd();
+
+                    if (this.peekKeyword('TABLE')) {
+                        this.consume();
+                        endOffset = this.lastConsumedEnd();
+
+                        columns =
+                            this.parseTableColumns();
+
+                        isTableType = true;
+                        endOffset =
+                            this.lastConsumedEnd();
+                    }
                 }
+
+            } catch (e) {
+                incomplete = true;
+                columns = [];
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_CREATE_TYPE_BODY',
+                    e instanceof Error ? e.message : String(e),
+                    endOffset
+                );
             }
         }
+
+        // 4. TABLE
         else if (objectType === 'TABLE') {
-            columns = this.parseTableColumns();
+            try {
+                columns =
+                    this.parseTableColumns();
+
+                endOffset =
+                    this.lastConsumedEnd();
+
+            } catch (e) {
+                incomplete = true;
+                columns = [];
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_CREATE_TABLE_COLUMNS',
+                    e instanceof Error ? e.message : String(e),
+                    endOffset
+                );
+            }
         }
-        else if (objectType === 'PROCEDURE' || objectType === 'FUNCTION') {
-            // [SCOPE] Push a private scope for Procedure/Function
 
+        // 5. PROCEDURE / FUNCTION
+        else if (
+            objectType === 'PROCEDURE' ||
+            objectType === 'FUNCTION'
+        ) {
+            // Parameters
+            try {
+                const hasParens =
+                    this.peek()?.type ===
+                    TokenType.OpenParen;
 
-            const hasParens = this.peek()?.type === TokenType.OpenParen;
-            if (hasParens) this.consume();
+                if (hasParens) {
+                    this.consume();
+                    endOffset =
+                        this.lastConsumedEnd();
+                }
 
-            if (this.peek()?.type === TokenType.Variable) {
-                parameters = this.parseList<ParameterDefinition>(() => {
-                    const paramToken = this.peek()!;
-                    const pName = this.consume().value;
+                if (
+                    this.peek()?.type ===
+                    TokenType.Variable
+                ) {
+                    parameters =
+                        this.parseList<ParameterDefinition>(
+                            () => {
+                                const paramToken =
+                                    this.peek()!;
 
-                    // Use our new helper
-                    const pType = this.parseDataType();
+                                const pName =
+                                    this.consume().value;
 
-                    let isOutput = false;
-                    const nextToken = this.peek();
-                    if (nextToken?.type === TokenType.Keyword && (nextToken.value === 'OUTPUT' || nextToken.value === 'OUT')) {
-                        isOutput = true;
-                        this.consume();
+                                const pType =
+                                    this.parseDataType();
+
+                                let isOutput = false;
+
+                                const nextToken =
+                                    this.peek();
+
+                                if (
+                                    nextToken?.type ===
+                                    TokenType.Keyword &&
+                                    (
+                                        nextToken.value ===
+                                        'OUTPUT' ||
+                                        nextToken.value ===
+                                        'OUT'
+                                    )
+                                ) {
+                                    isOutput = true;
+                                    this.consume();
+                                }
+
+                                return {
+                                    name: pName,
+                                    dataType: pType,
+                                    isOutput,
+                                    start:
+                                        paramToken.offset,
+                                    end:
+                                        this.lastConsumedEnd()
+                                };
+                            }
+                        );
+
+                    endOffset =
+                        this.lastConsumedEnd();
+                }
+
+                if (hasParens) {
+                    this.match(
+                        TokenType.CloseParen
+                    );
+
+                    endOffset =
+                        this.lastConsumedEnd();
+                }
+
+            } catch (e) {
+                incomplete = true;
+                parameters = [];
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_CREATE_PARAMETERS',
+                    e instanceof Error
+                        ? e.message
+                        : String(e),
+                    endOffset
+                );
+            }
+
+            // AS
+            if (this.peekKeyword('AS')) {
+                this.consume();
+                endOffset =
+                    this.lastConsumedEnd();
+            }
+
+            // Body
+            try {
+                const statements: Statement[] =
+                    [];
+
+                const stopKeywords = ['GO'];
+
+                while (
+                    this.pos < this.tokens.length
+                ) {
+                    const nextToken =
+                        this.peek();
+
+                    if (
+                        !nextToken ||
+                        stopKeywords.includes(
+                            nextToken.value
+                        )
+                    ) {
+                        break;
                     }
 
-                    return {
-                        name: pName,
-                        dataType: pType,
-                        isOutput,
-                        start: paramToken.offset,
-                        end: this.lastConsumedEnd()
-                    };
-                });
+                    const stmt =
+                        this.parseStatement();
+
+                    if (stmt) {
+                        statements.push(stmt);
+                        endOffset = stmt.end;
+                    } else {
+                        break;
+                    }
+                }
+
+                body = statements;
+
+            } catch (e) {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_CREATE_BODY',
+                    e instanceof Error
+                        ? e.message
+                        : String(e),
+                    endOffset
+                );
             }
-            if (hasParens) this.match(TokenType.CloseParen);
-
-            if (this.peekKeyword('AS')) {
-                this.consume(); // AS
-            }
-
-            // Parse Body
-            const statements: Statement[] = [];
-            const stopKeywords = ['GO'];
-            while (this.pos < this.tokens.length) {
-                const nextToken = this.peek();
-                if (!nextToken || stopKeywords.includes(nextToken.value)) break;
-
-                const stmt = this.parseStatement();
-                if (stmt) statements.push(stmt);
-                else break;
-            }
-            body = statements;
-
-
         }
+
+        // 6. VIEW
         else if (objectType === 'VIEW') {
-            if (this.peekKeyword('AS')) {
-                this.consume();
+            try {
+                if (this.peekKeyword('AS')) {
+                    this.consume();
+                    endOffset =
+                        this.lastConsumedEnd();
+                }
+
+                body =
+                    this.parseQueryExpression();
+
+                endOffset = body.end;
+
+            } catch (e) {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_CREATE_VIEW',
+                    e instanceof Error
+                        ? e.message
+                        : String(e),
+                    endOffset
+                );
             }
-
-            body = this.parseQueryExpression();
-        }
-
-        // ... endOffset calculation and return (same as your previous version)
-        let endOffset = nameExpr.end;
-        if (Array.isArray(body) && body.length > 0) {
-            endOffset = body[body.length - 1].end;
-        } else if (body && !Array.isArray(body)) {
-            endOffset = (body as Statement).end;
-        } else if (columns) {
-            endOffset = this.lastConsumedEnd();
         }
 
         return {
@@ -2654,7 +3679,13 @@ export class Parser {
             body,
             isTableType,
             start: startToken.offset,
-            end: endOffset
+            end: endOffset,
+            ...(incomplete
+                ? { incomplete: true }
+                : {}),
+            ...(errors.length
+                ? { errors }
+                : {})
         };
     }
 
@@ -3214,52 +4245,199 @@ export class Parser {
 
     private parseIf(): IfNode {
         const startToken = this.matchKeyword('IF');
-        const condition = this.parseExpression();
-        const thenBranch = this.parseStatement();
 
-        let elseBranch: Statement | undefined = undefined;
-        let endOffset = thenBranch ? thenBranch.end : condition.end;
+        let incomplete = false;
+        const errors: string[] = [];
 
-        if (this.peekKeyword('ELSE')) {
-            this.consume(); // ELSE
+        let condition: Expression | null = null;
+        let thenBranch: Statement | null = null;
+        let elseBranch: Statement | undefined;
+
+        let endOffset =
+            startToken.offset + startToken.value.length;
+
+        // 1. condition
+        try {
+            const next = this.peek();
+
+            if (
+                next &&
+                next.type !== TokenType.Semicolon &&
+                !this.isStructuralKeyword(next.value)
+            ) {
+                condition = this.parseExpression();
+
+                if (condition) {
+                    endOffset = condition.end;
+                }
+            } else {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_IF_CONDITION',
+                    'Expected IF condition',
+                    startToken.offset,
+                    endOffset
+                );
+            }
+
+        } catch (e) {
+            incomplete = true;
+
+            this.addRecoverableError(
+                errors,
+                'PARSE_IF_CONDITION',
+                e instanceof Error ? e.message : String(e),
+                startToken.offset,
+                endOffset
+            );
+        }
+
+        // 2. THEN branch
+        try {
             const stmt = this.parseStatement();
+
             if (stmt) {
-                elseBranch = stmt;
+                thenBranch = stmt;
                 endOffset = stmt.end;
+            } else {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_IF_THEN',
+                    'Expected statement after IF condition',
+                    endOffset,
+                    endOffset
+                );
+            }
+
+        } catch (e) {
+            incomplete = true;
+
+            this.addRecoverableError(
+                errors,
+                'PARSE_IF_THEN',
+                e instanceof Error ? e.message : String(e),
+                endOffset
+            );
+        }
+
+        // 3. ELSE branch
+        if (this.peekKeyword('ELSE')) {
+            const elseToken = this.consume();
+
+            try {
+                const stmt = this.parseStatement();
+
+                if (stmt) {
+                    elseBranch = stmt;
+                    endOffset = stmt.end;
+                } else {
+                    incomplete = true;
+
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_IF_ELSE',
+                        'Expected statement after ELSE',
+                        elseToken.offset,
+                        elseToken.offset + elseToken.value.length
+                    );
+                }
+
+            } catch (e) {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_IF_ELSE',
+                    e instanceof Error ? e.message : String(e),
+                    elseToken.offset,
+                    endOffset
+                );
             }
         }
 
         return {
             type: 'IfStatement',
-            condition,
+            condition: condition!,
             thenBranch: thenBranch!,
             elseBranch,
             start: startToken.offset,
-            end: endOffset
+            end: endOffset,
+            ...(incomplete ? { incomplete: true } : {}),
+            ...(errors.length ? { errors } : {})
         };
     }
 
     private parseBlock(): BlockNode {
         const startToken = this.matchKeyword('BEGIN');
-        const body: Statement[] = [];
 
-        while (this.pos < this.tokens.length && !this.peekKeyword('END')) {
+        let incomplete = false;
+        const errors: string[] = [];
+
+        const body: Statement[] = [];
+        let endOffset =
+            startToken.offset + startToken.value.length;
+
+        // 1. Body
+        while (
+            this.pos < this.tokens.length &&
+            !this.peekKeyword('END')
+        ) {
             const stmt = this.parseStatement();
+
             if (stmt) {
                 body.push(stmt);
+                endOffset = stmt.end;
             } else {
-                // Prevent infinite loop if parseStatement returns null on standalone semicolon
-                if (this.peek()?.type === TokenType.Semicolon) this.consume();
-                else break;
+                // prevent infinite loop
+                if (this.peek()?.type === TokenType.Semicolon) {
+                    this.consume();
+                } else {
+                    break;
+                }
             }
         }
 
-        const endToken = this.matchKeyword('END');
+        // 2. END
+        try {
+            if (this.peekKeyword('END')) {
+                const endToken = this.consume();
+
+                endOffset =
+                    endToken.offset + endToken.value.length;
+            } else {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_BLOCK_END',
+                    'Expected END for BEGIN block',
+                    endOffset,
+                    endOffset
+                );
+            }
+
+        } catch (e) {
+            incomplete = true;
+
+            this.addRecoverableError(
+                errors,
+                'PARSE_BLOCK_END',
+                e instanceof Error ? e.message : String(e),
+                endOffset
+            );
+        }
+
         return {
             type: 'BlockStatement',
             body,
             start: startToken.offset,
-            end: endToken.offset + endToken.value.length
+            end: endOffset,
+            ...(incomplete ? { incomplete: true } : {}),
+            ...(errors.length ? { errors } : {})
         };
     }
 
@@ -3402,16 +4580,9 @@ export class Parser {
     }
 
     private parseQueryExpression(): QueryStatement {
-        // 1. Parse the base SELECT
-        let query = this.parseSelect() as QueryStatement;
-
-        // 2. Chain any set operations (UNION ALL, EXCEPT, etc.)
-        // This allows CTEs and Subqueries to handle chained statements
-        while (this.isSetOperator(this.peek())) {
-            query = this.parseSetOperation(query);
-        }
-
-        return query;
+        const left = this.parseSelect();
+        const tree = this.parseSetOperation(left);
+        return this.normalizeSetTree(tree);
     }
 
     private parseDataType(): string {
@@ -3435,64 +4606,208 @@ export class Parser {
     private parseOutputClause(): OutputClauseNode {
         const startToken = this.matchKeyword('OUTPUT');
 
-        const columns = this.parseList(() => {
-            const start = this.peek()?.offset ?? startToken.offset;
+        let incomplete = false;
+        const errors: string[] = [];
 
-            let sourceTable: 'INSERTED' | 'DELETED' | null = null;
-            let sourceLocation: NodeLocation | undefined;
+        let endOffset =
+            startToken.offset + startToken.value.length;
 
-            const value = this.peek()?.value?.toUpperCase();
+        // 1. Columns
+        let columns: OutputColumnNode[] = [];
 
-            if (value === 'INSERTED') {
-                const token = this.consume();
+        try {
+            columns = this.parseList(() => {
+                const start =
+                    this.peek()?.offset ?? startToken.offset;
 
-                sourceTable = 'INSERTED';
-                sourceLocation = {
-                    start: token.offset,
-                    end: token.offset + token.value.length
-                };
+                let sourceTable: 'INSERTED' | 'DELETED' | null = null;
+                let sourceLocation: NodeLocation | undefined;
 
-                this.match(TokenType.Dot);
-            } else if (value === 'DELETED') {
-                const token = this.consume();
+                const value = this.peek()?.value?.toUpperCase();
 
-                sourceTable = 'DELETED';
-                sourceLocation = {
-                    start: token.offset,
-                    end: token.offset + token.value.length
-                };
+                // INSERTED / DELETED
+                if (value === 'INSERTED' || value === 'DELETED') {
+                    const token = this.consume();
 
-                this.match(TokenType.Dot);
+                    sourceTable = value as 'INSERTED' | 'DELETED';
+
+                    sourceLocation = {
+                        start: token.offset,
+                        end: token.offset + token.value.length
+                    };
+
+                    if (this.peek()?.type === TokenType.Dot) {
+                        this.consume();
+                    } else {
+                        incomplete = true;
+
+                        this.addRecoverableError(
+                            errors,
+                            'PARSE_OUTPUT_DOT',
+                            'Expected . after ' + value,
+                            token.offset,
+                            token.offset + token.value.length
+                        );
+                    }
+                }
+
+                let column: ColumnNode;
+
+                try {
+                    column = this.parseColumn();
+                    endOffset = column.end;
+
+                } catch (e) {
+                    incomplete = true;
+
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_OUTPUT_COLUMN',
+                        e instanceof Error ? e.message : String(e),
+                        start,
+                        endOffset
+                    );
+
+                    // fallback dummy column
+                    column = {
+                        type: 'Column',
+                        expression: {
+                            type: 'Identifier',
+                            name: '',
+                            parts: [],
+                            start,
+                            end: start
+                        },
+                        sourceName: '',
+                        outputName: '',
+                        start,
+                        end: start
+                    } as ColumnNode;
+                }
+
+                return {
+                    type: 'OutputColumn',
+                    sourceTable,
+                    sourceLocation,
+                    column,
+                    start,
+                    end: column.end
+                } as OutputColumnNode;
+            });
+
+            if (columns.length === 0) {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_OUTPUT_EMPTY',
+                    'Expected OUTPUT column list',
+                    startToken.offset,
+                    endOffset
+                );
             }
 
-            const column = this.parseColumn();
+        } catch (e) {
+            columns = [];
+            incomplete = true;
 
-            return {
-                type: 'OutputColumn',
-                sourceTable,
-                sourceLocation,
-                column,
-                start,
-                end: column.end
-            } as OutputColumnNode;
-        });
+            this.addRecoverableError(
+                errors,
+                'PARSE_OUTPUT',
+                e instanceof Error ? e.message : String(e),
+                startToken.offset,
+                endOffset
+            );
 
+            this.recoverTo(['INTO', 'VALUES', 'SELECT', 'FROM', 'WHERE']);
+        }
+
+        // 2. INTO
         let intoTable: Expression | undefined;
         let intoColumns: string[] | undefined;
 
         if (this.peekKeyword('INTO')) {
-            this.consume();
+            const intoToken = this.consume();
+            endOffset =
+                intoToken.offset + intoToken.value.length;
 
-            intoTable = this.parseMultipartIdentifier();
+            try {
+                const next = this.peek();
 
-            if (this.peek()?.type === TokenType.OpenParen) {
-                this.consume();
+                if (
+                    next &&
+                    next.type !== TokenType.Semicolon &&
+                    !this.isStructuralKeyword(next.value)
+                ) {
+                    intoTable = this.parseMultipartIdentifier();
+                    endOffset = this.lastConsumedEnd();
+                } else {
+                    incomplete = true;
 
-                intoColumns = this.parseList(() =>
-                    this.match(TokenType.Identifier).value
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_OUTPUT_INTO_TARGET',
+                        'Expected INTO target table',
+                        intoToken.offset,
+                        endOffset
+                    );
+                }
+
+            } catch (e) {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_OUTPUT_INTO_TARGET',
+                    e instanceof Error ? e.message : String(e),
+                    intoToken.offset,
+                    endOffset
                 );
+            }
 
-                this.match(TokenType.CloseParen);
+            // INTO column list
+            if (this.peek()?.type === TokenType.OpenParen) {
+                const open = this.consume();
+                endOffset =
+                    open.offset + open.value.length;
+
+                try {
+                    if (this.peek()?.type !== TokenType.CloseParen) {
+                        intoColumns = this.parseList(() =>
+                            this.match(TokenType.Identifier).value
+                        );
+                    } else {
+                        intoColumns = [];
+                    }
+
+                    if (this.peek()?.type === TokenType.CloseParen) {
+                        const close = this.consume();
+                        endOffset =
+                            close.offset + close.value.length;
+                    } else {
+                        incomplete = true;
+
+                        this.addRecoverableError(
+                            errors,
+                            'PARSE_OUTPUT_INTO_COLUMNS',
+                            'Expected ) after INTO column list',
+                            endOffset,
+                            endOffset
+                        );
+                    }
+
+                } catch (e) {
+                    intoColumns = [];
+                    incomplete = true;
+
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_OUTPUT_INTO_COLUMNS',
+                        e instanceof Error ? e.message : String(e),
+                        open.offset,
+                        endOffset
+                    );
+                }
             }
         }
 
@@ -3502,22 +4817,18 @@ export class Parser {
             intoTable,
             intoColumns,
             start: startToken.offset,
-            end: this.lastConsumedEnd()
+            end: endOffset,
+            ...(incomplete ? { incomplete: true } : {}),
+            ...(errors.length ? { errors } : {})
         };
     }
 
-    private recoverTo(keywords: string[]): void {
+    private recoverTo(values: string[]) {
         while (this.peek()) {
-            const token = this.peek()!;
+            const token = this.peek();
 
-            // Stop if we hit a statement boundary
-            if (token.type === TokenType.Semicolon) {
-                break;
-            }
-
-            // Stop if we hit one of our target "anchor" keywords
-            if (keywords.includes(token.value.toUpperCase())) {
-                break;
+            if (values.includes(token.value)) {
+                return;
             }
 
             this.consume();

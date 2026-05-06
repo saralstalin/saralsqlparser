@@ -369,7 +369,10 @@ describe('T-SQL Parser', () => {
     // 36. UNION / EXCEPT
     test('should handle UNION and EXCEPT', () => {
         const sql = `SELECT 1 UNION SELECT 2 EXCEPT SELECT 3`;
-        expect((parse(sql).body[0] as SetOperatorNode).operator).toBe('EXCEPT');
+        const root = parse(sql).body[0] as SetOperatorNode;
+
+        expect(root.operator).toBe('UNION');
+        expect((root.right as SetOperatorNode).operator).toBe('EXCEPT');
     });
 
     // 37. IF...ELSE
