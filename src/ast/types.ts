@@ -253,23 +253,49 @@ export interface DeleteNode extends NodeLocation, Recoverable {
 // MERGE
 // ===============================
 
-export type MergeAction = 'INSERT' | 'UPDATE' | 'DELETE';
+export type MergeMatchType =
+    | 'MATCHED'
+    | 'NOT MATCHED'
+    | 'NOT MATCHED BY SOURCE';
 
-export interface MergeWhenClause extends NodeLocation {
+export interface MergeInsertAction extends NodeLocation, Recoverable {
+    type: 'MergeInsertAction';
+    columns?: string[] | null;
+    columnNodes?: IdentifierNode[] | null;
+    values?: Expression[] | null;
+    selectQuery?: QueryStatement | null;
+}
+
+export interface MergeUpdateAction extends NodeLocation, Recoverable {
+    type: 'MergeUpdateAction';
+    assignments: UpdateAssignment[] | null;
+}
+
+export interface MergeDeleteAction extends NodeLocation {
+    type: 'MergeDeleteAction';
+}
+
+export type MergeAction =
+    | MergeInsertAction
+    | MergeUpdateAction
+    | MergeDeleteAction;
+
+export interface MergeWhenClause extends NodeLocation, Recoverable {
     type: 'MergeWhenClause';
-    condition: 'MATCHED' | 'NOT MATCHED' | 'NOT MATCHED BY SOURCE';
+    condition: MergeMatchType;
+    predicate?: Expression | null;
     action: MergeAction;
-    assignments?: UpdateAssignment[] | null;
-    values?: Expression[][] | null;
-    insertColumns?: string[] | null;
 }
 
 export interface MergeNode extends NodeLocation, Recoverable {
     type: 'MergeStatement';
+    top?: string | null;
     target: Expression | null;
+    targetAlias?: string;
     using: TableReference | null;
     on: Expression | null;
     whenClauses: MergeWhenClause[];
+    output?: OutputClauseNode;
 }
 
 // ===============================

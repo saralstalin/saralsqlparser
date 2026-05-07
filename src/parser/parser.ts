@@ -14,6 +14,10 @@ import {
     DeleteNode,
     MergeNode,
     MergeWhenClause,
+    MergeDeleteAction,
+    MergeInsertAction,
+    MergeUpdateAction,
+    MergeAction,
     DeclareNode,
     SetNode,
     CreateNode,
@@ -40,6 +44,7 @@ import {
     JoinType,
     ColumnNode,
     OrderByNode,
+    MergeMatchType,
 
     // DML helpers
     UpdateAssignment,
@@ -95,16 +100,38 @@ enum Precedence {
 }
 
 const STRUCTURAL_KEYWORDS = new Set([
-    'INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS', 'JOIN',
-    'WHERE', 'GROUP', 'ORDER', 'HAVING', 'UNION', 'ALL',
-    'ON', 'APPLY', 'OUTER', 'EXCEPT', 'INTERSECT', 'WITH',
-    'FOR', 'TABLESAMPLE', 'PIVOT', 'UNPIVOT'
+    'INNER',
+    'LEFT',
+    'RIGHT',
+    'FULL',
+    'CROSS',
+    'JOIN',
+
+    'WHERE',
+    'GROUP',
+    'ORDER',
+    'HAVING',
+
+    'UNION',
+    'ALL',
+    'EXCEPT',
+    'INTERSECT',
+
+    'ON',
+    'APPLY',
+    'OUTER',
+
+    'WITH',
+    'FOR',
+    'TABLESAMPLE',
+    'PIVOT',
+    'UNPIVOT'
 ]);
 
 const RESYNC_KEYWORDS = new Set([
     'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'SET',
     'DECLARE', 'IF', 'BEGIN', 'CREATE', 'DROP', 'WITH', 'GO',
-    'WHEN', 'THEN', 'ELSE', 'END'
+    'WHEN', 'THEN', 'ELSE', 'END', 'MERGE', 'PRINT'
 ]);
 
 const CREATE_OBJECT_TYPES: Record<string, CreateNode['objectType']> = {
@@ -565,6 +592,7 @@ export class Parser {
                 case 'UPDATE': stmt = this.parseUpdate(); break;
                 case 'DELETE': stmt = this.parseDelete(); break;
                 case 'DECLARE': stmt = this.parseDeclare(); break;
+                case 'MERGE': stmt = this.parseMerge(); break;
                 case 'SET': stmt = this.parseSet(); break;
                 case 'CREATE': stmt = this.parseCreate(); break;
                 case 'DROP': stmt = this.parseDrop(); break;
@@ -1389,149 +1417,18 @@ export class Parser {
 
         if (sawSet) {
             try {
-                assignments = this.parseList(() => {
-                    const assignmentStart = this.peek()?.offset ?? endOffset;
-                    let columnName = '';
-                    let columnNode: IdentifierNode | null = null;
-                    let value: Expression | null = null;
-                    let assignmentEnd = assignmentStart;
+                const state = {
+                    incomplete,
+                    endOffset
+                };
 
-                    // column
-                    try {
-                        const next = this.peek();
+                assignments = this.parseUpdateAssignments(
+                    errors,
+                    state
+                );
 
-                        if (
-                            !next ||
-                            this.isStructuralKeyword(next.value)
-                        ) {
-                            incomplete = true;
-
-                            this.addRecoverableError(
-                                errors,
-                                'PARSE_UPDATE_ASSIGNMENT_COLUMN',
-                                'Expected assignment column',
-                                endOffset
-                            );
-
-                            return {
-                                type: 'UpdateAssignment',
-                                column: '',
-                                columnNode: null,
-                                start: assignmentStart,
-                                end: assignmentEnd,
-                                value: null
-                            };
-                        }
-
-                        const columnExpr =
-                            this.parseMultipartIdentifier();
-
-                        if (
-                            columnExpr.type === 'Identifier'
-                        ) {
-                            columnName = columnExpr.name;
-                            columnNode = columnExpr;
-                            endOffset = columnExpr.end;
-                            assignmentEnd = columnExpr.end;
-                        } else {
-                            incomplete = true;
-
-                            this.addRecoverableError(
-                                errors,
-                                'PARSE_UPDATE_ASSIGNMENT_TARGET',
-                                'Wildcards are not allowed as update targets',
-                                endOffset
-                            );
-
-                            return {
-                                type: 'UpdateAssignment',
-                                column: '',
-                                columnNode: null,
-                                start: assignmentStart,
-                                end: assignmentEnd,
-                                value: null
-                            };
-                        }
-
-                    } catch (e) {
-                        incomplete = true;
-
-                        this.addRecoverableError(
-                            errors,
-                            'PARSE_UPDATE_ASSIGNMENT_COLUMN',
-                            e instanceof Error
-                                ? e.message
-                                : String(e),
-                            endOffset
-                        );
-
-                        return {
-                            type: 'UpdateAssignment',
-                            column: '',
-                            columnNode: null,
-                            start: assignmentStart,
-                            end: assignmentEnd,
-                            value: null
-                        };
-                    }
-
-                    // =
-                    if (this.peek()?.value !== '=') {
-                        incomplete = true;
-
-                        this.addRecoverableError(
-                            errors,
-                            'PARSE_UPDATE_ASSIGNMENT_EQUALS',
-                            'Expected =',
-                            endOffset
-                        );
-
-                        return {
-                            type: 'UpdateAssignment',
-                            column: columnName,
-                            columnNode,
-                            start: assignmentStart,
-                            end: assignmentEnd,
-                            value: null
-                        };
-                    }
-
-                    const eqToken = this.consume();
-                    endOffset =
-                        eqToken.offset + eqToken.value.length;
-                    assignmentEnd = endOffset;
-
-                    // value
-                    try {
-                        value = this.parseExpression();
-
-                        if (value) {
-                            endOffset = value.end;
-                            assignmentEnd = value.end;
-                        }
-
-                    } catch (e) {
-                        incomplete = true;
-
-                        this.addRecoverableError(
-                            errors,
-                            'PARSE_UPDATE_ASSIGNMENT_VALUE',
-                            e instanceof Error
-                                ? e.message
-                                : String(e),
-                            endOffset
-                        );
-                    }
-
-                    return {
-                        type: 'UpdateAssignment',
-                        column: columnName,
-                        columnNode,
-                        start: assignmentStart,
-                        end: assignmentEnd,
-                        value
-                    };
-                });
+                incomplete = state.incomplete;
+                endOffset = state.endOffset;
 
                 if (assignments.length === 0) {
                     incomplete = true;
@@ -1762,193 +1659,161 @@ export class Parser {
         const startOffset = forcedStart ?? startToken?.offset ?? 0;
         let endOffset = startOffset;
 
-        // 1. SOURCE (table or subquery)
+        // ------------------------------------------------------------
+        // 1. SOURCE
+        // ------------------------------------------------------------
         try {
             const next = this.peek();
             const nextNext = this.peek(1);
 
             if (
                 next?.type === TokenType.OpenParen &&
-                (nextNext?.value === 'SELECT' || nextNext?.value === 'WITH')
+                (
+                    nextNext?.value === 'SELECT' ||
+                    nextNext?.value === 'WITH'
+                )
             ) {
-                const openParen = this.match(TokenType.OpenParen);
-                endOffset = openParen.offset + openParen.value.length;
+                const openParen = this.consume();
 
-                const subquery = this.parseQueryExpression();
+                const query =
+                    this.parseQueryExpression();
 
-                if (this.peek()?.type === TokenType.CloseParen) {
+                if (
+                    this.peek()?.type === TokenType.CloseParen
+                ) {
                     const closeParen = this.consume();
 
                     source = {
                         type: 'SubqueryExpression',
-                        query: subquery,
+                        query,
                         start: openParen.offset,
-                        end: closeParen.offset + closeParen.value.length
+                        end:
+                            closeParen.offset +
+                            closeParen.value.length
                     };
 
                     endOffset = source.end;
-                } else {
-                    incomplete = true;
-
-                    this.addRecoverableError(
-                        errors,
-                        'PARSE_TABLE_SUBQUERY_CLOSE',
-                        'Expected ) after subquery',
-                        openParen.offset,
-                        endOffset
-                    );
-
-                    source = {
-                        type: 'SubqueryExpression',
-                        query: subquery,
-                        start: openParen.offset,
-                        end: endOffset
-                    };
                 }
-            } else {
-                const nextToken = this.peek();
+            }
+            else {
+                source =
+                    this.parseMultipartIdentifier();
 
-                if (
-                    nextToken &&
-                    !this.isStructuralKeyword(nextToken.value)
-                ) {
-                    source = this.parseMultipartIdentifier();
-                    endOffset = source.end;
-                } else {
-                    incomplete = true;
-
-                    this.addRecoverableError(
-                        errors,
-                        'PARSE_TABLE_SOURCE',
-                        'Expected table source',
-                        startOffset,
-                        endOffset
-                    );
-                }
+                endOffset = source.end;
             }
 
         } catch (e) {
             incomplete = true;
-
-            this.addRecoverableError(
-                errors,
-                'PARSE_TABLE_SOURCE',
-                e instanceof Error ? e.message : String(e),
-                startOffset,
-                endOffset
-            );
-
-            this.recoverTo(['JOIN', 'WHERE', 'GROUP', 'ORDER']);
         }
 
+        // ------------------------------------------------------------
         // 2. ALIAS
+        // ------------------------------------------------------------
         try {
-            const aliasToken = this.peek();
+            const token = this.peek();
 
-            if (source && aliasToken?.value === 'AS') {
+            if (
+                source &&
+                token?.value === 'AS'
+            ) {
                 this.consume();
 
-                const aliasExpr = this.parseMultipartIdentifier();
+                const id =
+                    this.parseMultipartIdentifier();
 
-                if (aliasExpr.type === 'Identifier') {
-                    alias = aliasExpr.name;
-                    endOffset = aliasExpr.end;
-                } else {
-                    throw new Error('Invalid alias');
+                if (id.type === 'Identifier') {
+                    alias = id.name;
+                    endOffset = id.end;
                 }
             }
             else if (
                 source &&
-                aliasToken &&
+                token &&
                 (
-                    aliasToken.type === TokenType.Identifier ||
-                    aliasToken.type === TokenType.Keyword
+                    token.type === TokenType.Identifier ||
+                    token.type === TokenType.Keyword
                 ) &&
-                !this.isStructuralKeyword(aliasToken.value)
+                !this.isStructuralKeyword(token.value) &&
+                !this.peekKeyword('WITH')
             ) {
-                const aliasExpr = this.parseMultipartIdentifier();
+                const id =
+                    this.parseMultipartIdentifier();
 
-                if (aliasExpr.type === 'Identifier') {
-                    alias = aliasExpr.name;
-                    endOffset = aliasExpr.end;
-                } else {
-                    throw new Error('Invalid alias');
+                if (id.type === 'Identifier') {
+                    alias = id.name;
+                    endOffset = id.end;
                 }
             }
 
-        } catch (e) {
+        } catch {
             incomplete = true;
-
-            this.addRecoverableError(
-                errors,
-                'PARSE_TABLE_ALIAS',
-                e instanceof Error ? e.message : String(e),
-                endOffset,
-                endOffset
-            );
         }
 
-        // 3. HINTS
+        // ------------------------------------------------------------
+        // 3. MODERN HINTS
+        // ------------------------------------------------------------
         try {
-            if (source?.type === 'Identifier') {
-                const nextToken = this.peek();
+            if (
+                source?.type === 'Identifier' &&
+                this.peekKeyword('WITH')
+            ) {
+                const parsed =
+                    this.parseTableHints();
 
-                if (
-                    nextToken?.value === 'WITH' ||
-                    (nextToken?.type === TokenType.OpenParen && alias)
-                ) {
-                    hints = this.parseTableHints();
+                if (parsed.length) {
+                    hints = parsed;
                     endOffset = this.lastConsumedEnd();
                 }
             }
-
-        } catch (e) {
+        } catch {
             incomplete = true;
-
-            this.addRecoverableError(
-                errors,
-                'PARSE_TABLE_HINTS',
-                e instanceof Error ? e.message : String(e),
-                endOffset,
-                endOffset
-            );
         }
 
-        // 4. JOINS
+        // ------------------------------------------------------------
+        // 4. LEGACY HINTS
+        // ------------------------------------------------------------
+        try {
+            if (
+                source?.type === 'Identifier' &&
+                alias &&
+                this.peek()?.type === TokenType.OpenParen
+            ) {
+                const parsed =
+                    this.parseTableHints();
+
+                if (parsed.length) {
+                    hints = parsed;
+                    endOffset = this.lastConsumedEnd();
+                }
+            }
+        } catch {
+            incomplete = true;
+        }
+
+        // ------------------------------------------------------------
+        // 5. JOINS
+        // ------------------------------------------------------------
         const joins: JoinNode[] = [];
 
-        try {
-            while (this.isJoinToken(this.peek())) {
-                try {
-                    const join = this.parseJoin();
-                    joins.push(join);
-                    endOffset = join.end;
-                } catch (e) {
-                    incomplete = true;
+        while (this.isJoinToken(this.peek())) {
+            const join = this.parseJoin();
 
+            joins.push(join);
+            endOffset = join.end;
+
+            if (join.errors?.length) {
+                incomplete = true;
+
+                for (const err of join.errors) {
                     this.addRecoverableError(
                         errors,
                         'PARSE_JOIN',
-                        e instanceof Error ? e.message : String(e),
-                        endOffset,
-                        endOffset
+                        err,
+                        join.start,
+                        join.end
                     );
-
-                    this.recoverTo(['JOIN', 'WHERE', 'GROUP', 'ORDER']);
-                    break;
                 }
             }
-
-        } catch (e) {
-            incomplete = true;
-
-            this.addRecoverableError(
-                errors,
-                'PARSE_JOIN',
-                e instanceof Error ? e.message : String(e),
-                endOffset,
-                endOffset
-            );
         }
 
         return {
@@ -1975,110 +1840,86 @@ export class Parser {
     private parseTableHints(): string[] {
         const hints: string[] = [];
 
-        // optional WITH
         if (this.peekKeyword('WITH')) {
             this.consume();
         }
 
-        // must have (
         if (this.peek()?.type !== TokenType.OpenParen) {
             return hints;
         }
 
         this.consume(); // (
 
+        let current: string[] = [];
+        let depth = 0;
+
         while (this.peek()) {
             const token = this.peek()!;
 
-            // normal close
-            if (token.type === TokenType.CloseParen) {
-                this.consume();
-                break;
-            }
-
-            // HARD stop at semicolon
-            if (token.type === TokenType.Semicolon) {
-                break;
-            }
-
-            // stop at clause boundary
+            // hard recovery boundary
             if (
-                token.type === TokenType.Keyword &&
-                this.isStructuralKeyword(token.value)
+                depth === 0 &&
+                (
+                    token.type === TokenType.Semicolon ||
+                    this.isStructuralKeyword(token.value)
+                )
             ) {
                 break;
             }
 
-            // Parse one hint preserving nested parens:
-            // NOLOCK
-            // INDEX(PK_Products)
-            // FORCESEEK(IndexA(col1,col2))
-            const parts: string[] = [];
-            let depth = 0;
-
-            while (this.peek()) {
-                const t = this.peek()!;
-
-                // close outer WITH(...)
-                if (
-                    depth === 0 &&
-                    t.type === TokenType.CloseParen
-                ) {
-                    break;
-                }
-
-                // comma separates hints only at top level
-                if (
-                    depth === 0 &&
-                    t.type === TokenType.Comma
-                ) {
-                    break;
-                }
-
-                // HARD stop at semicolon
-                if (
-                    depth === 0 &&
-                    t.type === TokenType.Semicolon
-                ) {
-                    break;
-                }
-
-                // clause boundary only at top level
-                if (
-                    depth === 0 &&
-                    t.type === TokenType.Keyword &&
-                    this.isStructuralKeyword(t.value)
-                ) {
-                    break;
-                }
-
-                this.consume();
-                parts.push(t.value);
-
-                if (t.type === TokenType.OpenParen) depth++;
-                if (t.type === TokenType.CloseParen) depth--;
-            }
-
-            const hint = parts.join('').trim();
-            if (hint) {
-                hints.push(hint);
-            }
-
-            // optional comma
-            if (this.peek()?.type === TokenType.Comma) {
+            // nested open
+            if (token.type === TokenType.OpenParen) {
+                depth++;
+                current.push(token.value);
                 this.consume();
                 continue;
             }
 
-            // stop cleanly if we hit semicolon
-            if (this.peek()?.type === TokenType.Semicolon) {
+            // close nested / outer
+            if (token.type === TokenType.CloseParen) {
+                if (depth > 0) {
+                    depth--;
+                    current.push(token.value);
+                    this.consume();
+                    continue;
+                }
+
+                // outer )
+                const hint = current.join('').trim();
+                if (hint) {
+                    hints.push(hint);
+                }
+
+                current = [];
+                this.consume();
                 break;
             }
+
+            // comma separator at top level
+            if (
+                depth === 0 &&
+                token.type === TokenType.Comma
+            ) {
+                const hint = current.join('').trim();
+
+                if (hint) {
+                    hints.push(hint);
+                }
+
+                current = [];
+                this.consume();
+                continue;
+            }
+
+            current.push(token.value);
+            this.consume();
         }
 
-        // consume final ) if present
-        if (this.peek()?.type === TokenType.CloseParen) {
-            this.consume();
+        const trailing =
+            current.join('').trim();
+
+        if (trailing) {
+            hints.push(trailing);
         }
 
         return hints;
@@ -2813,6 +2654,155 @@ export class Parser {
             ...(incomplete ? { incomplete: true } : {}),
             ...(errors.length ? { errors } : {})
         };
+    }
+
+    private parseUpdateAssignments(
+        errors: string[],
+        state: { incomplete: boolean; endOffset: number }
+    ): UpdateAssignment[] {
+        return this.parseList(() => {
+            const assignmentStart =
+                this.peek()?.offset ?? state.endOffset;
+
+            let columnName = '';
+            let columnNode: IdentifierNode | null = null;
+            let value: Expression | null = null;
+            let assignmentEnd = assignmentStart;
+
+            // 1) column
+            try {
+                const next = this.peek();
+
+                if (
+                    !next ||
+                    this.isStructuralKeyword(next.value)
+                ) {
+                    state.incomplete = true;
+
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_UPDATE_ASSIGNMENT_COLUMN',
+                        'Expected assignment column',
+                        state.endOffset
+                    );
+
+                    return {
+                        type: 'UpdateAssignment',
+                        column: '',
+                        columnNode: null,
+                        start: assignmentStart,
+                        end: assignmentEnd,
+                        value: null
+                    };
+                }
+
+                const columnExpr =
+                    this.parseMultipartIdentifier();
+
+                if (columnExpr.type === 'Identifier') {
+                    columnName = columnExpr.name;
+                    columnNode = columnExpr;
+                    state.endOffset = columnExpr.end;
+                    assignmentEnd = columnExpr.end;
+                } else {
+                    state.incomplete = true;
+
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_UPDATE_ASSIGNMENT_TARGET',
+                        'Wildcards are not allowed as update targets',
+                        state.endOffset
+                    );
+
+                    return {
+                        type: 'UpdateAssignment',
+                        column: '',
+                        columnNode: null,
+                        start: assignmentStart,
+                        end: assignmentEnd,
+                        value: null
+                    };
+                }
+
+            } catch (e) {
+                state.incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_UPDATE_ASSIGNMENT_COLUMN',
+                    e instanceof Error
+                        ? e.message
+                        : String(e),
+                    state.endOffset
+                );
+
+                return {
+                    type: 'UpdateAssignment',
+                    column: '',
+                    columnNode: null,
+                    start: assignmentStart,
+                    end: assignmentEnd,
+                    value: null
+                };
+            }
+
+            // 2) equals
+            if (this.peek()?.value !== '=') {
+                state.incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_UPDATE_ASSIGNMENT_EQUALS',
+                    'Expected =',
+                    state.endOffset
+                );
+
+                return {
+                    type: 'UpdateAssignment',
+                    column: columnName,
+                    columnNode,
+                    start: assignmentStart,
+                    end: assignmentEnd,
+                    value: null
+                };
+            }
+
+            const eqToken = this.consume();
+            state.endOffset =
+                eqToken.offset + eqToken.value.length;
+            assignmentEnd = state.endOffset;
+
+            // 3) value
+            try {
+                value = this.parseExpression();
+
+                if (value) {
+                    state.endOffset = value.end;
+                    assignmentEnd = value.end;
+                }
+
+            } catch (e) {
+                state.incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_UPDATE_ASSIGNMENT_VALUE',
+                    e instanceof Error
+                        ? e.message
+                        : String(e),
+                    state.endOffset
+                );
+            }
+
+            return {
+                type: 'UpdateAssignment',
+                column: columnName,
+                columnNode,
+                start: assignmentStart,
+                end: assignmentEnd,
+                value
+            };
+        });
     }
 
     private parsePrint(): PrintNode {
@@ -4832,5 +4822,515 @@ export class Parser {
             if (RESYNC_KEYWORDS.has(val!)) break;
             this.pos++;
         }
+    }
+
+    private isMergeBoundary(token?: Token): boolean {
+        if (!token) return true;
+
+        return (
+            token.type === TokenType.Semicolon ||
+            token.value === 'WHEN' ||
+            token.value === 'OUTPUT' ||
+            token.value === 'OPTION'
+        );
+    }
+
+    private parseMerge(): MergeNode {
+        const startToken = this.matchKeyword('MERGE');
+
+        let incomplete = false;
+        const errors: string[] = [];
+        let endOffset =
+            startToken.offset + startToken.value.length;
+
+        let top: string | null = null;
+        let target: Expression | null = null;
+        let targetAlias: string | undefined;
+        let usingTable: TableReference | null = null;
+        let on: Expression | null = null;
+        const whenClauses: MergeWhenClause[] = [];
+        let output: OutputClauseNode | undefined;
+
+        // ------------------------------------------------------------
+        // TOP(...)
+        // ------------------------------------------------------------
+        if (this.peekKeyword('TOP')) {
+            this.consume();
+
+            const hasParens =
+                this.peek()?.type === TokenType.OpenParen;
+
+            if (hasParens) {
+                this.consume();
+            }
+
+            try {
+                const topToken = this.consume();
+                top = topToken.value;
+                endOffset =
+                    topToken.offset + topToken.value.length;
+            } catch {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_MERGE_TOP',
+                    'Expected TOP value',
+                    endOffset
+                );
+            }
+
+            if (
+                hasParens &&
+                this.peek()?.type === TokenType.CloseParen
+            ) {
+                this.consume();
+                endOffset = this.lastConsumedEnd();
+            }
+        }
+
+        // ------------------------------------------------------------
+        // TARGET
+        // MERGE dbo.Table WITH (...) AS t
+        // ------------------------------------------------------------
+        try {
+            target = this.parseMultipartIdentifier();
+            endOffset = target.end;
+
+            // optional hints
+            if (
+                this.peek()?.value === 'WITH' ||
+                this.peek()?.type === TokenType.OpenParen
+            ) {
+                this.parseTableHints();
+                endOffset = this.lastConsumedEnd();
+            }
+
+            // optional AS
+            if (this.peek()?.value === 'AS') {
+                this.consume();
+            }
+
+            // alias
+            const next = this.peek();
+
+            if (
+                next &&
+                (
+                    next.type === TokenType.Identifier ||
+                    next.type === TokenType.Keyword
+                ) &&
+                next.value !== 'USING'
+            ) {
+                const aliasExpr =
+                    this.parseMultipartIdentifier();
+
+                if (aliasExpr.type === 'Identifier') {
+                    targetAlias = aliasExpr.name;
+                    endOffset = aliasExpr.end;
+                }
+            }
+
+        } catch (e) {
+            incomplete = true;
+
+            this.addRecoverableError(
+                errors,
+                'PARSE_MERGE_TARGET',
+                e instanceof Error ? e.message : String(e),
+                startToken.offset,
+                endOffset
+            );
+        }
+
+        // ------------------------------------------------------------
+        // USING
+        // ------------------------------------------------------------
+        try {
+            this.matchKeyword('USING');
+
+            usingTable = this.parseTableSource();
+            endOffset = usingTable.end;
+
+        } catch (e) {
+            incomplete = true;
+
+            this.addRecoverableError(
+                errors,
+                'PARSE_MERGE_USING',
+                e instanceof Error ? e.message : String(e),
+                endOffset
+            );
+        }
+
+        // ------------------------------------------------------------
+        // ON
+        // ------------------------------------------------------------
+        try {
+            this.matchKeyword('ON');
+
+            on = this.parseExpression();
+
+            if (on) {
+                endOffset = on.end;
+            }
+
+        } catch (e) {
+            incomplete = true;
+
+            this.addRecoverableError(
+                errors,
+                'PARSE_MERGE_ON',
+                e instanceof Error ? e.message : String(e),
+                endOffset
+            );
+        }
+
+        // ------------------------------------------------------------
+        // WHEN ...
+        // ------------------------------------------------------------
+        while (this.peekKeyword('WHEN')) {
+            try {
+                const clause =
+                    this.parseMergeWhenClause();
+
+                whenClauses.push(clause);
+                endOffset = clause.end;
+
+            } catch (e) {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_MERGE_WHEN',
+                    e instanceof Error ? e.message : String(e),
+                    endOffset
+                );
+
+                this.recoverTo([
+                    'WHEN',
+                    'OUTPUT',
+                    ';'
+                ]);
+            }
+        }
+
+        // ------------------------------------------------------------
+        // OUTPUT
+        // ------------------------------------------------------------
+        if (this.peekKeyword('OUTPUT')) {
+            try {
+                output = this.parseOutputClause();
+                endOffset = output.end;
+
+            } catch (e) {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_MERGE_OUTPUT',
+                    e instanceof Error ? e.message : String(e),
+                    endOffset
+                );
+            }
+        }
+
+        return {
+            type: 'MergeStatement',
+            top,
+            target,
+            targetAlias,
+            using: usingTable,
+            on,
+            whenClauses,
+            output,
+            start: startToken.offset,
+            end: endOffset,
+            ...(incomplete ? { incomplete: true } : {}),
+            ...(errors.length ? { errors } : {})
+        };
+    }
+
+    private parseMergeWhenClause(): MergeWhenClause {
+        const whenToken = this.matchKeyword('WHEN');
+
+        let incomplete = false;
+        const errors: string[] = [];
+        let endOffset =
+            whenToken.offset + whenToken.value.length;
+
+        let condition: MergeMatchType = 'MATCHED';
+        let predicate: Expression | null = null;
+        let action: MergeAction;
+
+        // ------------------------------------------------------------
+        // MATCH TYPE
+        // ------------------------------------------------------------
+        try {
+            if (this.peekKeyword('NOT')) {
+                this.consume();
+
+                this.matchKeyword('MATCHED');
+                condition = 'NOT MATCHED';
+                endOffset = this.lastConsumedEnd();
+
+                if (this.peekKeyword('BY')) {
+                    this.consume();
+
+                    this.matchKeyword('SOURCE');
+                    condition = 'NOT MATCHED BY SOURCE';
+                    endOffset = this.lastConsumedEnd();
+                }
+            }
+            else {
+                this.matchKeyword('MATCHED');
+                condition = 'MATCHED';
+                endOffset = this.lastConsumedEnd();
+            }
+
+        } catch (e) {
+            incomplete = true;
+
+            this.addRecoverableError(
+                errors,
+                'PARSE_MERGE_MATCH_TYPE',
+                e instanceof Error ? e.message : String(e),
+                whenToken.offset,
+                endOffset
+            );
+        }
+
+        // ------------------------------------------------------------
+        // optional AND predicate
+        // ------------------------------------------------------------
+        if (this.peekKeyword('AND')) {
+            this.consume();
+            endOffset = this.lastConsumedEnd();
+
+            try {
+                predicate = this.parseExpression();
+
+                if (predicate) {
+                    endOffset = predicate.end;
+                }
+
+            } catch (e) {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_MERGE_PREDICATE',
+                    e instanceof Error ? e.message : String(e),
+                    endOffset
+                );
+            }
+        }
+
+        // ------------------------------------------------------------
+        // THEN
+        // ------------------------------------------------------------
+        try {
+            this.matchKeyword('THEN');
+            endOffset = this.lastConsumedEnd();
+
+        } catch (e) {
+            incomplete = true;
+
+            this.addRecoverableError(
+                errors,
+                'PARSE_MERGE_THEN',
+                e instanceof Error ? e.message : String(e),
+                endOffset
+            );
+        }
+
+        // ------------------------------------------------------------
+        // ACTION
+        // ------------------------------------------------------------
+        try {
+            action = this.parseMergeAction();
+            endOffset = action.end;
+
+        } catch (e) {
+            incomplete = true;
+
+            this.addRecoverableError(
+                errors,
+                'PARSE_MERGE_ACTION',
+                e instanceof Error ? e.message : String(e),
+                endOffset
+            );
+
+            action = {
+                type: 'MergeDeleteAction',
+                start: endOffset,
+                end: endOffset,
+                incomplete: true
+            } as MergeDeleteAction;
+        }
+
+        return {
+            type: 'MergeWhenClause',
+            condition,
+            predicate,
+            action,
+            start: whenToken.offset,
+            end: endOffset,
+            ...(incomplete ? { incomplete: true } : {}),
+            ...(errors.length ? { errors } : {})
+        };
+    }
+
+    private parseMergeAction(): MergeAction {
+        const token = this.peek();
+
+        if (!token) {
+            throw new Error('Expected MERGE action');
+        }
+
+        // ------------------------------------------------------------
+        // DELETE
+        // ------------------------------------------------------------
+        if (this.peekKeyword('DELETE')) {
+            const del = this.consume();
+
+            const action: MergeDeleteAction = {
+                type: 'MergeDeleteAction',
+                start: del.offset,
+                end: del.offset + del.value.length
+            };
+
+            return action;
+        }
+
+        // ------------------------------------------------------------
+        // UPDATE SET ...
+        // ------------------------------------------------------------
+        if (this.peekKeyword('UPDATE')) {
+            const updateToken = this.consume();
+
+            let endOffset =
+                updateToken.offset + updateToken.value.length;
+
+            const errors: string[] = [];
+            const state = {
+                incomplete: false,
+                endOffset
+            };
+
+            this.matchKeyword('SET');
+
+            endOffset = this.lastConsumedEnd();
+            state.endOffset = endOffset;
+
+            const assignments =
+                this.parseUpdateAssignments(
+                    errors,
+                    state
+                );
+
+            endOffset = state.endOffset;
+
+            const action: MergeUpdateAction = {
+                type: 'MergeUpdateAction',
+                assignments,
+                start: updateToken.offset,
+                end: endOffset,
+                ...(state.incomplete
+                    ? { incomplete: true }
+                    : {}),
+                ...(errors.length
+                    ? { errors }
+                    : {})
+            };
+
+            return action;
+        }
+
+        // ------------------------------------------------------------
+        // INSERT
+        // ------------------------------------------------------------
+        if (this.peekKeyword('INSERT')) {
+            const insertToken = this.consume();
+
+            let endOffset =
+                insertToken.offset + insertToken.value.length;
+
+            let columns: string[] | null = null;
+            let columnNodes: IdentifierNode[] | null = null;
+            let values: Expression[] | null = null;
+            let selectQuery: QueryStatement | null = null;
+
+            // optional column list
+            if (this.peek()?.type === TokenType.OpenParen) {
+                this.consume();
+
+                columnNodes = this.parseList(() => {
+                    const id =
+                        this.parseMultipartIdentifier();
+
+                    if (id.type !== 'Identifier') {
+                        throw new Error(
+                            'Invalid INSERT column'
+                        );
+                    }
+
+                    return id;
+                });
+
+                columns =
+                    columnNodes.map(x => x.name);
+
+                this.match(TokenType.CloseParen);
+                endOffset = this.lastConsumedEnd();
+            }
+
+            // VALUES (...)
+            if (this.peekKeyword('VALUES')) {
+                this.consume();
+
+                this.match(TokenType.OpenParen);
+
+                values = this.parseList(() =>
+                    this.parseExpression()
+                );
+
+                this.match(TokenType.CloseParen);
+
+                endOffset = this.lastConsumedEnd();
+            }
+
+            // INSERT ... SELECT ...
+            else if (
+                this.peekKeyword('SELECT') ||
+                this.peekKeyword('WITH')
+            ) {
+                selectQuery =
+                    this.parseQueryExpression();
+
+                endOffset = selectQuery.end;
+            }
+            else {
+                throw new Error(
+                    'Expected VALUES or SELECT after INSERT'
+                );
+            }
+
+            const action: MergeInsertAction = {
+                type: 'MergeInsertAction',
+                columns,
+                columnNodes,
+                values,
+                selectQuery,
+                start: insertToken.offset,
+                end: endOffset
+            };
+
+            return action;
+        }
+
+        throw new Error(
+            `Unsupported MERGE action: ${token.value}`
+        );
     }
 }

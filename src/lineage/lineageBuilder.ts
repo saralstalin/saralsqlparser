@@ -3,6 +3,8 @@ import {
     Statement,
     QueryStatement,
     SelectNode,
+    MergeNode,
+    MergeAction,
     Expression,
     IdentifierNode,
     WildcardExpression,
@@ -100,8 +102,13 @@ export class LineageBuilder {
             case 'UpdateStatement':
                 this.visitUpdate(stmt);
                 break;
+
             case 'DeleteStatement':
                 this.visitDelete(stmt);
+                break;
+
+            case 'MergeStatement':
+                this.visitMerge(stmt);
                 break;
         }
     }
@@ -220,6 +227,111 @@ export class LineageBuilder {
         this.popSources();
     }
 
+    private visitMerge(stmt: MergeNode): void {
+        this.pushSources();
+
+        if (stmt.output) {
+            this.defineOutputPseudoSources();
+        }
+
+        if (stmt.target) {
+            this.registerSource(stmt.target, stmt.targetAlias);
+        }
+
+        if (stmt.using) {
+            this.registerTableReference(stmt.using);
+        }
+
+        if (stmt.on) {
+            this.resolveExpression(stmt.on);
+        }
+
+        for (const clause of stmt.whenClauses) {
+            if (clause.predicate) {
+                this.resolveExpression(clause.predicate);
+            }
+
+            this.visitMergeAction(clause.action, stmt);
+        }
+
+        this.visitOutputClause(stmt.output);
+
+        this.popSources();
+    }
+
+    private visitMergeAction(
+        action: MergeAction,
+        stmt: MergeNode
+    ): void {
+        if (action.type === 'MergeUpdateAction') {
+            const targetName = this.resolveMergeTargetName(stmt);
+
+            for (const assignment of action.assignments ?? []) {
+                this.columns.push({
+                    name: assignment.columnNode &&
+                        assignment.columnNode.parts.length > 1
+                        ? assignment.columnNode.name
+                        : `${targetName}.${assignment.column}`,
+                    expression: assignment.value ?? undefined,
+                    inputs: assignment.value
+                        ? this.resolveExpression(assignment.value)
+                        : [],
+                    location: stmt
+                });
+            }
+
+            return;
+        }
+
+        if (action.type === 'MergeInsertAction') {
+            const targetName = this.resolveMergeTargetName(stmt);
+
+            if (action.values && action.columns) {
+                for (let i = 0; i < action.columns.length; i++) {
+                    const target = `${targetName}.${action.columns[i]}`;
+                    const value = action.values[i];
+                    this.columns.push({
+                        name: target,
+                        expression: value ?? undefined,
+                        inputs: value
+                            ? this.resolveExpression(value)
+                            : [],
+                        location: stmt
+                    });
+                }
+            }
+
+            if (action.columns && action.selectQuery) {
+                const sourceCols = this.visitQuery(action.selectQuery, false);
+
+                for (let i = 0; i < action.columns.length; i++) {
+                    const target = `${targetName}.${action.columns[i]}`;
+                    const sourceCol = sourceCols[i];
+
+                    if (!sourceCol) {
+                        continue;
+                    }
+
+                    this.columns.push({
+                        name: target,
+                        inputs: sourceCol.inputs,
+                        location: stmt
+                    });
+                }
+            }
+
+            return;
+        }
+    }
+
+    private resolveMergeTargetName(stmt: MergeNode): string {
+        if (!stmt.target || stmt.target.type !== 'Identifier') {
+            return '';
+        }
+
+        return stmt.targetAlias ?? stmt.target.name;
+    }
+
     private visitQuery(
         query: QueryStatement | null,
         emit = false
@@ -313,7 +425,9 @@ export class LineageBuilder {
             return;
         }
 
+        // ------------------------------------------------------------
         // subquery source
+        // ------------------------------------------------------------
         if (expr.type === 'SubqueryExpression') {
             const bindName = alias ?? '__subquery';
 
@@ -330,21 +444,32 @@ export class LineageBuilder {
             return;
         }
 
-        // physical table / CTE / alias source
+        // ------------------------------------------------------------
+        // physical table / CTE
+        // ------------------------------------------------------------
         if (expr.type === 'Identifier') {
-            const objectName = expr.name;
+            const objectName =
+                expr.parts.length > 0
+                    ? expr.parts.join('.')
+                    : expr.name;
+
             const bindName = alias ?? objectName;
 
-            const existing = this.resolveSource(objectName);
+            // existing virtual source (CTE etc.)
+            const existing =
+                this.resolveSource(objectName);
 
-            // CTE / virtual source already defined
             if (existing) {
-                this.defineSource(bindName, existing);
+                // preserve original underlying name
+                this.defineSource(bindName, {
+                    ...existing,
+                    name: existing.name
+                });
                 return;
             }
 
             // physical table
-            this.defineSource(bindName, {
+            const physical: VirtualSource = {
                 name: objectName,
                 columns: new Map(),
                 wildcardSources: [
@@ -356,7 +481,16 @@ export class LineageBuilder {
                         location: expr
                     }
                 ]
-            });
+            };
+
+            // bind alias -> physical
+            this.defineSource(bindName, physical);
+
+            // also bind physical name -> physical
+            // Customer -> Customer
+            if (bindName.toLowerCase() !== objectName.toLowerCase()) {
+                this.defineSource(objectName, physical);
+            }
         }
     }
 
@@ -414,21 +548,17 @@ export class LineageBuilder {
             return;
         }
 
-        const target = stmt.target.name;
-
         this.pushSources();
-
-        // INSERTED / DELETED pseudo tables for OUTPUT
         this.defineOutputPseudoSources();
 
-        // FROM sources
         if (stmt.from) {
             for (const ref of stmt.from) {
                 this.registerTableReference(ref);
             }
         }
 
-        // SET lineage
+        const target = stmt.target.name;
+
         for (const assignment of stmt.assignments ?? []) {
             this.columns.push({
                 name: `${target}.${assignment.column}`,
@@ -440,9 +570,7 @@ export class LineageBuilder {
             });
         }
 
-        // OUTPUT lineage
         this.visitOutputClause(stmt.output);
-
         this.popSources();
     }
 
@@ -450,7 +578,7 @@ export class LineageBuilder {
     // expression resolution
     // ============================================================
 
-    private resolveExpression(expr: Expression | null| undefined): LineageNode[] {
+    private resolveExpression(expr: Expression | null | undefined): LineageNode[] {
         if (!expr) {
             return [];
         }
@@ -600,8 +728,10 @@ export class LineageBuilder {
     private resolveWildcard(
         expr: WildcardExpression
     ): LineageNode[] {
+        // ------------------------------------------------------------
         // SELECT *
         // Expand to every visible source in current FROM scope.
+        // ------------------------------------------------------------
         if (!expr.tablePrefix) {
             const seen = new Set<string>();
             const nodes: LineageNode[] = [];
@@ -621,7 +751,7 @@ export class LineageBuilder {
                 }
             }
 
-            // fallback (SELECT * with malformed / missing FROM)
+            // fallback: malformed / missing FROM
             if (nodes.length === 0) {
                 return [{
                     kind: 'column',
@@ -634,14 +764,19 @@ export class LineageBuilder {
             return nodes;
         }
 
+        // ------------------------------------------------------------
         // SELECT alias.*
-        const source =
-            this.resolveSource(expr.tablePrefix.name);
+        // ------------------------------------------------------------
+        const qualifier = expr.tablePrefix.name;
+        const source = this.resolveSource(qualifier);
 
+        // unresolved alias:
+        // preserve qualifier instead of degrading to bare *
         if (!source) {
             return [{
                 kind: 'column',
-                name: '*',
+                name: `${qualifier}.*`,
+                source: qualifier,
                 wildcard: true,
                 location: expr
             }];
@@ -718,6 +853,18 @@ export class LineageBuilder {
         expr: Expression | null | undefined
     ): LineageNode[] {
         return this.resolveExpression(expr);
+    }
+
+    private resolveUpdateTargetName(stmt: UpdateNode): string {
+        if (!stmt.target || stmt.target.type !== 'Identifier') {
+            return '';
+        }
+
+        const targetName = stmt.target.name;
+
+        const source = this.resolveSource(targetName);
+
+        return source?.name ?? targetName;
     }
 }
 

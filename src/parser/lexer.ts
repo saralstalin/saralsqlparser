@@ -39,7 +39,7 @@ export class Lexer {
         'OVER', 'PARTITION', 'PROCEDURE', 'PROC', 'FUNCTION', 'VIEW', 'TABLE', 
         'TYPE', 'AS', 'GO', 'ON', 'JOIN', 'INNER', 'LEFT', 'RIGHT', 'CROSS', 
         'OUTER', 'ASC', 'DESC', 'WITH', 'IF',  'BEGIN',  'PRINT', 'OUTPUT', 'OUT', 'DROP', 'INDEX',
-        'MERGE', 'USING', 'MATCHED', 'BY', 'SOURCE'
+        'MERGE', 'USING', 'MATCHED', 'BY', 'SOURCE', 'TARGET', 'OPTION'
     ]);
 
     constructor(private input: string) { }
@@ -96,7 +96,7 @@ export class Lexer {
         }
 
         // 3. Identifiers, Keywords, Variables, Temp Tables, Brackets
-        if (/[a-zA-Z_@#]/.test(char) || char === '[') {
+        if (/[a-zA-Z_@#$]/.test(char) || char === '[') {
             return this.readIdentifier(startLine, startCol, startOffset);
         }
 
@@ -168,7 +168,7 @@ export class Lexer {
             }
             closer = this.consume() || ""; // ]
         } else {
-            while (this.pos < this.input.length && /[a-zA-Z0-9_@#]/.test(this.peek())) {
+            while (this.pos < this.input.length && /[a-zA-Z0-9_@#$]/.test(this.peek())) {
                 content += this.consume();
             }
         }

@@ -13,6 +13,7 @@ import {
     InsertNode,
     SetNode,
     PrintNode,
+    MergeNode,
     QueryStatement,
     TableReference,
     JoinNode,
@@ -168,6 +169,10 @@ export class ScopeBuilder {
                 this.visitInsert(stmt);
                 break;
 
+            case 'MergeStatement':
+                this.visitMerge(stmt);
+                break;
+
             case 'SetStatement':
                 this.visitSet(stmt);
                 break;
@@ -313,7 +318,78 @@ export class ScopeBuilder {
         this.popScope();
     }
 
-    // ── CREATE ────────────────────────────────────────────────────────────────
+    private visitMerge(stmt: MergeNode): void {
+        this.pushScope(stmt.start, stmt.end, 'merge');
+
+        if (stmt.output) {
+            this.declareOutputPseudoTables(stmt.output);
+        }
+
+        if (stmt.target && stmt.targetAlias) {
+            let targetName: string | undefined;
+
+            if (stmt.target.type === 'Identifier') {
+                targetName = stmt.target.name;
+            }
+
+            this.declare({
+                name: stmt.targetAlias,
+                kind: SymbolKind.Alias,
+                location: stmt,
+                references: [],
+                metadata: targetName ? { tableName: targetName } : undefined,
+            });
+        }
+
+        if (stmt.target) {
+            this.visitExpression(stmt.target);
+        }
+
+        if (stmt.using) {
+            this.visitTableReference(stmt.using);
+        }
+
+        if (stmt.on) {
+            this.visitExpression(stmt.on);
+        }
+
+        for (const clause of stmt.whenClauses) {
+            if (clause.predicate) {
+                this.visitExpression(clause.predicate);
+            }
+
+            switch (clause.action.type) {
+                case 'MergeUpdateAction':
+                    for (const assignment of clause.action.assignments ?? []) {
+                        if (assignment.columnNode) {
+                            this.visitExpression(assignment.columnNode);
+                        }
+
+                        this.visitExpression(assignment.value);
+                    }
+                    break;
+
+                case 'MergeInsertAction':
+                    if (clause.action.values) {
+                        for (const value of clause.action.values) {
+                            this.visitExpression(value);
+                        }
+                    }
+
+                    if (clause.action.selectQuery) {
+                        this.visitQuery(clause.action.selectQuery);
+                    }
+                    break;
+
+                case 'MergeDeleteAction':
+                    break;
+            }
+        }
+
+        this.visitOutputClause(stmt.output);
+
+        this.popScope();
+    }
 
     private visitCreate(stmt: CreateNode): void {
         switch (stmt.objectType) {

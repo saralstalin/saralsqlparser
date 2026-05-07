@@ -853,6 +853,72 @@ describe('T-SQL Parser - Deep Expression Validation', () => {
         });
     });
 
+    describe('T-SQL Parser - MERGE Statement', () => {
+        test('should parse MERGE with UPDATE and INSERT actions', () => {
+            const sql = `MERGE dbo.Target AS T
+USING dbo.Source AS S
+ON T.Id = S.Id
+WHEN MATCHED THEN UPDATE SET Name = S.Name
+WHEN NOT MATCHED THEN INSERT (Name) VALUES (S.Name);`;
+            const ast = parse(sql);
+            const stmt = ast.body[0] as any;
+
+            expect(stmt.type).toBe('MergeStatement');
+            expect(stmt.targetAlias).toBe('T');
+            expect(stmt.using.alias).toBe('S');
+            expect(stmt.whenClauses).toHaveLength(2);
+            expect(stmt.whenClauses[0].action.type).toBe('MergeUpdateAction');
+            expect(stmt.whenClauses[1].action.type).toBe('MergeInsertAction');
+            expect(stmt.whenClauses[1].action.columns).toEqual(['Name']);
+            expect(stmt.whenClauses[1].action.values).toHaveLength(1);
+        });
+
+        test('should parse MERGE TOP clause and DELETE action', () => {
+            const sql = `MERGE TOP (10) dbo.Target AS T
+USING dbo.Source AS S
+ON T.Id = S.Id
+WHEN MATCHED THEN DELETE;`;
+            const ast = parse(sql);
+            const stmt = ast.body[0] as any;
+
+            expect(stmt.type).toBe('MergeStatement');
+            expect(stmt.top).toBe('10');
+            expect(stmt.whenClauses).toHaveLength(1);
+            expect(stmt.whenClauses[0].action.type).toBe('MergeDeleteAction');
+        });
+
+        test('should parse MERGE NOT MATCHED BY SOURCE with INSERT SELECT', () => {
+            const sql = `MERGE dbo.Target AS T
+USING dbo.Source AS S
+ON T.Id = S.Id
+WHEN NOT MATCHED BY SOURCE THEN INSERT (Name) SELECT S.Name;`;
+            const ast = parse(sql);
+            const stmt = ast.body[0] as any;
+
+            expect(stmt.type).toBe('MergeStatement');
+            expect(stmt.whenClauses[0].condition).toBe('NOT MATCHED BY SOURCE');
+            expect(stmt.whenClauses[0].action.type).toBe('MergeInsertAction');
+            expect(stmt.whenClauses[0].action.columns).toEqual(['Name']);
+            expect(stmt.whenClauses[0].action.selectQuery).toBeDefined();
+        });
+
+        test('should parse MERGE with OUTPUT clause', () => {
+            const sql = `MERGE dbo.Target AS T
+USING dbo.Source AS S
+ON T.Id = S.Id
+WHEN MATCHED THEN UPDATE SET Name = S.Name
+OUTPUT inserted.Id, deleted.Id INTO Audit(InsertedId, DeletedId);`;
+            const ast = parse(sql);
+            const stmt = ast.body[0] as any;
+
+            expect(stmt.type).toBe('MergeStatement');
+            expect(stmt.output).toBeDefined();
+            expect(stmt.output.columns.length).toBe(2);
+            expect(stmt.output.intoTable.name).toBe('Audit');
+            expect(stmt.output.intoColumns).toEqual(['InsertedId', 'DeletedId']);
+        });
+    });
+
     describe('T-SQL Parser - Architectural Improvements', () => {
 
         test('should handle multi-row and multi-column INSERT (2D Values)', () => {

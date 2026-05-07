@@ -290,6 +290,18 @@ describe('DML003 — INSERT without column list', () => {
         );
         expect(d.length).toBe(0);
     });
+
+    test('fires for MERGE INSERT action without column list', () => {
+        const d = only(
+            `MERGE dbo.Target AS T
+            USING dbo.Source AS S
+            ON T.Id = S.Id
+            WHEN NOT MATCHED THEN INSERT VALUES (S.Name);`,
+            DiagnosticCode.InsertWithoutColumnList
+        );
+        expect(d.length).toBe(1);
+        expect(d[0].severity).toBe('warning');
+    });
 });
 
 // ─── SEL001: SELECT * ────────────────────────────────────────────────────────

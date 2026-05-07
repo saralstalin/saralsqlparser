@@ -6,6 +6,7 @@ import {
     UpdateNode,
     DeleteNode,
     InsertNode,
+    MergeNode,
     WithNode,
     IfNode,
     BlockNode,
@@ -146,6 +147,10 @@ export class DiagnosticEngine {
                 this.checkInsert(stmt);
                 break;
 
+            case 'MergeStatement':
+                this.checkMerge(stmt);
+                break;
+
             case 'CreateStatement':
                 this.checkCreate(stmt);
                 break;
@@ -236,6 +241,28 @@ export class DiagnosticEngine {
                 start: stmt.start,
                 end: stmt.start + 6,
             });
+        }
+    }
+
+    private checkMerge(stmt: MergeNode): void {
+        if (stmt.incomplete) return;
+
+        for (const clause of stmt.whenClauses) {
+            if (
+                clause.action.type === 'MergeInsertAction' &&
+                clause.action.values &&
+                !clause.action.columns
+            ) {
+                this.emit({
+                    code: DiagnosticCode.InsertWithoutColumnList,
+                    message:
+                        `MERGE INSERT action does not specify a column list — ` +
+                        `this will break if the target table schema changes`,
+                    severity: 'warning',
+                    start: clause.action.start,
+                    end: clause.action.end,
+                });
+            }
         }
     }
 

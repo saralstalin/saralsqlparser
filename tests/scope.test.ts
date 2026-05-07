@@ -270,6 +270,25 @@ describe('SELECT aliases', () => {
     });
 });
 
+describe('MERGE scope', () => {
+    test('MERGE target and source aliases are registered in merge scope', () => {
+        const scope = rootScope(`
+            MERGE dbo.Target AS T
+            USING dbo.Source AS S
+            ON T.Id = S.Id
+            WHEN MATCHED THEN UPDATE SET T.Name = S.Name;
+        `);
+
+        const mergeScope = scope.getChildren().find(x => x.name === 'merge');
+
+        expect(mergeScope).toBeDefined();
+        expect(mergeScope?.resolveLocal('T')?.kind).toBe(SymbolKind.Alias);
+        expect(mergeScope?.resolveLocal('S')?.kind).toBe(SymbolKind.Alias);
+        expect(scope.resolveLocal('T')).toBeUndefined();
+        expect(scope.resolveLocal('S')).toBeUndefined();
+    });
+});
+
 // ─── 6. Reference tracking ────────────────────────────────────────────────────
 
 describe('reference tracking', () => {

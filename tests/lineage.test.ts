@@ -183,6 +183,20 @@ describe('LineageBuilder', () => {
         ]);
     });
 
+    test('merge update and insert lineage', () => {
+        expect(
+            edgeStrings(`
+                MERGE dbo.Target AS T
+                USING dbo.Source AS S
+                ON T.Id = S.Id
+                WHEN MATCHED THEN UPDATE SET Name = S.Name
+                WHEN NOT MATCHED THEN INSERT (Name) VALUES (S.Name);
+            `)
+        ).toEqual([
+            'dbo.SOURCE.Name -> T.Name'
+        ]);
+    });
+
     test('nested cte chain', () => {
         expect(
             edgeStrings(`
