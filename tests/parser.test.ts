@@ -1,5 +1,5 @@
 import { Lexer, TokenType } from '../src/parser/lexer';
-import { SelectNode, InsertNode, UpdateNode, DeleteNode, DeclareNode, SetNode, CreateNode, SetOperatorNode, IfNode, BlockNode, WithNode, OverExpression, TableReference, MemberExpression, IdentifierNode } from '../src/ast/types';
+import { SelectNode, InsertNode, UpdateNode, DeleteNode, DeclareNode, SetNode, CreateNode, DropNode, SetOperatorNode, IfNode, BlockNode, WithNode, OverExpression, TableReference, MemberExpression, IdentifierNode } from '../src/ast/types';
 import { Parser } from '../src/parser/parser';
 
 /**
@@ -188,6 +188,27 @@ describe('T-SQL Parser', () => {
         expect((parse(sql).body[0] as SelectNode).distinct).toBe(false);
     });
 
+    // 10.5. SELECT ... INTO
+    test('should handle SELECT INTO simple', () => {
+        const sql = `SELECT Id INTO #Tmp FROM Users`;
+        const stmt = parse(sql).body[0] as SelectNode;
+        expect(stmt.into?.name).toBe('#Tmp');
+    });
+
+    test('should handle SELECT TOP ... INTO', () => {
+        const sql = `SELECT TOP 10 * INTO dbo.Backup FROM Orders`;
+        const stmt = parse(sql).body[0] as SelectNode;
+        expect(stmt.top).toBe('10');
+        expect(stmt.into?.name).toBe('dbo.Backup');
+        expect(stmt.into?.parts).toEqual(['dbo', 'Backup']);
+    });
+
+    test('should handle SELECT * INTO multipart schema', () => {
+        const sql = `SELECT * INTO #Agg FROM X`;
+        const stmt = parse(sql).body[0] as SelectNode;
+        expect(stmt.into?.name).toBe('#Agg');
+    });
+
     // 11. Alias: Assignment Style
     test('should handle assignment alias (ID = UserID)', () => {
         const sql = `SELECT ID = UserID FROM Users`;
@@ -360,6 +381,55 @@ describe('T-SQL Parser', () => {
         const sqlP = `CREATE PROC P AS SELECT 1`;
         expect((parse(sqlV).body[0] as CreateNode).objectType).toBe('VIEW');
         expect((parse(sqlP).body[0] as CreateNode).objectType).toBe('PROCEDURE');
+    });
+
+    // 30.5. DROP TABLE / VIEW / PROC
+    test('should handle DROP TABLE', () => {
+        const sql = `DROP TABLE #Sales`;
+        const node = parse(sql).body[0] as DropNode;
+        expect(node.type).toBe('DropStatement');
+        expect(node.objectType).toBe('TABLE');
+        expect(node.target?.name).toBe('#Sales');
+    });
+
+    test('should handle DROP VIEW', () => {
+        const sql = `DROP VIEW dbo.V1`;
+        const node = parse(sql).body[0] as DropNode;
+        expect(node.objectType).toBe('VIEW');
+        expect(node.target?.name).toBe('dbo.V1');
+        expect(node.target?.parts).toEqual(['dbo', 'V1']);
+    });
+
+    test('should handle DROP PROC', () => {
+        const sql = `DROP PROC dbo.P1`;
+        const node = parse(sql).body[0] as DropNode;
+        expect(node.objectType).toBe('PROCEDURE');
+        expect(node.target?.name).toBe('dbo.P1');
+        expect(node.target?.parts).toEqual(['dbo', 'P1']);
+    });
+
+    test('should handle DROP FUNCTION', () => {
+        const sql = `DROP FUNCTION dbo.fn_Test`;
+        const node = parse(sql).body[0] as DropNode;
+        expect(node.objectType).toBe('FUNCTION');
+        expect(node.target?.name).toBe('dbo.fn_Test');
+    });
+
+    test('should handle DROP INDEX', () => {
+        const sql = `DROP INDEX IX_Test ON dbo.T1`;
+        const node = parse(sql).body[0] as DropNode;
+        expect(node.objectType).toBe('INDEX');
+        expect(node.target?.name).toBe('IX_Test');
+    });
+
+    test('should handle DROP in IF statement', () => {
+        const sql = `IF OBJECT_ID('dbo.Sales') IS NOT NULL DROP TABLE dbo.Sales`;
+        const node = parse(sql).body[0] as IfNode;
+        expect(node.type).toBe('IfStatement');
+        const dropStmt = Array.isArray(node.thenBranch) ? node.thenBranch[0] : node.thenBranch;
+        if (dropStmt && 'objectType' in dropStmt) {
+            expect((dropStmt as DropNode).objectType).toBe('TABLE');
+        }
     });
 
     // 31. Parentheses Precedence

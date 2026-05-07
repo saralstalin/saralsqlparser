@@ -12,9 +12,12 @@ import {
     InsertNode,
     UpdateNode,
     DeleteNode,
+    MergeNode,
+    MergeWhenClause,
     DeclareNode,
     SetNode,
     CreateNode,
+    DropNode,
     IfNode,
     BlockNode,
     WithNode,
@@ -100,13 +103,18 @@ const STRUCTURAL_KEYWORDS = new Set([
 
 const RESYNC_KEYWORDS = new Set([
     'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'SET',
-    'DECLARE', 'IF', 'BEGIN', 'CREATE', 'WITH', 'GO',
+    'DECLARE', 'IF', 'BEGIN', 'CREATE', 'DROP', 'WITH', 'GO',
     'WHEN', 'THEN', 'ELSE', 'END'
 ]);
 
 const CREATE_OBJECT_TYPES: Record<string, CreateNode['objectType']> = {
     TABLE: 'TABLE', VIEW: 'VIEW', PROCEDURE: 'PROCEDURE',
     FUNCTION: 'FUNCTION', TYPE: 'TYPE', PROC: 'PROCEDURE'
+};
+
+const DROP_OBJECT_TYPES: Record<string, DropNode['objectType']> = {
+    TABLE: 'TABLE', VIEW: 'VIEW', PROCEDURE: 'PROCEDURE',
+    FUNCTION: 'FUNCTION', INDEX: 'INDEX', PROC: 'PROCEDURE'
 };
 
 // Precedence mapping for operators
@@ -559,6 +567,7 @@ export class Parser {
                 case 'DECLARE': stmt = this.parseDeclare(); break;
                 case 'SET': stmt = this.parseSet(); break;
                 case 'CREATE': stmt = this.parseCreate(); break;
+                case 'DROP': stmt = this.parseDrop(); break;
                 case 'IF': stmt = this.parseIf(); break;
                 case 'BEGIN': stmt = this.parseBlock(); break;
                 case 'WITH': stmt = this.parseWith(); break;
@@ -730,6 +739,28 @@ export class Parser {
             columns.length > 0
                 ? columns[columns.length - 1].end
                 : startToken.offset + startToken.value.length;
+
+        // 3.5. INTO (SELECT ... INTO target)
+        let into: IdentifierNode | null = null;
+
+        if (this.peekKeyword('INTO')) {
+            this.consume(); // consume INTO
+            endOffset = this.lastConsumedEnd();
+
+            try {
+                into = this.parseMultipartIdentifier() as IdentifierNode;
+                endOffset = into.end;
+            } catch (e) {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_SELECT_INTO',
+                    e instanceof Error ? e.message : String(e),
+                    endOffset
+                );
+            }
+        }
 
         // 4. FROM
         let from: TableReference[] | null = null;
@@ -976,6 +1007,7 @@ export class Parser {
             distinct,
             top,
             columns,
+            into,
             from,
             where,
             groupBy,
@@ -3407,6 +3439,102 @@ export class Parser {
             parameters,
             body,
             isTableType,
+            start: startToken.offset,
+            end: endOffset,
+            ...(incomplete
+                ? { incomplete: true }
+                : {}),
+            ...(errors.length
+                ? { errors }
+                : {})
+        };
+    }
+
+    private parseDrop(): DropNode {
+        const startToken = this.matchKeyword('DROP');
+
+        let incomplete = false;
+        const errors: string[] = [];
+        let endOffset =
+            startToken.offset + startToken.value.length;
+
+        // 1. Object type
+        let objectType: DropNode['objectType'] = 'TABLE';
+
+        try {
+            const typeToken = this.consume();
+            const rawType = typeToken.value.toUpperCase();
+
+            const mapped =
+                DROP_OBJECT_TYPES[
+                rawType as keyof typeof DROP_OBJECT_TYPES
+                ];
+
+            if (mapped) {
+                objectType = mapped;
+            } else {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_DROP_TYPE',
+                    `Unsupported DROP object type: ${rawType}`,
+                    typeToken.offset,
+                    typeToken.offset + typeToken.value.length
+                );
+            }
+
+            endOffset =
+                typeToken.offset + typeToken.value.length;
+
+        } catch (e) {
+            incomplete = true;
+
+            this.addRecoverableError(
+                errors,
+                'PARSE_DROP_TYPE',
+                e instanceof Error ? e.message : String(e),
+                startToken.offset,
+                endOffset
+            );
+        }
+
+        // 2. Target name
+        let target: IdentifierNode | null = null;
+
+        try {
+            const targetExpr = this.parseMultipartIdentifier();
+
+            if (targetExpr.type === 'Identifier') {
+                target = targetExpr;
+                endOffset = targetExpr.end;
+            } else {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_DROP_TARGET',
+                    `Invalid target for DROP ${objectType}`,
+                    targetExpr.start,
+                    targetExpr.end
+                );
+            }
+
+        } catch (e) {
+            incomplete = true;
+
+            this.addRecoverableError(
+                errors,
+                'PARSE_DROP_TARGET',
+                e instanceof Error ? e.message : String(e),
+                endOffset
+            );
+        }
+
+        return {
+            type: 'DropStatement',
+            objectType,
+            target,
             start: startToken.offset,
             end: endOffset,
             ...(incomplete

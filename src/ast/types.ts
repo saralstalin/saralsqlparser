@@ -171,9 +171,11 @@ export type Statement = (
     InsertNode |
     UpdateNode |
     DeleteNode |
+    MergeNode |
     DeclareNode |
     SetNode |
     CreateNode |
+    DropNode |
     IfNode |
     BlockNode |
     WithNode |
@@ -190,6 +192,7 @@ export interface SelectNode extends NodeLocation, Recoverable {
     distinct: boolean;
     top: string | null;
     columns: ColumnNode[];
+    into?: IdentifierNode | null;
     from: TableReference[] | null;
     where: Expression | null;
     groupBy: Expression[] | null;
@@ -244,6 +247,29 @@ export interface DeleteNode extends NodeLocation, Recoverable {
     output?: OutputClauseNode;
     from: TableReference[] | null;
     where: Expression | null;
+}
+
+// ===============================
+// MERGE
+// ===============================
+
+export type MergeAction = 'INSERT' | 'UPDATE' | 'DELETE';
+
+export interface MergeWhenClause extends NodeLocation {
+    type: 'MergeWhenClause';
+    condition: 'MATCHED' | 'NOT MATCHED' | 'NOT MATCHED BY SOURCE';
+    action: MergeAction;
+    assignments?: UpdateAssignment[] | null;
+    values?: Expression[][] | null;
+    insertColumns?: string[] | null;
+}
+
+export interface MergeNode extends NodeLocation, Recoverable {
+    type: 'MergeStatement';
+    target: Expression | null;
+    using: TableReference | null;
+    on: Expression | null;
+    whenClauses: MergeWhenClause[];
 }
 
 // ===============================
@@ -315,8 +341,19 @@ export interface CreateNode extends NodeLocation {
 }
 
 // ===============================
+// DROP
+// ===============================
+
+export interface DropNode extends NodeLocation {
+    type: 'DropStatement';
+    objectType: 'TABLE' | 'VIEW' | 'PROCEDURE' | 'FUNCTION' | 'INDEX';
+    target: IdentifierNode | null;
+}
+
+// ===============================
 // WITH / CTE
 // ===============================
+
 
 export interface CTENode extends NodeLocation {
     name: string;
