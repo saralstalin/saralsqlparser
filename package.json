@@ -1,6 +1,6 @@
 {
   "name": "@saralsql/tsql-parser",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "High-fidelity T-SQL parser for LSP tooling",
   "main": "dist/src/index.js",
   "exports": {
