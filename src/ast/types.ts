@@ -312,8 +312,9 @@ export interface MergeNode extends NodeLocation, Recoverable {
 export interface VariableDeclaration extends NodeLocation {
     name: string;
     dataType: string;
-    initialValue?: Expression;
     columns?: ColumnDefinition[] | null;
+    constraints?: ConstraintNode[];
+    initialValue?: Expression;
 }
 
 export interface DeclareNode extends NodeLocation, Recoverable {
@@ -352,7 +353,7 @@ export interface BlockNode extends NodeLocation, Recoverable {
 export interface ColumnDefinition extends NodeLocation {
     name: string;
     dataType: string;
-    constraints?: string[];
+    constraints?: ConstraintNode[];
 }
 
 export interface ParameterDefinition extends NodeLocation {
@@ -370,6 +371,7 @@ export interface CreateNode extends NodeLocation, Recoverable {
     name: string;
     nameNode: IdentifierNode;
     columns?: ColumnDefinition[];
+    constraints?: ConstraintNode[];
     parameters?: ParameterDefinition[];
     body?: Statement | Statement[];
     isTableType?: boolean;
@@ -511,4 +513,23 @@ export interface CastExpression extends NodeLocation, Recoverable {
     kind: 'CAST' | 'TRY_CAST' | 'CONVERT';
     expression: Expression;
     dataType: string;
+}
+
+export interface ConstraintNode extends NodeLocation, Recoverable {
+    name?: string;
+
+    kind:
+    | 'PRIMARY KEY'
+    | 'FOREIGN KEY'
+    | 'UNIQUE'
+    | 'CHECK'
+    | 'DEFAULT'
+    | 'NOT NULL'
+    | 'NULL';
+
+    columns?: string[];
+    expression?: Expression | null;
+
+    referencesTable?: string;
+    referencesColumns?: string[];
 }
