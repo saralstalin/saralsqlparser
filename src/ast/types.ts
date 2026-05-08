@@ -184,7 +184,8 @@ export type Statement = (
     ErrorNode |
     ReturnNode |
     RaiseErrorNode |
-    ExecuteNode
+    ExecuteNode |
+    WhileNode
 ) & NodeLocation;
 
 // ===============================
@@ -525,11 +526,21 @@ export interface ConstraintNode extends NodeLocation, Recoverable {
     | 'CHECK'
     | 'DEFAULT'
     | 'NOT NULL'
-    | 'NULL';
+    | 'NULL'
+    | 'IDENTITY';
 
     columns?: string[];
     expression?: Expression | null;
 
     referencesTable?: string;
     referencesColumns?: string[];
+
+    seed?: number;
+    increment?: number;
+}
+
+export interface WhileNode extends NodeLocation, Recoverable {
+    type: 'WhileStatement';
+    condition: Expression | null;
+    body: Statement | null;
 }

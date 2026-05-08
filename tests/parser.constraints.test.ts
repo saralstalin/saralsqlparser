@@ -336,3 +336,246 @@ describe('T-SQL Parser - Constraints', () => {
         });
     });
 });
+
+describe('IDENTITY constraints', () => {
+    test('IDENTITY before PRIMARY KEY', () => {
+        const stmt = parseOne<any>(`
+            CREATE TABLE X(
+                Id INT IDENTITY(1,1) PRIMARY KEY
+            )
+        `);
+
+        const constraints =
+            stmt.columns[0].constraints;
+
+        expect(constraints)
+            .toHaveLength(2);
+
+        expect(
+            constraints[0].kind
+        ).toBe('IDENTITY');
+
+        expect(
+            constraints[0].seed
+        ).toBe(1);
+
+        expect(
+            constraints[0].increment
+        ).toBe(1);
+
+        expect(
+            constraints[1].kind
+        ).toBe('PRIMARY KEY');
+    });
+
+    test('PRIMARY KEY before IDENTITY', () => {
+        const stmt = parseOne<any>(`
+            CREATE TABLE X(
+                Id INT PRIMARY KEY IDENTITY(1,1)
+            )
+        `);
+
+        const constraints =
+            stmt.columns[0].constraints;
+
+        expect(constraints)
+            .toHaveLength(2);
+
+        expect(
+            constraints[0].kind
+        ).toBe('PRIMARY KEY');
+
+        expect(
+            constraints[1].kind
+        ).toBe('IDENTITY');
+
+        expect(
+            constraints[1].seed
+        ).toBe(1);
+
+        expect(
+            constraints[1].increment
+        ).toBe(1);
+    });
+
+    test('IDENTITY without explicit seed/increment', () => {
+        const stmt = parseOne<any>(`
+            CREATE TABLE X(
+                Id INT IDENTITY PRIMARY KEY
+            )
+        `);
+
+        const identity =
+            stmt.columns[0]
+                .constraints
+                .find(
+                    (x: any) =>
+                        x.kind ===
+                        'IDENTITY'
+                );
+
+        expect(identity)
+            .toBeDefined();
+
+        expect(identity.seed)
+            .toBeUndefined();
+
+        expect(identity.increment)
+            .toBeUndefined();
+    });
+});
+
+describe('unnamed table constraints', () => {
+    test('unnamed PRIMARY KEY composite', () => {
+        const stmt = parseOne<any>(`
+            CREATE TABLE PatentAssignment(
+                PatentId INT NOT NULL,
+                EmployeeId INT NOT NULL,
+                PRIMARY KEY (
+                    PatentId,
+                    EmployeeId
+                )
+            )
+        `);
+
+        expect(stmt.constraints)
+            .toHaveLength(1);
+
+        const pk =
+            stmt.constraints[0];
+
+        expect(pk.kind)
+            .toBe('PRIMARY KEY');
+
+        expect(pk.columns)
+            .toEqual([
+                'PatentId',
+                'EmployeeId'
+            ]);
+    });
+
+    test('unnamed FOREIGN KEY', () => {
+        const stmt = parseOne<any>(`
+            CREATE TABLE SalaryCreditLog(
+                EmployeeId INT,
+                FOREIGN KEY (EmployeeId)
+                REFERENCES Employee(EmployeeId)
+            )
+        `);
+
+        expect(stmt.constraints)
+            .toHaveLength(1);
+
+        const fk =
+            stmt.constraints[0];
+
+        expect(fk.kind)
+            .toBe('FOREIGN KEY');
+
+        expect(fk.columns)
+            .toEqual([
+                'EmployeeId'
+            ]);
+
+        expect(
+            fk.referencesTable
+        ).toBe('Employee');
+
+        expect(
+            fk.referencesColumns
+        ).toEqual([
+            'EmployeeId'
+        ]);
+    });
+
+    test('multiple unnamed table constraints', () => {
+        const stmt = parseOne<any>(`
+            CREATE TABLE X(
+                A INT,
+                B INT,
+                PRIMARY KEY (A,B),
+                FOREIGN KEY (B)
+                REFERENCES Y(Id)
+            )
+        `);
+
+        expect(stmt.constraints)
+            .toHaveLength(2);
+
+        expect(
+            stmt.constraints[0].kind
+        ).toBe('PRIMARY KEY');
+
+        expect(
+            stmt.constraints[1].kind
+        ).toBe('FOREIGN KEY');
+    });
+});
+
+describe('real-world DDL', () => {
+    test('SalaryCreditLog', () => {
+        const stmt = parseOne<any>(`
+            CREATE TABLE SalaryCreditLog (
+                LogId INT PRIMARY KEY IDENTITY(1,1),
+                EmployeeId INT,
+                CreditDate DATE,
+                Amount DECIMAL(10,2),
+                FOREIGN KEY (EmployeeId)
+                    REFERENCES Employee(EmployeeId)
+            )
+        `);
+
+        expect(stmt.columns)
+            .toHaveLength(4);
+
+        expect(
+            stmt.columns[0]
+                .constraints
+                .map((x: any) => x.kind)
+        ).toEqual([
+            'PRIMARY KEY',
+            'IDENTITY'
+        ]);
+
+        expect(stmt.constraints)
+            .toHaveLength(1);
+
+        expect(
+            stmt.constraints[0].kind
+        ).toBe('FOREIGN KEY');
+    });
+
+    test('PatentAssignment composite PK', () => {
+        const stmt = parseOne<any>(`
+            CREATE TABLE PatentAssignment(
+                PatentId INT NOT NULL,
+                EmployeeId INT NOT NULL,
+                Status VARCHAR(20)
+                    DEFAULT 'Active',
+                PRIMARY KEY (
+                    PatentId,
+                    EmployeeId
+                ),
+                FOREIGN KEY (PatentId)
+                    REFERENCES Patent(PatentId),
+                FOREIGN KEY (EmployeeId)
+                    REFERENCES Employee(EmployeeId)
+            )
+        `);
+
+        expect(stmt.constraints)
+            .toHaveLength(3);
+
+        expect(
+            stmt.constraints[0].kind
+        ).toBe('PRIMARY KEY');
+
+        expect(
+            stmt.constraints[1].kind
+        ).toBe('FOREIGN KEY');
+
+        expect(
+            stmt.constraints[2].kind
+        ).toBe('FOREIGN KEY');
+    });
+});

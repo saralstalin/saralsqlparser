@@ -30,6 +30,7 @@ import {
     RaiseErrorNode,
     ExecuteNode,
     ConstraintNode,
+    WhileNode,
 
     // Expressions
     Expression,
@@ -612,6 +613,7 @@ export class Parser {
                 case 'RAISERROR': stmt = this.parseRaiseError(); break;
                 case 'EXEC':
                 case 'EXECUTE': stmt = this.parseExecute(); break;
+                case 'WHILE': stmt = this.parseWhile(); break;
                 case 'GO':
                     this.consume();
                     return null;
@@ -3216,11 +3218,7 @@ export class Parser {
         while (this.peek()) {
             const token = this.peek()!;
 
-            // -----------------------------------
             // recovery boundary
-            // stop malformed table parse at
-            // ; or next statement keyword
-            // -----------------------------------
             if (
                 token.type === TokenType.Semicolon ||
                 (
@@ -3231,16 +3229,13 @@ export class Parser {
                 break;
             }
 
-            // normal close
             if (token.type === TokenType.CloseParen) {
                 break;
             }
 
             const value = token.value;
 
-            // -----------------------------------
             // table-level constraint
-            // -----------------------------------
             if (
                 value === 'CONSTRAINT' ||
                 value === 'PRIMARY' ||
@@ -3262,9 +3257,7 @@ export class Parser {
                 continue;
             }
 
-            // -----------------------------------
             // column name
-            // -----------------------------------
             const startToken = this.peek()!;
 
             const nameExpr =
@@ -3278,14 +3271,7 @@ export class Parser {
 
             const name = nameExpr.name;
 
-            // -----------------------------------
-            // data type
-            // Supports:
-            // INT
-            // VARCHAR(50)
-            // DECIMAL(18,2)
-            // dbo.MyType
-            // -----------------------------------
+            // datatype
             let dataType = '';
             let parenDepth = 0;
 
@@ -3294,7 +3280,6 @@ export class Parser {
                 const nextVal = next.value;
 
                 if (parenDepth === 0) {
-                    // recovery boundary
                     if (
                         next.type === TokenType.Semicolon ||
                         (
@@ -3305,7 +3290,6 @@ export class Parser {
                         break;
                     }
 
-                    // separators
                     if (
                         next.type === TokenType.Comma ||
                         next.type === TokenType.CloseParen
@@ -3313,7 +3297,6 @@ export class Parser {
                         break;
                     }
 
-                    // constraint start
                     if (
                         nextVal === 'CONSTRAINT' ||
                         nextVal === 'PRIMARY' ||
@@ -3323,33 +3306,36 @@ export class Parser {
                         nextVal === 'DEFAULT' ||
                         nextVal === 'NOT' ||
                         nextVal === 'NULL' ||
-                        nextVal === 'REFERENCES'
+                        nextVal === 'REFERENCES' ||
+                        nextVal === 'IDENTITY'
                     ) {
                         break;
                     }
                 }
 
-                if (next.type === TokenType.OpenParen) {
+                if (
+                    next.type === TokenType.OpenParen
+                ) {
                     parenDepth++;
                 }
 
                 dataType += this.consume().value;
 
-                if (next.type === TokenType.CloseParen) {
+                if (
+                    next.type === TokenType.CloseParen
+                ) {
                     parenDepth--;
                 }
             }
 
-            // -----------------------------------
             // inline constraints
-            // -----------------------------------
-            const columnConstraints: ConstraintNode[] = [];
+            const columnConstraints:
+                ConstraintNode[] = [];
 
             while (this.peek()) {
                 const next = this.peek()!;
                 const nextVal = next.value;
 
-                // recovery / separators
                 if (
                     next.type === TokenType.Comma ||
                     next.type === TokenType.CloseParen ||
@@ -3362,7 +3348,7 @@ export class Parser {
                     break;
                 }
 
-                // constraint
+                // FIX: IDENTITY added here
                 if (
                     nextVal === 'CONSTRAINT' ||
                     nextVal === 'PRIMARY' ||
@@ -3372,7 +3358,8 @@ export class Parser {
                     nextVal === 'DEFAULT' ||
                     nextVal === 'NOT' ||
                     nextVal === 'NULL' ||
-                    nextVal === 'REFERENCES'
+                    nextVal === 'REFERENCES' ||
+                    nextVal === 'IDENTITY'
                 ) {
                     const constraint =
                         this.parseConstraint(name);
@@ -3381,10 +3368,16 @@ export class Parser {
                         constraint
                     );
 
+                    if (
+                        this.peek()?.type === TokenType.Comma ||
+                        this.peek()?.type === TokenType.CloseParen
+                    ) {
+                        break;
+                    }
+
                     continue;
                 }
 
-                // unknown trailing token
                 this.consume();
             }
 
@@ -3401,7 +3394,6 @@ export class Parser {
                 end: this.lastConsumedEnd()
             });
 
-            // comma separator
             if (
                 this.peek()?.type === TokenType.Comma
             ) {
@@ -3409,8 +3401,6 @@ export class Parser {
             }
         }
 
-        // closing )
-        // optional for recovery
         if (
             this.peek()?.type === TokenType.CloseParen
         ) {
@@ -6520,7 +6510,8 @@ export class Parser {
             | 'CHECK'
             | 'DEFAULT'
             | 'NOT NULL'
-            | 'NULL' = 'NULL';
+            | 'NULL'
+            | 'IDENTITY' = 'NULL';
 
         let columns: string[] | undefined;
         let expression: Expression | null | undefined;
@@ -6851,6 +6842,81 @@ export class Parser {
                 }
             }
 
+            else if (value === 'IDENTITY') {
+                this.consume();
+
+                kind = 'IDENTITY';
+
+                if (implicitColumn) {
+                    columns = [implicitColumn];
+                }
+
+                let seed: number | undefined;
+                let increment: number | undefined;
+
+                if (
+                    this.peek()?.type === TokenType.OpenParen
+                ) {
+                    this.consume();
+
+                    if (
+                        this.peek()?.type === TokenType.Number
+                    ) {
+                        seed = Number(
+                            this.consume().value
+                        );
+                    }
+
+                    if (
+                        this.peek()?.type === TokenType.Comma
+                    ) {
+                        this.consume();
+
+                        if (
+                            this.peek()?.type === TokenType.Number
+                        ) {
+                            increment = Number(
+                                this.consume().value
+                            );
+                        }
+                    }
+
+                    if (
+                        this.peek()?.type ===
+                        TokenType.CloseParen
+                    ) {
+                        this.consume();
+                    } else {
+                        fail(
+                            'PARSE_CONSTRAINT_IDENTITY_CLOSE',
+                            'Expected ) after IDENTITY'
+                        );
+                    }
+                }
+
+                return {
+                    name,
+                    kind,
+                    ...(columns?.length
+                        ? { columns }
+                        : {}),
+                    ...(seed !== undefined
+                        ? { seed }
+                        : {}),
+                    ...(increment !== undefined
+                        ? { increment }
+                        : {}),
+                    start,
+                    end: this.lastConsumedEnd(),
+                    ...(incomplete
+                        ? { incomplete: true }
+                        : {}),
+                    ...(errors.length
+                        ? { errors }
+                        : {})
+                };
+            }
+
             // unknown
             else {
                 fail(
@@ -6891,6 +6957,134 @@ export class Parser {
                 : {}),
             start,
             end: this.lastConsumedEnd(),
+            ...(incomplete
+                ? { incomplete: true }
+                : {}),
+            ...(errors.length
+                ? { errors }
+                : {})
+        };
+    }
+
+    private parseWhile(): WhileNode {
+        const startToken =
+            this.matchKeyword('WHILE');
+
+        let incomplete = false;
+        const errors: string[] = [];
+
+        let endOffset =
+            startToken.offset +
+            startToken.value.length;
+
+        let condition: Expression | null = null;
+        let body: Statement | null = null;
+
+        // -----------------------------
+        // condition
+        // -----------------------------
+        try {
+            const next = this.peek();
+
+            if (
+                next &&
+                next.type !== TokenType.Semicolon &&
+                !(
+                    next.type === TokenType.Keyword &&
+                    RESYNC_KEYWORDS.has(next.value)
+                )
+            ) {
+                condition =
+                    this.parseExpression();
+
+                endOffset =
+                    condition.end;
+            } else {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_WHILE_CONDITION',
+                    'Expected WHILE condition',
+                    endOffset,
+                    endOffset
+                );
+            }
+
+        } catch (e) {
+            incomplete = true;
+
+            this.addRecoverableError(
+                errors,
+                'PARSE_WHILE_CONDITION',
+                e instanceof Error
+                    ? e.message
+                    : String(e),
+                endOffset,
+                endOffset
+            );
+        }
+
+        // -----------------------------
+        // body statement
+        // -----------------------------
+        try {
+            const next = this.peek();
+
+            if (
+                next &&
+                next.type !== TokenType.Semicolon
+            ) {
+                body =
+                    this.parseStatement();
+
+                if (body) {
+                    endOffset = body.end;
+                } else {
+                    incomplete = true;
+
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_WHILE_BODY',
+                        'Expected WHILE body statement',
+                        endOffset,
+                        endOffset
+                    );
+                }
+            } else {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_WHILE_BODY',
+                    'Expected WHILE body statement',
+                    endOffset,
+                    endOffset
+                );
+            }
+
+        } catch (e) {
+            incomplete = true;
+
+            this.addRecoverableError(
+                errors,
+                'PARSE_WHILE_BODY',
+                e instanceof Error
+                    ? e.message
+                    : String(e),
+                endOffset,
+                endOffset
+            );
+
+            this.recoverTo([';']);
+        }
+
+        return {
+            type: 'WhileStatement',
+            condition,
+            body,
+            start: startToken.offset,
+            end: endOffset,
             ...(incomplete
                 ? { incomplete: true }
                 : {}),
