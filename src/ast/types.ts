@@ -55,7 +55,8 @@ export type Expression =
     | SubqueryExpression
     | OverExpression
     | MemberExpression
-    | WildcardExpression;
+    | WildcardExpression
+    | CastExpression;
 
 export interface BinaryExpression extends NodeLocation, Recoverable {
     type: 'BinaryExpression';
@@ -180,7 +181,10 @@ export type Statement = (
     BlockNode |
     WithNode |
     PrintNode |
-    ErrorNode
+    ErrorNode |
+    ReturnNode |
+    RaiseErrorNode |
+    ExecuteNode
 ) & NodeLocation;
 
 // ===============================
@@ -198,6 +202,9 @@ export interface SelectNode extends NodeLocation, Recoverable {
     groupBy: Expression[] | null;
     having: Expression | null;
     orderBy: OrderByNode[] | null;
+
+    offset?: Expression | null;
+    fetch?: Expression | null;
 }
 
 // ===============================
@@ -351,11 +358,12 @@ export interface ColumnDefinition extends NodeLocation {
 export interface ParameterDefinition extends NodeLocation {
     name: string;
     dataType: string;
-    defaultValue?: string;
-    isOutput: boolean;
+    defaultValue?: Expression | null;
+    isOutput?: boolean;
+    isReadOnly?: boolean;
 }
 
-export interface CreateNode extends NodeLocation, Recoverable  {
+export interface CreateNode extends NodeLocation, Recoverable {
     type: 'CreateStatement';
     objectType: 'TABLE' | 'VIEW' | 'PROCEDURE' | 'FUNCTION' | 'TYPE';
     orAlter: boolean;
@@ -474,4 +482,33 @@ export interface OutputClauseNode extends NodeLocation, Recoverable {
     intoTable?: Expression;
     intoColumns?: string[];
     intoColumnNodes?: IdentifierNode[];
+}
+
+export interface ReturnNode extends NodeLocation, Recoverable {
+    type: 'ReturnStatement';
+    value?: Expression | null;
+}
+
+export interface RaiseErrorNode extends NodeLocation, Recoverable {
+    type: 'RaiseErrorStatement';
+    args: Expression[];
+    options?: string[];
+}
+
+export type ExecArgument = {
+    name?: string;
+    value: Expression | null;
+};
+
+export interface ExecuteNode extends NodeLocation, Recoverable {
+    type: 'ExecuteStatement';
+    target: Expression | null;
+    args: ExecArgument[];
+}
+
+export interface CastExpression extends NodeLocation, Recoverable {
+    type: 'CastExpression';
+    kind: 'CAST' | 'TRY_CAST' | 'CONVERT';
+    expression: Expression;
+    dataType: string;
 }
