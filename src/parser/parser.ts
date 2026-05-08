@@ -6465,6 +6465,42 @@ export class Parser {
         return parts.join('');
     }
 
+    private parseIdentifierListSafe(): string[] {
+        const result: string[] = [];
+
+        while (this.peek()) {
+            const token = this.peek()!;
+
+            const isResync =
+                token.type === TokenType.Keyword &&
+                RESYNC_KEYWORDS.has(token.value);
+
+            if (
+                token.type === TokenType.CloseParen ||
+                token.type === TokenType.Semicolon ||
+                isResync
+            ) {
+                break;
+            }
+
+            if (token.type === TokenType.Comma) {
+                this.consume();
+                continue;
+            }
+
+            const id =
+                this.parseMultipartIdentifier();
+
+            if (id.type !== 'Identifier') {
+                break;
+            }
+
+            result.push(id.name);
+        }
+
+        return result;
+    }
+
     private parseConstraint(
         implicitColumn?: string
     ): ConstraintNode {
@@ -6491,23 +6527,31 @@ export class Parser {
         let referencesTable: string | undefined;
         let referencesColumns: string[] | undefined;
 
+        const fail = (
+            code: string,
+            message: string
+        ) => {
+            incomplete = true;
+
+            this.addRecoverableError(
+                errors,
+                code,
+                message,
+                this.lastConsumedEnd()
+            );
+        };
+
         try {
-            // -----------------------------------
-            // Optional CONSTRAINT name
-            // -----------------------------------
+            // optional CONSTRAINT name
             if (this.peek()?.value === 'CONSTRAINT') {
                 this.consume();
 
                 if (this.peek()) {
                     name = this.consume().value;
                 } else {
-                    incomplete = true;
-
-                    this.addRecoverableError(
-                        errors,
+                    fail(
                         'PARSE_CONSTRAINT_NAME',
-                        'Expected constraint name',
-                        start
+                        'Expected constraint name'
                     );
                 }
             }
@@ -6516,19 +6560,13 @@ export class Parser {
             const value = token?.value;
 
             if (!token) {
-                incomplete = true;
-
-                this.addRecoverableError(
-                    errors,
+                fail(
                     'PARSE_CONSTRAINT_KIND',
-                    'Expected constraint type',
-                    start
+                    'Expected constraint type'
                 );
             }
 
-            // -----------------------------------
             // PRIMARY KEY
-            // -----------------------------------
             else if (
                 value === 'PRIMARY' &&
                 this.peek(1)?.value === 'KEY'
@@ -6545,57 +6583,24 @@ export class Parser {
                 ) {
                     this.consume();
 
-                    try {
-                        columns =
-                            this.parseList<string>(() => {
-                                const id =
-                                    this.parseMultipartIdentifier();
+                    columns =
+                        this.parseIdentifierListSafe();
 
-                                if (
-                                    id.type !== 'Identifier'
-                                ) {
-                                    throw new Error(
-                                        'Expected identifier in PRIMARY KEY'
-                                    );
-                                }
-
-                                return id.name;
-                            });
-
-                        if (
-                            this.peek()?.type ===
-                            TokenType.CloseParen
-                        ) {
-                            this.consume();
-                        } else {
-                            incomplete = true;
-
-                            this.addRecoverableError(
-                                errors,
-                                'PARSE_CONSTRAINT_PK_CLOSE',
-                                'Expected ) after PRIMARY KEY columns',
-                                this.lastConsumedEnd()
-                            );
-                        }
-
-                    } catch (e) {
-                        incomplete = true;
-
-                        this.addRecoverableError(
-                            errors,
-                            'PARSE_CONSTRAINT_PK',
-                            e instanceof Error
-                                ? e.message
-                                : String(e),
-                            this.lastConsumedEnd()
+                    if (
+                        this.peek()?.type ===
+                        TokenType.CloseParen
+                    ) {
+                        this.consume();
+                    } else {
+                        fail(
+                            'PARSE_CONSTRAINT_PK_CLOSE',
+                            'Expected ) after PRIMARY KEY columns'
                         );
                     }
                 }
             }
 
-            // -----------------------------------
             // FOREIGN KEY
-            // -----------------------------------
             else if (
                 value === 'FOREIGN' &&
                 this.peek(1)?.value === 'KEY'
@@ -6612,22 +6617,73 @@ export class Parser {
                 ) {
                     this.consume();
 
-                    try {
-                        columns =
-                            this.parseList<string>(() => {
-                                const id =
-                                    this.parseMultipartIdentifier();
+                    columns =
+                        this.parseIdentifierListSafe();
 
-                                if (
-                                    id.type !== 'Identifier'
-                                ) {
-                                    throw new Error(
-                                        'Expected identifier in FOREIGN KEY'
-                                    );
-                                }
+                    if (
+                        this.peek()?.type ===
+                        TokenType.CloseParen
+                    ) {
+                        this.consume();
+                    } else {
+                        fail(
+                            'PARSE_CONSTRAINT_FK_CLOSE',
+                            'Expected ) after FOREIGN KEY columns'
+                        );
+                    }
+                }
 
-                                return id.name;
-                            });
+                if (this.peek()?.value === 'REFERENCES') {
+                    this.consume();
+
+                    const next = this.peek();
+
+                    const validTarget =
+                        next &&
+                        next.type !==
+                        TokenType.CloseParen &&
+                        next.type !==
+                        TokenType.Comma &&
+                        next.type !==
+                        TokenType.Semicolon &&
+                        !(
+                            next.type ===
+                            TokenType.Keyword &&
+                            RESYNC_KEYWORDS.has(
+                                next.value
+                            )
+                        );
+
+                    if (validTarget) {
+                        const ref =
+                            this.parseMultipartIdentifier();
+
+                        if (
+                            ref.type === 'Identifier'
+                        ) {
+                            referencesTable =
+                                ref.name;
+                        } else {
+                            fail(
+                                'PARSE_CONSTRAINT_REFERENCES_TABLE',
+                                'Expected referenced table name'
+                            );
+                        }
+                    } else {
+                        fail(
+                            'PARSE_CONSTRAINT_REFERENCES_TABLE',
+                            'Expected referenced table name'
+                        );
+                    }
+
+                    if (
+                        this.peek()?.type ===
+                        TokenType.OpenParen
+                    ) {
+                        this.consume();
+
+                        referencesColumns =
+                            this.parseIdentifierListSafe();
 
                         if (
                             this.peek()?.type ===
@@ -6635,159 +6691,21 @@ export class Parser {
                         ) {
                             this.consume();
                         } else {
-                            incomplete = true;
-
-                            this.addRecoverableError(
-                                errors,
-                                'PARSE_CONSTRAINT_FK_CLOSE',
-                                'Expected ) after FOREIGN KEY columns',
-                                this.lastConsumedEnd()
-                            );
-                        }
-
-                    } catch (e) {
-                        incomplete = true;
-
-                        this.addRecoverableError(
-                            errors,
-                            'PARSE_CONSTRAINT_FK',
-                            e instanceof Error
-                                ? e.message
-                                : String(e),
-                            this.lastConsumedEnd()
-                        );
-                    }
-                }
-
-                // REFERENCES ...
-                if (this.peek()?.value === 'REFERENCES') {
-                    this.consume();
-
-                    // FIXED: stricter validation
-                    const next = this.peek();
-
-                    if (
-                        next &&
-                        next.type !== TokenType.CloseParen &&
-                        next.type !== TokenType.Comma &&
-                        next.type !== TokenType.Semicolon &&
-                        !(
-                            next.type === TokenType.Keyword &&
-                            RESYNC_KEYWORDS.has(next.value)
-                        )
-                    ) {
-                        try {
-                            const ref =
-                                this.parseMultipartIdentifier();
-
-                            if (
-                                ref.type === 'Identifier'
-                            ) {
-                                referencesTable =
-                                    ref.name;
-                            } else {
-                                incomplete = true;
-
-                                this.addRecoverableError(
-                                    errors,
-                                    'PARSE_CONSTRAINT_REFERENCES_TABLE',
-                                    'Expected referenced table name',
-                                    this.lastConsumedEnd()
-                                );
-                            }
-
-                        } catch (e) {
-                            incomplete = true;
-
-                            this.addRecoverableError(
-                                errors,
-                                'PARSE_CONSTRAINT_REFERENCES_TABLE',
-                                e instanceof Error
-                                    ? e.message
-                                    : String(e),
-                                this.lastConsumedEnd()
-                            );
-                        }
-                    } else {
-                        incomplete = true;
-
-                        this.addRecoverableError(
-                            errors,
-                            'PARSE_CONSTRAINT_REFERENCES_TABLE',
-                            'Expected referenced table name',
-                            this.lastConsumedEnd()
-                        );
-                    }
-
-                    // optional (columns)
-                    if (
-                        this.peek()?.type ===
-                        TokenType.OpenParen
-                    ) {
-                        this.consume();
-
-                        try {
-                            referencesColumns =
-                                this.parseList<string>(() => {
-                                    const id =
-                                        this.parseMultipartIdentifier();
-
-                                    if (
-                                        id.type !== 'Identifier'
-                                    ) {
-                                        throw new Error(
-                                            'Expected identifier in REFERENCES'
-                                        );
-                                    }
-
-                                    return id.name;
-                                });
-
-                            if (
-                                this.peek()?.type ===
-                                TokenType.CloseParen
-                            ) {
-                                this.consume();
-                            } else {
-                                incomplete = true;
-
-                                this.addRecoverableError(
-                                    errors,
-                                    'PARSE_CONSTRAINT_REFERENCES_CLOSE',
-                                    'Expected ) after REFERENCES columns',
-                                    this.lastConsumedEnd()
-                                );
-                            }
-
-                        } catch (e) {
-                            incomplete = true;
-
-                            this.addRecoverableError(
-                                errors,
-                                'PARSE_CONSTRAINT_REFERENCES_COLUMNS',
-                                e instanceof Error
-                                    ? e.message
-                                    : String(e),
-                                this.lastConsumedEnd()
+                            fail(
+                                'PARSE_CONSTRAINT_REFERENCES_CLOSE',
+                                'Expected ) after REFERENCES columns'
                             );
                         }
                     }
-
                 } else {
-                    incomplete = true;
-
-                    this.addRecoverableError(
-                        errors,
+                    fail(
                         'PARSE_CONSTRAINT_REFERENCES',
-                        'Expected REFERENCES clause',
-                        this.lastConsumedEnd()
+                        'Expected REFERENCES clause'
                     );
                 }
             }
 
-            // -----------------------------------
             // UNIQUE
-            // -----------------------------------
             else if (value === 'UNIQUE') {
                 this.consume();
 
@@ -6800,150 +6718,114 @@ export class Parser {
                 ) {
                     this.consume();
 
-                    try {
-                        columns =
-                            this.parseList<string>(() => {
-                                const id =
-                                    this.parseMultipartIdentifier();
+                    columns =
+                        this.parseIdentifierListSafe();
 
-                                if (
-                                    id.type !== 'Identifier'
-                                ) {
-                                    throw new Error(
-                                        'Expected identifier in UNIQUE'
-                                    );
-                                }
-
-                                return id.name;
-                            });
-
-                        if (
-                            this.peek()?.type ===
-                            TokenType.CloseParen
-                        ) {
-                            this.consume();
-                        } else {
-                            incomplete = true;
-
-                            this.addRecoverableError(
-                                errors,
-                                'PARSE_CONSTRAINT_UNIQUE_CLOSE',
-                                'Expected ) after UNIQUE columns',
-                                this.lastConsumedEnd()
-                            );
-                        }
-
-                    } catch (e) {
-                        incomplete = true;
-
-                        this.addRecoverableError(
-                            errors,
-                            'PARSE_CONSTRAINT_UNIQUE',
-                            e instanceof Error
-                                ? e.message
-                                : String(e),
-                            this.lastConsumedEnd()
+                    if (
+                        this.peek()?.type ===
+                        TokenType.CloseParen
+                    ) {
+                        this.consume();
+                    } else {
+                        fail(
+                            'PARSE_CONSTRAINT_UNIQUE_CLOSE',
+                            'Expected ) after UNIQUE columns'
                         );
                     }
                 }
             }
 
-            // -----------------------------------
-            // CHECK (...)
-            // -----------------------------------
+            // CHECK
             else if (value === 'CHECK') {
                 this.consume();
 
                 kind = 'CHECK';
 
                 if (
-                    this.peek()?.type === TokenType.OpenParen
+                    this.peek()?.type !==
+                    TokenType.OpenParen
                 ) {
+                    fail(
+                        'PARSE_CONSTRAINT_CHECK',
+                        'Expected ( after CHECK'
+                    );
+                } else {
                     this.consume();
 
-                    try {
-                        expression =
-                            this.parseExpression();
+                    const next = this.peek();
 
-                        if (
-                            this.peek()?.type ===
-                            TokenType.CloseParen
-                        ) {
-                            this.consume();
-                        } else {
-                            incomplete = true;
-
-                            this.addRecoverableError(
-                                errors,
-                                'PARSE_CONSTRAINT_CHECK_CLOSE',
-                                'Expected ) after CHECK expression',
-                                this.lastConsumedEnd()
+                    if (
+                        next &&
+                        next.type !==
+                        TokenType.CloseParen &&
+                        next.type !==
+                        TokenType.Semicolon
+                    ) {
+                        try {
+                            expression =
+                                this.parseExpression();
+                        } catch {
+                            fail(
+                                'PARSE_CONSTRAINT_CHECK_EXPR',
+                                'Invalid CHECK expression'
                             );
                         }
-
-                    } catch (e) {
-                        incomplete = true;
-
-                        this.addRecoverableError(
-                            errors,
+                    } else {
+                        fail(
                             'PARSE_CONSTRAINT_CHECK_EXPR',
-                            e instanceof Error
-                                ? e.message
-                                : String(e),
-                            this.lastConsumedEnd()
+                            'Expected CHECK expression'
                         );
                     }
-                } else {
-                    incomplete = true;
 
-                    this.addRecoverableError(
-                        errors,
-                        'PARSE_CONSTRAINT_CHECK',
-                        'Expected ( after CHECK',
-                        this.lastConsumedEnd()
-                    );
+                    if (
+                        this.peek()?.type ===
+                        TokenType.CloseParen
+                    ) {
+                        this.consume();
+                    } else {
+                        fail(
+                            'PARSE_CONSTRAINT_CHECK_CLOSE',
+                            'Expected ) after CHECK expression'
+                        );
+                    }
                 }
             }
 
-            // -----------------------------------
-            // DEFAULT expr
-            // -----------------------------------
+            // DEFAULT
             else if (value === 'DEFAULT') {
                 this.consume();
 
                 kind = 'DEFAULT';
 
-                if (this.peek()) {
+                const next = this.peek();
+
+                if (
+                    next &&
+                    next.type !==
+                    TokenType.Comma &&
+                    next.type !==
+                    TokenType.CloseParen &&
+                    next.type !==
+                    TokenType.Semicolon
+                ) {
                     try {
                         expression =
                             this.parseExpression();
-                    } catch (e) {
-                        incomplete = true;
-
-                        this.addRecoverableError(
-                            errors,
+                    } catch {
+                        fail(
                             'PARSE_CONSTRAINT_DEFAULT_EXPR',
-                            e instanceof Error
-                                ? e.message
-                                : String(e),
-                            this.lastConsumedEnd()
+                            'Invalid DEFAULT expression'
                         );
                     }
                 } else {
-                    incomplete = true;
-
-                    this.addRecoverableError(
-                        errors,
+                    fail(
                         'PARSE_CONSTRAINT_DEFAULT',
-                        'Expected DEFAULT expression',
-                        this.lastConsumedEnd()
+                        'Expected DEFAULT expression'
                     );
                 }
             }
 
-            // -----------------------------------
             // NOT NULL
-            // -----------------------------------
             else if (
                 value === 'NOT' &&
                 this.peek(1)?.value === 'NULL'
@@ -6958,9 +6840,7 @@ export class Parser {
                 }
             }
 
-            // -----------------------------------
             // NULL
-            // -----------------------------------
             else if (value === 'NULL') {
                 this.consume();
 
@@ -6971,17 +6851,11 @@ export class Parser {
                 }
             }
 
-            // -----------------------------------
-            // Unknown
-            // -----------------------------------
+            // unknown
             else {
-                incomplete = true;
-
-                this.addRecoverableError(
-                    errors,
+                fail(
                     'PARSE_CONSTRAINT_UNKNOWN',
-                    `Unknown constraint: ${value}`,
-                    token.offset
+                    `Unknown constraint: ${value}`
                 );
 
                 this.consume();
