@@ -29,17 +29,131 @@ export class Lexer {
     private pos = 0;
     private line = 1;
     private col = 1;
-    
+
     // Rule #3: Keywords are stored in UpperCase for normalized comparison
-    private keywords = new Set([
-        'SELECT', 'FROM', 'WHERE', 'GROUP', 'BY', 'HAVING', 'ORDER', 'TOP', 'DISTINCT',
-        'INSERT', 'UPDATE', 'DELETE', 'INTO', 'VALUES', 'SET', 'CREATE', 'DECLARE',
-        'UNION', 'EXCEPT', 'INTERSECT', 'ALL', 'AND', 'OR', 'NOT', 'NULL', 'IN',
-        'BETWEEN', 'LIKE', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'EXISTS',
-        'OVER', 'PARTITION', 'PROCEDURE', 'PROC', 'FUNCTION', 'VIEW', 'TABLE', 
-        'TYPE', 'AS', 'GO', 'ON', 'JOIN', 'INNER', 'LEFT', 'RIGHT', 'CROSS', 
-        'OUTER', 'ASC', 'DESC', 'WITH', 'IF',  'BEGIN',  'PRINT', 'OUTPUT', 'OUT', 'DROP', 'INDEX',
-        'MERGE', 'USING', 'MATCHED', 'BY', 'SOURCE', 'TARGET', 'OPTION'
+    private KEYWORDS = new Set([
+
+        // ── Query clauses ─────────────────────────────────────────────────────────
+        'SELECT', 'DISTINCT', 'TOP', 'INTO',
+        'FROM',
+        'WHERE',
+        'GROUP', 'BY', 'HAVING',
+        'ORDER', 'ASC', 'DESC',
+
+        // ── Pagination (OFFSET / FETCH) ───────────────────────────────────────────
+        // SELECT * FROM T ORDER BY Id OFFSET 10 ROWS FETCH NEXT 10 ROWS ONLY
+        'OFFSET', 'FETCH', 'NEXT', 'ROWS', 'ONLY',
+
+        // ── TOP modifier ─────────────────────────────────────────────────────────
+        // SELECT TOP 10 PERCENT WITH TIES
+        'PERCENT', 'TIES',
+
+        // ── Set operators ─────────────────────────────────────────────────────────
+        'UNION', 'EXCEPT', 'INTERSECT', 'ALL',
+
+        // ── Joins ─────────────────────────────────────────────────────────────────
+        'JOIN', 'INNER', 'LEFT', 'RIGHT', 'FULL', 'OUTER',
+        'CROSS', 'APPLY',
+
+        // ── Logical operators ─────────────────────────────────────────────────────
+        'AND', 'OR', 'NOT',
+
+        // ── Predicates ────────────────────────────────────────────────────────────
+        'IN', 'BETWEEN', 'LIKE', 'EXISTS',
+        'IS', 'NULL',
+
+        // ── CASE expression ───────────────────────────────────────────────────────
+        'CASE', 'WHEN', 'THEN', 'ELSE', 'END',
+
+        // ── Window functions ──────────────────────────────────────────────────────
+        // OVER (PARTITION BY ... ORDER BY ... ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+        'OVER', 'PARTITION',
+        'UNBOUNDED', 'PRECEDING', 'FOLLOWING', 'CURRENT',
+        // ROWS already listed under Pagination — serves double duty here
+
+        // ── DML ───────────────────────────────────────────────────────────────────
+        'INSERT', 'VALUES',
+        'UPDATE', 'SET',
+        'DELETE',
+        'MERGE', 'USING', 'MATCHED', 'SOURCE', 'TARGET',
+        'OUTPUT', 'OUT',                     // OUTPUT clause + OUTPUT parameter modifier
+
+        // ── DDL — CREATE ──────────────────────────────────────────────────────────
+        'CREATE',
+        'ALTER',                             // standalone ALTER and CREATE OR ALTER
+        'DROP',
+        'TRUNCATE',                          // TRUNCATE TABLE
+
+        // ── DDL — Object types ────────────────────────────────────────────────────
+        'TABLE', 'VIEW',
+        'PROCEDURE', 'PROC',                 // PROC is a shorthand alias for PROCEDURE
+        'FUNCTION',
+        'TYPE',                              // CREATE TYPE ... AS TABLE
+        'INDEX',
+
+        // ── DDL — Column / constraint modifiers ───────────────────────────────────
+        // Only safe to keyword-ise because the parser has explicit DDL handling.
+        // Do NOT add freely — DEFAULT, KEY, CHECK are common column names.
+        // These should always be bracket-escaped by users: [Default], [Key].
+        'ADD', 'COLUMN',
+        'CONSTRAINT', 'DEFAULT', 'CHECK',
+        'PRIMARY', 'KEY', 'FOREIGN', 'REFERENCES',
+        'IDENTITY',                          // IDENTITY(1,1) in CREATE TABLE
+
+        // ── Variables and declarations ────────────────────────────────────────────
+        'DECLARE',
+
+        // ── Control flow ─────────────────────────────────────────────────────────
+        'IF', 'ELSE',
+        'BEGIN', 'END',
+        'WHILE', 'BREAK', 'CONTINUE',
+        'RETURN',
+        'GOTO',                              // rare but valid T-SQL
+
+        // ── Error handling ────────────────────────────────────────────────────────
+        'TRY', 'CATCH',
+        'THROW',
+        'RAISERROR',
+
+        // ── Execution ────────────────────────────────────────────────────────────
+        'EXEC', 'EXECUTE',
+
+        // ── CTEs and subquery hints ───────────────────────────────────────────────
+        'WITH',
+        'AS',
+        'ON',
+
+        // ── Miscellaneous statement-level keywords ────────────────────────────────
+        'PRINT',
+        'GO',                                // batch separator
+        'OPTION',                            // OPTION (RECOMPILE), OPTION (MAXDOP N)
+
+        // ── Table hints ───────────────────────────────────────────────────────────
+        // Appear in WITH (NOLOCK), WITH (UPDLOCK), etc.
+        // Safe to add — never used as bare column names in practice.
+        'NOLOCK', 'READPAST',
+        'UPDLOCK', 'XLOCK',
+        'ROWLOCK', 'TABLOCK', 'PAGLOCK',
+        'HOLDLOCK', 'NOWAIT',
+        'READCOMMITTED', 'READUNCOMMITTED',
+        'REPEATABLEREAD', 'SERIALIZABLE',
+
+        // ── Data type keywords ────────────────────────────────────────────────────
+        // Only the ones that appear as standalone keywords in parser rules
+        // (e.g. DECLARE @x TABLE, parameter types in CREATE PROCEDURE).
+        // Full type names (NVARCHAR, DATETIME2 etc.) are parsed as identifiers.
+        'INT', 'BIGINT', 'SMALLINT', 'TINYINT',
+        'BIT',
+        'FLOAT', 'REAL',
+        'DECIMAL', 'NUMERIC',
+        'CHAR', 'VARCHAR', 'NCHAR', 'NVARCHAR',
+        'TEXT', 'NTEXT',
+        'DATE', 'TIME', 'DATETIME', 'DATETIME2', 'SMALLDATETIME',
+        'UNIQUEIDENTIFIER',
+        'VARBINARY', 'BINARY', 'IMAGE',
+        'XML', 'JSON',
+        'MAX',                               // VARCHAR(MAX), NVARCHAR(MAX)
+
     ]);
 
     constructor(private input: string) { }
@@ -106,12 +220,12 @@ export class Lexer {
         }
 
         // 5. Rule #1: Composite Operators (>=, <=, <>, !=)
-        
+
         if (COMPOSITE_START.has(char)) {
             let op = this.consume();
             const next = this.peek();
             const combined = op + next;
-            
+
             if (COMPOSITE_OPERATORS.has(combined)) {
                 op = combined;
                 this.consume();
@@ -174,11 +288,11 @@ export class Lexer {
         }
 
         const fullValue = `${opener}${content}${closer}`;
-        
+
         // Rule #3: Check normalized keywords
         if (opener === "" && !content.startsWith('@') && !content.startsWith('#')) {
             const upper = content.toUpperCase();
-            if (this.keywords.has(upper)) {
+            if (this.KEYWORDS.has(upper)) {
                 return { type: TokenType.Keyword, value: upper, line, col, offset: startOffset };
             }
         }

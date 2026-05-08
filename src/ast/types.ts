@@ -148,7 +148,7 @@ export interface WildcardExpression extends NodeLocation {
 // Window / OVER
 // ===============================
 
-export interface WindowDefinition extends NodeLocation {
+export interface WindowDefinition extends NodeLocation, Recoverable {
     type: 'WindowDefinition';
     partitionBy?: Expression[];
     orderBy?: OrderByNode[];
@@ -204,7 +204,7 @@ export interface SelectNode extends NodeLocation, Recoverable {
 // Set Operators
 // ===============================
 
-export interface SetOperatorNode extends NodeLocation {
+export interface SetOperatorNode extends NodeLocation, Recoverable {
     type: 'SetOperator';
     operator: 'UNION' | 'UNION ALL' | 'EXCEPT' | 'INTERSECT';
     left: QueryStatement;
@@ -326,14 +326,14 @@ export interface SetNode extends NodeLocation, Recoverable {
 // CONTROL FLOW
 // ===============================
 
-export interface IfNode extends NodeLocation {
+export interface IfNode extends NodeLocation, Recoverable {
     type: 'IfStatement';
     condition: Expression;
     thenBranch: Statement | Statement[];
     elseBranch?: Statement | Statement[];
 }
 
-export interface BlockNode extends NodeLocation {
+export interface BlockNode extends NodeLocation, Recoverable {
     type: 'BlockStatement';
     body: Statement[];
 }
@@ -355,9 +355,10 @@ export interface ParameterDefinition extends NodeLocation {
     isOutput: boolean;
 }
 
-export interface CreateNode extends NodeLocation {
+export interface CreateNode extends NodeLocation, Recoverable  {
     type: 'CreateStatement';
     objectType: 'TABLE' | 'VIEW' | 'PROCEDURE' | 'FUNCTION' | 'TYPE';
+    orAlter: boolean;
     name: string;
     nameNode: IdentifierNode;
     columns?: ColumnDefinition[];
@@ -370,7 +371,7 @@ export interface CreateNode extends NodeLocation {
 // DROP
 // ===============================
 
-export interface DropNode extends NodeLocation {
+export interface DropNode extends NodeLocation, Recoverable {
     type: 'DropStatement';
     objectType: 'TABLE' | 'VIEW' | 'PROCEDURE' | 'FUNCTION' | 'INDEX';
     target: IdentifierNode | null;
@@ -381,13 +382,13 @@ export interface DropNode extends NodeLocation {
 // ===============================
 
 
-export interface CTENode extends NodeLocation {
+export interface CTENode extends NodeLocation, Recoverable {
     name: string;
     columns?: string[];
     query: QueryStatement;
 }
 
-export interface WithNode extends NodeLocation {
+export interface WithNode extends NodeLocation, Recoverable {
     type: 'WithStatement';
     ctes: CTENode[];
     body: Statement;
@@ -467,7 +468,7 @@ export interface OutputColumnNode extends NodeLocation {
     column: ColumnNode;
 }
 
-export interface OutputClauseNode extends NodeLocation {
+export interface OutputClauseNode extends NodeLocation, Recoverable {
     type: 'OutputClause';
     columns: OutputColumnNode[];
     intoTable?: Expression;

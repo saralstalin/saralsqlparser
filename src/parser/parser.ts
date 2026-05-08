@@ -594,7 +594,8 @@ export class Parser {
                 case 'DECLARE': stmt = this.parseDeclare(); break;
                 case 'MERGE': stmt = this.parseMerge(); break;
                 case 'SET': stmt = this.parseSet(); break;
-                case 'CREATE': stmt = this.parseCreate(); break;
+                case 'CREATE': stmt = this.parseCreate(false); break;
+                case 'ALTER': stmt = this.parseCreate(true); break;;
                 case 'DROP': stmt = this.parseDrop(); break;
                 case 'IF': stmt = this.parseIf(); break;
                 case 'BEGIN': stmt = this.parseBlock(); break;
@@ -2879,7 +2880,7 @@ export class Parser {
 
         const first = this.peek();
 
-        // CASE 1: variable assignment
+        // CASE 1: Variable assignment — SET @x = expr
         if (first?.type === TokenType.Variable) {
             const variableToken = this.consume();
 
@@ -2949,8 +2950,20 @@ export class Parser {
             }
         }
 
-        // CASE 2: session option (SET ANSI_NULLS ON, etc.)
+        // CASE 2: Session option — SET NOCOUNT ON, SET ANSI_NULLS ON,
+        //         SET TRANSACTION ISOLATION LEVEL READ COMMITTED, etc.
+        //
+        // These statements end with ON or OFF, both of which are keywords.
+        // ON is in STRUCTURAL_KEYWORDS (needed for JOIN alias detection) so
+        // the normal structural-keyword break would fire prematurely on
+        // SET NOCOUNT ON, cutting off the ON before it is consumed.
+        //
+        // Fix: exempt ON and OFF from the structural-keyword break so they
+        // are treated as terminal session option values rather than
+        // statement boundaries.
         else {
+            const SESSION_OPTION_TERMINALS = new Set(['ON', 'OFF']);
+
             const parts: string[] = [];
             let firstToken: Token | null = null;
             let lastToken: Token | null = null;
@@ -2958,6 +2971,7 @@ export class Parser {
             while (this.peek()) {
                 const token = this.peek()!;
 
+                // Hard stops — always terminate the session option
                 if (
                     token.type === TokenType.Semicolon ||
                     token.type === TokenType.Comma
@@ -2965,10 +2979,16 @@ export class Parser {
                     break;
                 }
 
+                // Structural keywords terminate the option, EXCEPT for ON
+                // and OFF which are valid terminal values in session options.
+                // Only apply this stop after at least one token has been
+                // consumed — prevents an empty variable if the first token
+                // happens to be structural.
                 if (
                     parts.length > 0 &&
                     token.type === TokenType.Keyword &&
-                    this.isStructuralKeyword(token.value)
+                    this.isStructuralKeyword(token.value) &&
+                    !SESSION_OPTION_TERMINALS.has(token.value)
                 ) {
                     break;
                 }
@@ -2981,8 +3001,14 @@ export class Parser {
 
                 lastToken = consumed;
                 parts.push(consumed.value);
-
                 endOffset = this.lastConsumedEnd();
+
+                // ON and OFF always end a session option — stop after
+                // consuming them so we don't accidentally absorb the next
+                // statement's first keyword.
+                if (SESSION_OPTION_TERMINALS.has(consumed.value)) {
+                    break;
+                }
             }
 
             variable = parts.join(' ').trim();
@@ -3096,13 +3122,39 @@ export class Parser {
         return columns;
     }
 
-    private parseCreate(): CreateNode {
-        const startToken = this.matchKeyword('CREATE');
+    private parseCreate(orAlter: boolean = false): CreateNode {
+        // For standalone ALTER: consume ALTER keyword as the start token.
+        // For CREATE and CREATE OR ALTER: consume CREATE keyword.
+        const startToken = orAlter
+            ? this.matchKeyword('ALTER')
+            : this.matchKeyword('CREATE');
 
         let incomplete = false;
         const errors: string[] = [];
         let endOffset =
             startToken.offset + startToken.value.length;
+
+        // Detect CREATE OR ALTER — only valid when starting with CREATE.
+        // ALTER PROCEDURE/FUNCTION/VIEW (without CREATE) passes orAlter=true directly.
+        if (!orAlter && this.peekKeyword('OR')) {
+            const orToken = this.consume(); // OR
+            if (this.peekKeyword('ALTER')) {
+                this.consume(); // ALTER
+                orAlter = true;
+                endOffset = this.tokens[this.pos - 1].offset
+                    + this.tokens[this.pos - 1].value.length;
+            } else {
+                // OR without ALTER is not valid — record error and continue
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_CREATE_OR_ALTER',
+                    `Expected ALTER after OR in CREATE OR ALTER`,
+                    orToken.offset,
+                    orToken.offset + orToken.value.length
+                );
+                incomplete = true;
+            }
+        }
 
         // 1. Object type
         let objectType: CreateNode['objectType'] = 'TABLE';
@@ -3423,6 +3475,7 @@ export class Parser {
         return {
             type: 'CreateStatement',
             objectType,
+            orAlter,
             name,
             nameNode,
             columns,
