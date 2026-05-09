@@ -185,7 +185,12 @@ export type Statement = (
     ReturnNode |
     RaiseErrorNode |
     ExecuteNode |
-    WhileNode
+    WhileNode |
+    TryCatchNode |   
+    ThrowNode | 
+    BreakNode | 
+    ContinueNode |
+    CreateIndexNode
 ) & NodeLocation;
 
 // ===============================
@@ -543,4 +548,67 @@ export interface WhileNode extends NodeLocation, Recoverable {
     type: 'WhileStatement';
     condition: Expression | null;
     body: Statement | null;
+}
+
+// Index column with optional direction
+export interface IndexColumnNode extends NodeLocation {
+    type: 'IndexColumn';
+    name: string;
+    nameNode: IdentifierNode;
+    direction: 'ASC' | 'DESC';
+}
+
+// WITH option: ONLINE = ON, FILLFACTOR = 80, etc.
+export interface IndexOptionNode extends NodeLocation {
+    type: 'IndexOption';
+    name: string;
+    value: string;  // raw string — ON/OFF/number
+}
+
+// Index creation statement
+export interface CreateIndexNode extends NodeLocation, Recoverable {
+    type: 'CreateIndexStatement';
+    unique: boolean;
+    clustered: 'CLUSTERED' | 'NONCLUSTERED' | null;
+    name: string;
+    nameNode: IdentifierNode;
+    table: IdentifierNode;
+    columns: IndexColumnNode[];
+    include?: IdentifierNode[];
+    where?: Expression;
+    options?: IndexOptionNode[];
+}
+
+// ===============================
+// TRY / CATCH
+// ===============================
+
+export interface TryCatchNode extends NodeLocation, Recoverable {
+    type: 'TryCatchStatement';
+    tryBlock: BlockNode;
+    catchBlock: BlockNode;
+}
+
+// ===============================
+// THROW
+// ===============================
+
+export interface ThrowNode extends NodeLocation, Recoverable {
+    type: 'ThrowStatement';
+    // Arguments are optional — bare THROW re-throws inside a CATCH
+    errorNumber?: Expression | null;
+    message?: Expression | null;
+    state?: Expression | null;
+}
+
+// ===============================
+// BREAK / CONTINUE
+// ===============================
+
+export interface BreakNode extends NodeLocation {
+    type: 'BreakStatement';
+}
+
+export interface ContinueNode extends NodeLocation {
+    type: 'ContinueStatement';
 }

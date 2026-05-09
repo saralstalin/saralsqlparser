@@ -31,6 +31,9 @@ import {
     ExecuteNode,
     ConstraintNode,
     WhileNode,
+    CreateIndexNode,
+    IndexColumnNode,
+    IndexOptionNode,
 
     // Expressions
     Expression,
@@ -65,7 +68,12 @@ import {
     OutputClauseNode,
     OutputColumnNode,
 
-    ExecArgument
+    ExecArgument,
+
+    ContinueNode,
+    BreakNode,
+    TryCatchNode,
+    ThrowNode
 
 } from '../ast/types';
 
@@ -139,7 +147,7 @@ const STRUCTURAL_KEYWORDS = new Set([
 const RESYNC_KEYWORDS = new Set([
     'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'SET',
     'DECLARE', 'IF', 'BEGIN', 'CREATE', 'DROP', 'WITH', 'GO',
-    'WHEN', 'THEN', 'ELSE', 'END', 'MERGE', 'PRINT'
+    'WHEN', 'THEN', 'ELSE', 'END', 'MERGE', 'PRINT', 'THROW', 'BREAK', 'CONTINUE', 'TRY', 'RAISERROR', 'RETURN', 'EXEC', 'EXECUTE', 'WHILE'
 ]);
 
 const CREATE_OBJECT_TYPES: Record<string, CreateNode['objectType']> = {
@@ -389,10 +397,16 @@ export class Parser {
             const next = this.peek();
 
             // ❗ Missing segment (dbo.)
+            // After a dot, only hard token boundaries stop us.
+            // Structural keywords are NOT boundaries here — they are valid
+            // name segments in dot-chain position: dbo.Order, dbo.User, dbo.Select.
+            // Whether the user SHOULD bracket-escape them ([Order]) is a linter
+            // concern, not a parser concern.
             if (
                 !next ||
                 next.type === TokenType.Semicolon ||
-                this.isStructuralKeyword(next.value)
+                next.type === TokenType.CloseParen ||
+                next.type === TokenType.OpenParen
             ) {
                 const message = 'Expected identifier after dot';
 
@@ -416,38 +430,11 @@ export class Parser {
                 } as IdentifierNode;
             }
 
-            // consume next segment safely
+            // Consume the next segment unconditionally — after a dot, any token
+            // (including keywords like ORDER, GROUP, USER) is a valid name part.
             const consumedNext = this.consume();
-
-            if (
-                consumedNext.type === TokenType.Keyword &&
-                this.isStructuralKeyword(consumedNext.value)
-            ) {
-                const message = `Expected identifier after dot but found ${consumedNext.value}`;
-
-                this.addRecoverableError(
-                    [],
-                    'PARSE_IDENTIFIER_DOT',
-                    message,
-                    consumedNext.offset,
-                    consumedNext.offset + consumedNext.value.length
-                );
-
-                return {
-                    type: 'Identifier',
-                    name:
-                        segments.map(t => t.value).join('.') + '.',
-                    parts: [...segments.map(t => t.value), ''],
-                    start: startOffset,
-                    end: consumedNext.offset + consumedNext.value.length,
-                    incomplete: true,
-                    errors: [message]
-                } as IdentifierNode;
-            }
-
             segments.push(consumedNext);
-            endOffset =
-                consumedNext.offset + consumedNext.value.length;
+            endOffset = consumedNext.offset + consumedNext.value.length;
         }
 
         // --- 3. Final node ---
@@ -606,7 +593,14 @@ export class Parser {
                 case 'ALTER': stmt = this.parseCreate(true); break;;
                 case 'DROP': stmt = this.parseDrop(); break;
                 case 'IF': stmt = this.parseIf(); break;
-                case 'BEGIN': stmt = this.parseBlock(); break;
+                case 'BEGIN':
+                    // BEGIN TRY ... END TRY BEGIN CATCH ... END CATCH
+                    if (this.peek(1)?.value === 'TRY') {
+                        stmt = this.parseTryCatch();
+                    } else {
+                        stmt = this.parseBlock();
+                    }
+                    break;
                 case 'WITH': stmt = this.parseWith(); break;
                 case 'PRINT': stmt = this.parsePrint(); break;
                 case 'RETURN': stmt = this.parseReturn(); break;
@@ -614,6 +608,10 @@ export class Parser {
                 case 'EXEC':
                 case 'EXECUTE': stmt = this.parseExecute(); break;
                 case 'WHILE': stmt = this.parseWhile(); break;
+                case 'TRY': stmt = this.parseTryCatch(); break;
+                case 'THROW': stmt = this.parseThrow(); break;
+                case 'BREAK': stmt = this.parseBreak(); break;
+                case 'CONTINUE': stmt = this.parseContinue(); break;
                 case 'GO':
                     this.consume();
                     return null;
@@ -3446,6 +3444,24 @@ export class Parser {
                     orToken.offset,
                     orToken.offset + orToken.value.length
                 );
+            }
+        }
+
+        // Divert to index parser before consuming object type token
+        // Handles: CREATE [UNIQUE] [CLUSTERED|NONCLUSTERED] INDEX
+        if (!orAlter) {
+            const t0 = this.peek()?.value?.toUpperCase();
+            const t1 = this.peek(1)?.value?.toUpperCase();
+            const t2 = this.peek(2)?.value?.toUpperCase();
+
+            const isIndex =
+                t0 === 'INDEX' ||
+                (t0 === 'UNIQUE' && (t1 === 'INDEX' || t1 === 'CLUSTERED' || t1 === 'NONCLUSTERED')) ||
+                ((t0 === 'CLUSTERED' || t0 === 'NONCLUSTERED') && t1 === 'INDEX') ||
+                (t0 === 'UNIQUE' && (t1 === 'CLUSTERED' || t1 === 'NONCLUSTERED') && t2 === 'INDEX');
+
+            if (isIndex) {
+                return this.parseCreateIndex(startToken) as unknown as CreateNode;
             }
         }
 
@@ -7091,6 +7107,549 @@ export class Parser {
             ...(errors.length
                 ? { errors }
                 : {})
+        };
+    }
+
+    private parseCreateIndex(startToken: Token): CreateIndexNode {
+        let incomplete = false;
+        const errors: string[] = [];
+        let endOffset = startToken.offset + startToken.value.length;
+
+        // 1. UNIQUE (optional)
+        // UNIQUE is a Keyword token — use value comparison for consistency
+        let unique = false;
+        if (this.peek()?.value === 'UNIQUE') {
+            this.consume();
+            unique = true;
+            endOffset = this.lastConsumedEnd();
+        }
+
+        // 2. CLUSTERED / NONCLUSTERED (optional)
+        // Not in the lexer keyword set — tokenize as Identifier, must use value check
+        let clustered: CreateIndexNode['clustered'] = null;
+        if (this.peek()?.value === 'CLUSTERED') {
+            this.consume();
+            clustered = 'CLUSTERED';
+            endOffset = this.lastConsumedEnd();
+        } else if (this.peek()?.value === 'NONCLUSTERED') {
+            this.consume();
+            clustered = 'NONCLUSTERED';
+            endOffset = this.lastConsumedEnd();
+        }
+
+        // 3. INDEX keyword
+        // INDEX is a Keyword token — value check consistent with above
+        if (this.peek()?.value === 'INDEX') {
+            this.consume();
+            endOffset = this.lastConsumedEnd();
+        } else {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_CREATE_INDEX_KEYWORD',
+                'Expected INDEX keyword',
+                endOffset
+            );
+        }
+
+        // 4. Index name
+        let name = '';
+        let nameNode: IdentifierNode = {
+            type: 'Identifier', name: '', parts: [],
+            start: endOffset, end: endOffset
+        };
+
+        try {
+            const nameExpr = this.parseMultipartIdentifier();
+            if (nameExpr.type === 'Identifier') {
+                name = nameExpr.name;
+                nameNode = nameExpr;
+                endOffset = nameExpr.end;
+            } else {
+                incomplete = true;
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_CREATE_INDEX_NAME',
+                    'Wildcards are not allowed as index names',
+                    nameExpr.start, nameExpr.end
+                );
+            }
+        } catch (e) {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_CREATE_INDEX_NAME',
+                e instanceof Error ? e.message : String(e),
+                endOffset
+            );
+        }
+
+        // 5. ON table
+        let table: IdentifierNode = {
+            type: 'Identifier', name: '', parts: [],
+            start: endOffset, end: endOffset
+        };
+
+        try {
+            this.matchKeyword('ON');
+            endOffset = this.lastConsumedEnd();
+
+            const tableExpr = this.parseMultipartIdentifier();
+            if (tableExpr.type === 'Identifier') {
+                table = tableExpr;
+                endOffset = tableExpr.end;
+            } else {
+                incomplete = true;
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_CREATE_INDEX_TABLE',
+                    'Expected table name after ON',
+                    tableExpr.start, tableExpr.end
+                );
+            }
+        } catch (e) {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_CREATE_INDEX_ON',
+                e instanceof Error ? e.message : String(e),
+                endOffset
+            );
+        }
+
+        // 6. Key columns: (col1 ASC, col2 DESC)
+        // ASC/DESC are Keyword tokens but must NOT be treated as structural
+        // boundaries — use value comparison so parseList() doesn't stop on them
+        let columns: IndexColumnNode[] = [];
+
+        try {
+            this.match(TokenType.OpenParen);
+            endOffset = this.lastConsumedEnd();
+
+            columns = this.parseList<IndexColumnNode>(() => {
+                const colStart = this.peek()?.offset ?? endOffset;
+
+                const colExpr = this.parseMultipartIdentifier();
+                if (colExpr.type !== 'Identifier') {
+                    throw new Error('Expected column name in index key');
+                }
+
+                // Value comparison — avoids structural keyword stop
+                let direction: 'ASC' | 'DESC' = 'ASC';
+                if (this.peek()?.value === 'DESC') {
+                    this.consume();
+                    direction = 'DESC';
+                } else if (this.peek()?.value === 'ASC') {
+                    this.consume();
+                }
+
+                return {
+                    type: 'IndexColumn',
+                    name: colExpr.name,
+                    nameNode: colExpr,
+                    direction,
+                    start: colStart,
+                    end: this.lastConsumedEnd()
+                };
+            });
+
+            if (this.peek()?.type === TokenType.CloseParen) {
+                this.consume();
+                endOffset = this.lastConsumedEnd();
+            } else {
+                incomplete = true;
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_CREATE_INDEX_COLUMNS_CLOSE',
+                    'Expected ) after index columns',
+                    endOffset
+                );
+            }
+        } catch (e) {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_CREATE_INDEX_COLUMNS',
+                e instanceof Error ? e.message : String(e),
+                endOffset
+            );
+        }
+
+        // 7. INCLUDE (col1, col2) — optional
+        // INCLUDE is not a keyword — comes through as Identifier token
+        let include: IdentifierNode[] | undefined;
+
+        if (this.peek()?.value?.toUpperCase() === 'INCLUDE') {
+            this.consume();
+            endOffset = this.lastConsumedEnd();
+
+            try {
+                this.match(TokenType.OpenParen);
+                endOffset = this.lastConsumedEnd();
+
+                include = this.parseList<IdentifierNode>(() => {
+                    const colExpr = this.parseMultipartIdentifier();
+                    if (colExpr.type !== 'Identifier') {
+                        throw new Error(
+                            'Expected column name in INCLUDE list'
+                        );
+                    }
+                    return colExpr;
+                });
+
+                if (this.peek()?.type === TokenType.CloseParen) {
+                    this.consume();
+                    endOffset = this.lastConsumedEnd();
+                } else {
+                    incomplete = true;
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_CREATE_INDEX_INCLUDE_CLOSE',
+                        'Expected ) after INCLUDE columns',
+                        endOffset
+                    );
+                }
+            } catch (e) {
+                incomplete = true;
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_CREATE_INDEX_INCLUDE',
+                    e instanceof Error ? e.message : String(e),
+                    endOffset
+                );
+            }
+        }
+
+        // 8. WHERE — filtered index (optional)
+        // WHERE is a Keyword token and IS in STRUCTURAL_KEYWORDS, but
+        // peekKeyword() here is a direct next-token check so it still works.
+        // Using value comparison anyway for consistency with this method.
+        let where: Expression | undefined;
+
+        if (this.peek()?.value === 'WHERE') {
+            this.consume();
+            endOffset = this.lastConsumedEnd();
+
+            try {
+                where = this.parseExpression();
+                endOffset = where.end;
+            } catch (e) {
+                incomplete = true;
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_CREATE_INDEX_WHERE',
+                    e instanceof Error ? e.message : String(e),
+                    endOffset
+                );
+            }
+        }
+
+        // 9. WITH (option = value, ...) — optional
+        // WITH is a Keyword token. Check next token is '(' to distinguish
+        // from WITH used as a CTE introducer (not valid here, but defensive).
+        let options: IndexOptionNode[] | undefined;
+
+        if (
+            this.peek()?.value === 'WITH' &&
+            this.peek(1)?.type === TokenType.OpenParen
+        ) {
+            this.consume(); // WITH
+            this.consume(); // (
+            endOffset = this.lastConsumedEnd();
+
+            try {
+                options = this.parseList<IndexOptionNode>(() => {
+                    const optStart =
+                        this.peek()?.offset ?? endOffset;
+
+                    // option name — ONLINE, FILLFACTOR, PAD_INDEX, etc.
+                    const nameToken = this.consume();
+                    const optName = nameToken.value.toUpperCase();
+
+                    // =
+                    if (this.peek()?.value !== '=') {
+                        throw new Error(
+                            `Expected = after index option ${optName}`
+                        );
+                    }
+                    this.consume();
+
+                    // value — ON / OFF / number / identifier
+                    const valToken = this.consume();
+                    const optValue = valToken.value.toUpperCase();
+
+                    return {
+                        type: 'IndexOption',
+                        name: optName,
+                        value: optValue,
+                        start: optStart,
+                        end: this.lastConsumedEnd()
+                    };
+                });
+
+                if (this.peek()?.type === TokenType.CloseParen) {
+                    this.consume();
+                    endOffset = this.lastConsumedEnd();
+                } else {
+                    incomplete = true;
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_CREATE_INDEX_OPTIONS_CLOSE',
+                        'Expected ) after index options',
+                        endOffset
+                    );
+                }
+            } catch (e) {
+                incomplete = true;
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_CREATE_INDEX_OPTIONS',
+                    e instanceof Error ? e.message : String(e),
+                    endOffset
+                );
+            }
+        }
+
+        return {
+            type: 'CreateIndexStatement',
+            unique,
+            clustered,
+            name,
+            nameNode,
+            table,
+            columns,
+            ...(include !== undefined ? { include } : {}),
+            ...(where !== undefined ? { where } : {}),
+            ...(options !== undefined ? { options } : {}),
+            start: startToken.offset,
+            end: endOffset,
+            ...(incomplete ? { incomplete: true } : {}),
+            ...(errors.length ? { errors } : {})
+        };
+    }
+
+    private parseTryCatch(): TryCatchNode {
+        // BEGIN TRY ... END TRY BEGIN CATCH ... END CATCH
+        const startToken = this.matchKeyword('BEGIN');
+
+        let incomplete = false;
+        const errors: string[] = [];
+        let endOffset = startToken.offset + startToken.value.length;
+
+        // 1. TRY keyword after BEGIN
+        try {
+            this.matchKeyword('TRY');
+            endOffset = this.lastConsumedEnd();
+        } catch (e) {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_TRY_KEYWORD',
+                'Expected TRY after BEGIN',
+                endOffset
+            );
+        }
+
+        // 2. TRY block body — statements until END TRY
+        const tryBody: Statement[] = [];
+
+        while (
+            this.pos < this.tokens.length &&
+            !(this.peek()?.value === 'END' && this.peek(1)?.value === 'TRY')
+        ) {
+            const stmt = this.parseStatement();
+            if (stmt) {
+                tryBody.push(stmt);
+                endOffset = stmt.end;
+            } else if (this.peek()?.type === TokenType.Semicolon) {
+                this.consume();
+            } else {
+                break;
+            }
+        }
+
+        // 3. END TRY
+        try {
+            this.matchKeyword('END');
+            this.matchKeyword('TRY');
+            endOffset = this.lastConsumedEnd();
+        } catch (e) {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_TRY_END',
+                'Expected END TRY',
+                endOffset
+            );
+        }
+
+        const tryBlock: BlockNode = {
+            type: 'BlockStatement',
+            body: tryBody,
+            start: startToken.offset,
+            end: this.lastConsumedEnd()
+        };
+
+        // 4. BEGIN CATCH
+        const catchStart = this.peek()?.offset ?? endOffset;
+
+        try {
+            this.matchKeyword('BEGIN');
+            this.matchKeyword('CATCH');
+            endOffset = this.lastConsumedEnd();
+        } catch (e) {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_CATCH_BEGIN',
+                'Expected BEGIN CATCH after END TRY',
+                endOffset
+            );
+        }
+
+        // 5. CATCH block body — statements until END CATCH
+        const catchBody: Statement[] = [];
+
+        while (
+            this.pos < this.tokens.length &&
+            !(this.peek()?.value === 'END' && this.peek(1)?.value === 'CATCH')
+        ) {
+            const stmt = this.parseStatement();
+            if (stmt) {
+                catchBody.push(stmt);
+                endOffset = stmt.end;
+            } else if (this.peek()?.type === TokenType.Semicolon) {
+                this.consume();
+            } else {
+                break;
+            }
+        }
+
+        // 6. END CATCH
+        try {
+            this.matchKeyword('END');
+            this.matchKeyword('CATCH');
+            endOffset = this.lastConsumedEnd();
+        } catch (e) {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_CATCH_END',
+                'Expected END CATCH',
+                endOffset
+            );
+        }
+
+        const catchBlock: BlockNode = {
+            type: 'BlockStatement',
+            body: catchBody,
+            start: catchStart,
+            end: this.lastConsumedEnd()
+        };
+
+        return {
+            type: 'TryCatchStatement',
+            tryBlock,
+            catchBlock,
+            start: startToken.offset,
+            end: endOffset,
+            ...(incomplete ? { incomplete: true } : {}),
+            ...(errors.length ? { errors } : {})
+        };
+    }
+
+    private parseThrow(): ThrowNode {
+        const startToken = this.matchKeyword('THROW');
+        let endOffset = startToken.offset + startToken.value.length;
+
+        let incomplete = false;
+        const errors: string[] = [];
+
+        let errorNumber: Expression | null | undefined;
+        let message: Expression | null | undefined;
+        let state: Expression | null | undefined;
+
+        // Bare THROW (re-throw inside CATCH) — no arguments
+        const next = this.peek();
+        const isBare =
+            !next ||
+            next.type === TokenType.Semicolon ||
+            RESYNC_KEYWORDS.has(next.value);
+
+        if (!isBare) {
+            // THROW error_number, message, state
+            try {
+                errorNumber = this.parseExpression();
+                endOffset = errorNumber.end;
+
+                if (this.peek()?.type === TokenType.Comma) {
+                    this.consume();
+
+                    message = this.parseExpression();
+                    endOffset = message.end;
+                } else {
+                    incomplete = true;
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_THROW_MESSAGE',
+                        'Expected message argument in THROW',
+                        endOffset
+                    );
+                }
+
+                if (this.peek()?.type === TokenType.Comma) {
+                    this.consume();
+
+                    state = this.parseExpression();
+                    endOffset = state.end;
+                } else if (message) {
+                    incomplete = true;
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_THROW_STATE',
+                        'Expected state argument in THROW',
+                        endOffset
+                    );
+                }
+
+            } catch (e) {
+                incomplete = true;
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_THROW_ARGS',
+                    e instanceof Error ? e.message : String(e),
+                    endOffset
+                );
+            }
+        }
+
+        return {
+            type: 'ThrowStatement',
+            ...(errorNumber !== undefined ? { errorNumber } : {}),
+            ...(message !== undefined ? { message } : {}),
+            ...(state !== undefined ? { state } : {}),
+            start: startToken.offset,
+            end: endOffset,
+            ...(incomplete ? { incomplete: true } : {}),
+            ...(errors.length ? { errors } : {})
+        };
+    }
+
+    private parseBreak(): BreakNode {
+        const token = this.matchKeyword('BREAK');
+        return {
+            type: 'BreakStatement',
+            start: token.offset,
+            end: token.offset + token.value.length
+        };
+    }
+
+    private parseContinue(): ContinueNode {
+        const token = this.matchKeyword('CONTINUE');
+        return {
+            type: 'ContinueStatement',
+            start: token.offset,
+            end: token.offset + token.value.length
         };
     }
 }
