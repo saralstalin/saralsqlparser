@@ -1,34 +1,57 @@
 # @saralsql/tsql-parser
 
-High-fidelity parser and semantic analysis engine for Microsoft SQL Server T-SQL.
+High-fidelity parser and semantic analysis engine for **Microsoft SQL Server T-SQL**.
 
-This package is intended as a file-level toolkit for editor tooling and LSP integrations. It parses, analyzes, and enriches a single SQL document; workspace-level schema cataloging belongs in the host LSP server.
+SaralSQL is built specifically for **real-world T-SQL**, with an editor-first architecture that favors:
+
+* correctness for SQL Server grammar
+* fault-tolerant parsing
+* semantic enrichment
+* static analysis
+* lineage
+* LSP/editor integrations
+
+This package is designed as a **single-document parsing and analysis engine**. Workspace-wide schema catalogs, metadata stores, and cross-project symbol indexing belong in the host LSP/server layer.
 
 ---
 
-## Why This Exists
+# Why This Exists
 
-Generic SQL parsers treat T-SQL as one of many dialects. SaralSQL is built specifically for **real-world T-SQL**, including:
+Most SQL parsers are:
 
-* variables and parameters
-* temp tables and table variables
-* stored procedures and functions
-* CTEs and subqueries
+* generic across many dialects
+* weak on procedural SQL
+* brittle on incomplete SQL
+* not designed for editor workflows
+
+SaralSQL is purpose-built for **T-SQL authoring scenarios**, including:
+
+* stored procedures
+* ad hoc query files
 * mixed DDL + DML batches
-* procedural constructs
+* temp tables
+* table variables
+* variables + parameters
+* CTE-heavy SQL
+* procedural blocks
+* broken / partially typed SQL inside editors
 
-It is designed as a foundation for:
+It is intended as the foundation for:
 
+* language servers
 * editor integrations
-* LSP servers
-* static analysis and linting
-* refactoring tools
-* completion and diagnostics
-* column lineage and impact analysis
+* diagnostics
+* autocomplete
+* symbol navigation
+* refactoring
+* dependency analysis
+* lineage
+* performance diagnostics
+* auto-fixes
 
 ---
 
-## Installation
+# Installation
 
 ```bash
 npm install @saralsql/tsql-parser
@@ -36,9 +59,31 @@ npm install @saralsql/tsql-parser
 
 ---
 
-## Quick Start
+# Quick Start
 
-All APIs are exported from a single entry point:
+```ts
+import {
+  analyze
+} from '@saralsql/tsql-parser';
+
+const sql = `
+SELECT Id, Name
+FROM Users
+WHERE Id = @Id;
+`;
+
+const result = analyze(sql);
+
+console.log(result.ast);
+console.log(result.diagnostics);
+console.log(result.scope.root);
+console.log(result.lineage.edges);
+console.log(result.columns.resolutions);
+```
+
+---
+
+# Exported APIs
 
 ```ts
 import {
@@ -58,209 +103,144 @@ import {
 } from '@saralsql/tsql-parser';
 ```
 
-Most examples in this README use `analyze(sql)` for a complete single-file workflow. The low-level `Lexer` and `Parser` implementations are still exported separately for advanced or custom token/AST scenarios.
+Most consumers should use:
+
+```ts
+analyze(sql)
+```
+
+Low-level lexer / parser APIs are also exposed for advanced scenarios.
 
 ---
 
-## Analyze SQL
+# Analyze Result
 
-```ts
-import { analyze } from '@saralsql/tsql-parser';
+`analyze(sql)` returns:
 
-const sql = `
-SELECT Id, Name
-FROM Users
-WHERE Id = @Id;
-`;
-
-const result = analyze(sql);
-
-console.log(result.ast);
-console.log(result.issues);              // raw parser issues
-console.log(result.semanticDiagnostics); // raw semantic diagnostics
-console.log(result.diagnostics);         // combined parser + semantic diagnostics
-console.log(result.scope.root);
-console.log(result.lineage.edges);
-console.log(result.columns.resolutions);
-```
-
-### `analyze(sql)` returns
-
-* `ast` — parsed `Program`
-* `issues` — raw parser issues
-* `scope` — semantic scope structure
-* `semanticDiagnostics` — raw semantic diagnostics
-* `diagnostics` — combined parser + semantic diagnostics
-* `lineage` — lineage result for the document
-* `columns` — column analysis result
+| Field                 | Description                |
+| --------------------- | -------------------------- |
+| `ast`                 | Parsed AST                 |
+| `issues`              | Raw parser issues          |
+| `scope`               | Scope graph                |
+| `semanticDiagnostics` | Semantic diagnostics       |
+| `diagnostics`         | Combined diagnostics       |
+| `lineage`             | Column lineage             |
+| `columns`             | Column resolution analysis |
 
 ---
 
-## Completion Support
+# Supported Today
 
-This package provides local completion context based on a single SQL document.
+## Query grammar
 
-```ts
-import { getCompletionContext, getCompletionsAt } from '@saralsql/tsql-parser';
+Supported:
 
-const sql = `
-CREATE TABLE #TempUsers (
-  Id INT,
-  Name NVARCHAR(100)
-);
-
-SELECT *
-FROM #TempUsers t
-WHERE t.
-`;
-
-const offset = sql.lastIndexOf('t.') + 2;
-
-const context = getCompletionContext(sql, offset);
-console.log(context.prefix); // 't.'
-console.log(context.visibleSymbols.map(symbol => symbol.name));
-console.log(context.diagnostics);
-
-const completions = getCompletionsAt(sql, offset);
-console.log(completions);
-```
-
-### Completion API
-
-* `getCompletionContext(sql, positionOrOffset)` — returns the completion context, visible symbols, AST node, scope, diagnostics, and keyword candidates
-* `getCompletionsAt(sql, positionOrOffset)` — returns completion items for the current document position
-
----
-
-## Document Symbols
-
-Generate document outline symbols from a parsed AST.
-
-```ts
-import { analyze, getDocumentSymbols } from '@saralsql/tsql-parser';
-
-const sql = `
-CREATE PROCEDURE dbo.MyProc
-AS
-BEGIN
-  SELECT 1;
-END
-`;
-
-const result = analyze(sql);
-const symbols = getDocumentSymbols(result.ast);
-console.log(symbols);
-```
-
----
-
-## Diagnostics
-
-Analyze returns both raw semantic diagnostics and a combined diagnostics stream.
-
-```ts
-import { analyze } from '@saralsql/tsql-parser';
-
-const sql = `
-UPDATE Users
-SET Name = 'x'
-`;
-
-const result = analyze(sql);
-console.log(result.semanticDiagnostics);
-console.log(result.diagnostics);
-```
-
-### Example output
-
-```ts
-[
-  {
-    code: 'DML001',
-    message: 'UPDATE statement has no WHERE clause — all rows will be affected',
-    severity: 'warning',
-    start: 0,
-    end: 6
-  }
-]
-```
-
----
-
-## Scope Model
-
-ScopeBuilder models T-SQL symbol visibility and references.
-
-Supported symbol types include:
-
-* variables
-* parameters
-* temp tables
-* aliases
+* SELECT
+* INSERT
+* UPDATE
+* DELETE
+* MERGE
+* JOINs
+* APPLY
+* subqueries
 * CTEs
-* query-local scope
+* UNION / INTERSECT / EXCEPT
+* GROUP BY
+* HAVING
+* ORDER BY
+* OFFSET / FETCH
+* window functions (core OVER support)
 
 ---
 
-## Column Analysis
+## Procedural T-SQL
 
-Analyze returns column resolution results as part of the document analysis.
+Supported:
 
-```ts
-import { analyze } from '@saralsql/tsql-parser';
-
-const sql = `
-SELECT u.Id, Name
-FROM Users u
-`;
-
-const result = analyze(sql);
-console.log(result.columns.resolutions);
-```
-
----
-
-## Lineage
-
-Analyze returns lineage information for a single document.
-
-```ts
-import { analyze } from '@saralsql/tsql-parser';
-
-const sql = `
-WITH X AS (
-    SELECT o.Amount
-    FROM Orders o
-)
-SELECT X.Amount AS Total
-FROM X;
-`;
-
-const result = analyze(sql);
-console.log(result.lineage.edges);
-```
+* DECLARE
+* SET
+* PRINT
+* RETURN
+* RAISERROR
+* EXEC / EXECUTE
+* IF / ELSE
+* BEGIN / END
+* WHILE
+* variable assignment
+* stored procedure parameters
+* READONLY table-valued parameters
 
 ---
 
-## Extractors
+## Expression support
 
-The package also exposes helpers for declaration and dependency extraction.
+Supported:
 
-```ts
-import {
-  extractDeclarations,
-  extractDependencies,
-  extractReferences
-} from '@saralsql/tsql-parser';
-```
+* scalar expressions
+* CASE
+* EXISTS
+* function calls
+* CAST
+* TRY_CAST
+* CONVERT
+* arithmetic
+* boolean logic
+* IN / BETWEEN / LIKE
+* NULL handling
 
 ---
 
-## Fault-Tolerant Parsing
+## DDL
 
-SaralSQL is designed for editors.
+Supported:
 
-Parsing **continues through errors** and still returns a usable AST.
+* CREATE TABLE
+* ALTER TABLE (partial)
+* CREATE PROCEDURE
+* CREATE FUNCTION (partial)
+* constraints:
+
+  * PRIMARY KEY
+  * FOREIGN KEY
+  * UNIQUE
+  * CHECK
+  * DEFAULT
+  * NULL / NOT NULL
+  * IDENTITY
+
+Supports:
+
+* inline constraints
+* named constraints
+* unnamed constraints
+* composite keys
+* REFERENCES parsing
+
+---
+
+## Semantic layers
+
+Supported:
+
+* variable scope
+* parameter scope
+* alias scope
+* temp table scope
+* CTE scope
+* lineage extraction
+* declaration extraction
+* dependency extraction
+* document symbols
+* completions
+* diagnostics
+
+---
+
+# Fault-Tolerant Parsing
+
+SaralSQL is intentionally **recoverable**.
+
+Broken SQL still returns usable AST.
 
 Example:
 
@@ -270,11 +250,101 @@ FROM Users
 WHERE
 ```
 
-This produces an incomplete but usable AST node for the broken query.
+Returns:
+
+* partial AST
+* recoverable parser issue
+* usable scope
+* usable lineage
+* usable completion context
+
+This is critical for editor scenarios.
 
 ---
 
-## Architecture
+# Current Limitations
+
+SaralSQL is already useful, but **not yet complete T-SQL grammar coverage**.
+
+Current gaps include:
+
+## Procedural
+
+Not fully implemented / partial:
+
+* TRY / CATCH
+* THROW
+* WAITFOR
+* cursors
+* GOTO / labels
+* transaction grammar edge cases
+
+---
+
+## DDL
+
+Partial / planned:
+
+* CREATE INDEX
+* filtered indexes
+* INCLUDE columns
+* computed columns
+* persisted computed columns
+* partition grammar
+* filegroup/storage options
+
+---
+
+## Query grammar
+
+Partial:
+
+* full window frame grammar
+* PIVOT / UNPIVOT edge cases
+* OPENQUERY / OPENJSON family
+* XML grammar
+* JSON grammar edge cases
+
+---
+
+## Metadata-aware analysis
+
+Currently file-local only.
+
+Not yet built:
+
+* schema catalogs
+* cross-file symbol resolution
+* type-aware validation
+* FK-aware navigation
+* wildcard expansion via catalog metadata
+
+These belong partly in host LSP integration.
+
+---
+
+# Transparency on Accuracy
+
+This parser is **actively evolving**.
+
+Goals:
+
+1. parse valid T-SQL correctly
+2. recover gracefully on invalid SQL
+3. preserve AST usefulness even when incomplete
+
+There will still be:
+
+* grammar gaps
+* incomplete node shapes
+* edge-case recovery bugs
+* uncommon SQL Server syntax not yet modeled
+
+Bug reports with SQL samples are extremely valuable.
+
+---
+
+# Architecture
 
 ```text
 Lexer
@@ -290,85 +360,63 @@ ColumnAnalyzer
 DiagnosticEngine
 ```
 
----
-
-## Project Structure
-
-```
-tests/
-src/
-├── analyze.ts
-├── completions.ts
-├── documentSymbols.ts
-├── extractors.ts
-├── index.ts
-├── position.ts
-├── ast/
-│   ├── astWalker.ts
-│   └── types.ts
-├── diagnostics/
-│   └── diagnostics.ts
-├── lineage/
-│   ├── lineage.ts
-│   └── lineageBuilder.ts
-├── parser/
-│   ├── lexer.ts
-│   └── parser.ts
-└── semantic/
-    ├── columnAnalyzer.ts
-    ├── scope.ts
-    └── scopeBuilder.ts
-```
-
----
-
-## Design Principles
-
-### 1. Layered semantics
+Design principle:
 
 ```text
-Scope → Lineage → Column Analysis
+Parse once
+Enrich in layers
+Reuse semantic graph
+Avoid duplicate logic
 ```
-
-### 2. No duplicated logic
-
-ColumnAnalyzer reuses lineage information instead of re-implementing it.
-
-### 3. Editor-first resilience
-
-All semantic layers tolerate incomplete or broken AST nodes.
 
 ---
 
-## Roadmap
+# Roadmap
 
 ## Near term
 
-* Column ambiguity diagnostics
-* Missing column detection
-* Schema-aware resolution
+* CREATE INDEX
+* TRY / CATCH
+* THROW
+* window frame grammar
+* richer diagnostics
+* auto-fix scaffolding
 
 ## Medium term
 
-* Catalog/schema integration
-* Column metadata resolution
-* Schema-aware wildcard expansion
+* schema-aware resolution
+* metadata catalogs
+* wildcard expansion
+* FK-aware navigation
+* missing index analysis
+* duplicate index detection
 
 ## Long term
 
-* Semantic autocomplete
-* Symbol navigation
-* Find references
-* Column impact analysis
-* Missing index suggestions
-* Auto-fixes
+* semantic autocomplete
+* rename symbol
+* find references
+* impact analysis
+* safe refactors
+* query plan linting
+* AI-assisted SQL auto-correction
 
 ---
 
-## License
+# Contributing
+
+The best issues include:
+
+* SQL sample
+* expected behavior
+* current AST / diagnostic output
+
+Grammar edge cases are especially helpful.
+
+---
+
+# License
 
 MIT
-
----
 
 Built by **Saral Simon Stalin**
