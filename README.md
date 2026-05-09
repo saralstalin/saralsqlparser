@@ -34,6 +34,8 @@ SaralSQL is purpose-built for **T-SQL authoring scenarios**, including:
 * variables + parameters
 * CTE-heavy SQL
 * procedural blocks
+* error handling blocks
+* index-heavy schema definitions
 * broken / partially typed SQL inside editors
 
 It is intended as the foundation for:
@@ -47,7 +49,8 @@ It is intended as the foundation for:
 * dependency analysis
 * lineage
 * performance diagnostics
-* auto-fixes
+* standards enforcement
+* auto-fixes / rewrites
 
 ---
 
@@ -143,6 +146,7 @@ Supported:
 * JOINs
 * APPLY
 * subqueries
+* scalar subqueries
 * CTEs
 * UNION / INTERSECT / EXCEPT
 * GROUP BY
@@ -162,10 +166,14 @@ Supported:
 * PRINT
 * RETURN
 * RAISERROR
+* THROW
 * EXEC / EXECUTE
 * IF / ELSE
 * BEGIN / END
+* BEGIN TRY / END TRY / BEGIN CATCH / END CATCH
 * WHILE
+* BREAK
+* CONTINUE
 * variable assignment
 * stored procedure parameters
 * READONLY table-valued parameters
@@ -198,6 +206,8 @@ Supported:
 * ALTER TABLE (partial)
 * CREATE PROCEDURE
 * CREATE FUNCTION (partial)
+* CREATE INDEX
+* ALTER INDEX
 * constraints:
 
   * PRIMARY KEY
@@ -215,6 +225,11 @@ Supports:
 * unnamed constraints
 * composite keys
 * REFERENCES parsing
+* clustered / nonclustered indexes
+* INCLUDE columns
+* filtered indexes (`WHERE`)
+* index options (`WITH (...)`)
+* storage targets (`ON [PRIMARY]`)
 
 ---
 
@@ -262,6 +277,20 @@ This is critical for editor scenarios.
 
 ---
 
+# Current Maturity
+
+SaralSQL is capable of parsing a large subset of production T-SQL, including:
+
+* procedural stored procedures
+* real-world DDL
+* constraints and indexes
+* partial / broken SQL inside editors
+* semantic scope + lineage extraction
+
+The parser is designed around **practical SQL coverage**, not benchmark grammar completeness.
+
+---
+
 # Current Limitations
 
 SaralSQL is already useful, but **not yet complete T-SQL grammar coverage**.
@@ -272,12 +301,11 @@ Current gaps include:
 
 Not fully implemented / partial:
 
-* TRY / CATCH
-* THROW
 * WAITFOR
 * cursors
 * GOTO / labels
 * transaction grammar edge cases
+* dynamic EXEC edge-case parsing
 
 ---
 
@@ -285,13 +313,12 @@ Not fully implemented / partial:
 
 Partial / planned:
 
-* CREATE INDEX
-* filtered indexes
-* INCLUDE columns
 * computed columns
 * persisted computed columns
 * partition grammar
-* filegroup/storage options
+* advanced index options
+* filegroup / storage edge cases
+* indexed views
 
 ---
 
@@ -375,10 +402,11 @@ Avoid duplicate logic
 
 ## Near term
 
-* CREATE INDEX
-* TRY / CATCH
-* THROW
-* window frame grammar
+* WAITFOR
+* cursor grammar
+* transaction grammar completion
+* full window frame grammar
+* computed columns
 * richer diagnostics
 * auto-fix scaffolding
 
@@ -390,6 +418,8 @@ Avoid duplicate logic
 * FK-aware navigation
 * missing index analysis
 * duplicate index detection
+* standards enforcement packs
+* deterministic SQL rewrites
 
 ## Long term
 
@@ -399,7 +429,8 @@ Avoid duplicate logic
 * impact analysis
 * safe refactors
 * query plan linting
-* AI-assisted SQL auto-correction
+* AI-assisted SQL correction
+* automated performance remediation
 
 ---
 
