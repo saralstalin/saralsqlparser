@@ -1,5 +1,5 @@
 import { Lexer, TokenType } from '../src/parser/lexer';
-import { SelectNode, InsertNode, UpdateNode, DeleteNode, DeclareNode, SetNode, CreateNode, DropNode, SetOperatorNode, IfNode, BlockNode, WithNode, OverExpression, TableReference, MemberExpression, IdentifierNode } from '../src/ast/types';
+import { SelectNode, InsertNode, UpdateNode, DeleteNode, DeclareNode, SetNode, CreateNode, DropNode, SetOperatorNode, IfNode, BlockNode, WithNode, OverExpression, TableReference, MemberExpression, IdentifierNode, LiteralNode } from '../src/ast/types';
 import { Parser } from '../src/parser/parser';
 
 /**
@@ -116,15 +116,14 @@ describe('T-SQL Parser', () => {
     test('should handle T-SQL TOP clause', () => {
         const sql = 'SELECT TOP 10 * FROM Logs;';
         const ast = parse(sql);
-        expect((ast.body[0] as SelectNode).top).toBe('10');
-    });
+        expect(((ast.body[0] as SelectNode).top?.quantity as LiteralNode).value).toBe(10);    });
 
     // 3. TOP with Parentheses and Joins
     test('should handle T-SQL TOP (10) and JOINs', () => {
         const sql = `SELECT TOP (10) e.Name FROM Employees AS e INNER JOIN Departments AS d ON e.DeptId = d.Id`;
         const ast = parse(sql);
         const stmt = ast.body[0] as SelectNode;
-        expect(stmt.top).toBe('10');
+        expect(((ast.body[0] as SelectNode).top?.quantity as LiteralNode).value).toBe(10);
         expect(getTableName(stmt.from?.[0].table)).toBe('Employees');
         expect(stmt.from?.[0].joins[0].type).toBe('INNER JOIN');
         expect(toSql(stmt.from?.[0].joins[0].on)).toBe('e.DeptId = d.Id');
@@ -198,7 +197,7 @@ describe('T-SQL Parser', () => {
     test('should handle SELECT TOP ... INTO', () => {
         const sql = `SELECT TOP 10 * INTO dbo.Backup FROM Orders`;
         const stmt = parse(sql).body[0] as SelectNode;
-        expect(stmt.top).toBe('10');
+        expect(((stmt.top?.quantity as LiteralNode).value)).toBe(10);
         expect(stmt.into?.name).toBe('dbo.Backup');
         expect(stmt.into?.parts).toEqual(['dbo', 'Backup']);
     });

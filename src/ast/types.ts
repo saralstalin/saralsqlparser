@@ -153,6 +153,7 @@ export interface WindowDefinition extends NodeLocation, Recoverable {
     type: 'WindowDefinition';
     partitionBy?: Expression[];
     orderBy?: OrderByNode[];
+    frame?: FrameClause | null;
 }
 
 export interface OverExpression extends NodeLocation {
@@ -201,7 +202,7 @@ export type Statement = (
 export interface SelectNode extends NodeLocation, Recoverable {
     type: 'SelectStatement';
     distinct: boolean;
-    top: string | null;
+    top: TopClause  | null;
     columns: ColumnNode[];
     into?: IdentifierNode | null;
     from: TableReference[] | null;
@@ -637,4 +638,29 @@ export interface TransactionNode extends NodeLocation, Recoverable {
     action: TransactionAction;
     name?: string;        // optional for BEGIN/COMMIT/ROLLBACK, required for SAVE
     distributed?: boolean; // BEGIN DISTRIBUTED TRANSACTION
+}
+
+export interface TopClause extends NodeLocation, Recoverable {
+    type: 'TopClause';
+    quantity: Expression | null;
+    percent: boolean;
+    withTies: boolean;
+}
+
+export type FrameUnit = 'ROWS' | 'RANGE';
+
+export type FrameBoundary =
+    | { type: 'UNBOUNDED_PRECEDING' }
+    | { type: 'UNBOUNDED_FOLLOWING' }
+    | { type: 'CURRENT_ROW' }
+    | { type: 'PRECEDING'; value: Expression }
+    | { type: 'FOLLOWING'; value: Expression };
+
+export interface FrameClause extends NodeLocation, Recoverable {
+    type: 'FrameClause';
+    unit: FrameUnit;
+    start: number;
+    end: number;
+    from: FrameBoundary | null;
+    to?: FrameBoundary;  // present when BETWEEN ... AND ... form
 }

@@ -68,7 +68,7 @@ export class Lexer {
         // ── Window functions ──────────────────────────────────────────────────────
         // OVER (PARTITION BY ... ORDER BY ... ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
         'OVER', 'PARTITION',
-        'UNBOUNDED', 'PRECEDING', 'FOLLOWING', 'CURRENT',
+        'UNBOUNDED', 'PRECEDING', 'FOLLOWING', 'CURRENT', 'RANGE', 'CURRENT', 'ROW',
         // ROWS already listed under Pagination — serves double duty here
 
         // ── DML ───────────────────────────────────────────────────────────────────

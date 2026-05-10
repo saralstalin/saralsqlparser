@@ -44,6 +44,9 @@ import {
     MemberExpression,
     WildcardExpression,
     WindowDefinition,
+    FrameBoundary,
+    FrameClause,
+    FrameUnit,
     ReturnNode,
     CastExpression,
     ForClause,
@@ -77,7 +80,9 @@ import {
     ThrowNode,
 
     TransactionAction,
-    TransactionNode
+    TransactionNode,
+
+    TopClause
 
 } from '../ast/types';
 
@@ -536,7 +541,7 @@ export class Parser {
                 next.type !== TokenType.Semicolon &&
                 next.value !== ')'
             ) {
-                // ✅ FIX: DO NOT use precedence + 1
+                // FIX: DO NOT use precedence + 1
                 const rightStart = this.parseSelect();
 
                 right = this.parseSetOperation(
@@ -724,35 +729,130 @@ export class Parser {
         }
 
         // 2. TOP
-        let top: string | null = null;
+        let top: TopClause | null = null;
 
         if (this.peekKeyword('TOP')) {
-            this.consume();
+            const topToken = this.matchKeyword('TOP');
+            let topEnd = topToken.offset + topToken.value.length;
+            let topIncomplete = false;
+            const topErrors: string[] = [];
 
-            const hasParens =
-                this.peek()?.type === TokenType.OpenParen;
+            const hasParens = this.peek()?.type === TokenType.OpenParen;
+            if (hasParens) this.consume();
 
-            if (hasParens) {
-                this.consume();
-            }
+            let quantity: Expression | null = null;
 
             try {
-                top = this.consume().value;
-            } catch {
-                top = null;
+                const next = this.peek();
+                if (
+                    !next ||
+                    next.type === TokenType.Semicolon ||
+                    (
+                        next.type === TokenType.Keyword &&
+                        RESYNC_KEYWORDS.has(next.value)
+                    )
+                ) {
+                    // nothing after TOP or TOP (
+                    topIncomplete = true;
+                    this.addRecoverableError(
+                        topErrors,
+                        'PARSE_TOP_QUANTITY',
+                        'Expected expression after TOP',
+                        topEnd,
+                        topEnd
+                    );
+                } else if (hasParens && next.type === TokenType.CloseParen) {
+                    // TOP () — empty parens, consume the ) and mark incomplete
+                    topIncomplete = true;
+                    this.addRecoverableError(
+                        topErrors,
+                        'PARSE_TOP_QUANTITY',
+                        'Expected expression after TOP',
+                        topEnd,
+                        topEnd
+                    );
+                } else if (hasParens) {
+                    // full expression allowed inside parens: TOP (@n), TOP (10 + 5)
+                    quantity = this.parseExpression();
+                    topEnd = quantity.end;
+                } else {
+                    // bare TOP n — exactly one token, no operators
+                    const tok = this.consume();
+                    const numVal = Number(tok.value);
+                    quantity = {
+                        type: 'Literal',
+                        variant: numVal !== numVal ? 'string' : 'number', // NaN check
+                        value: numVal !== numVal ? tok.value : numVal,
+                        start: tok.offset,
+                        end: tok.offset + tok.value.length,
+                    };
+                    topEnd = quantity.end;
+                }
+            } catch (e) {
+                topIncomplete = true;
+                this.addRecoverableError(
+                    topErrors,
+                    'PARSE_TOP_QUANTITY',
+                    e instanceof Error ? e.message : String(e),
+                    topEnd,
+                    topEnd
+                );
             }
 
-            if (
-                hasParens &&
-                this.peek()?.type === TokenType.CloseParen
-            ) {
-                this.consume();
+            if (hasParens) {
+                if (this.peek()?.type === TokenType.CloseParen) {
+                    const closeParen = this.consume();
+                    topEnd = closeParen.offset + closeParen.value.length;
+                } else {
+                    // SELECT TOP (10  — unclosed paren
+                    topIncomplete = true;
+                    this.addRecoverableError(
+                        topErrors,
+                        'PARSE_TOP_CLOSE_PAREN',
+                        'Expected ) after TOP expression',
+                        topEnd,
+                        topEnd
+                    );
+                }
             }
 
+            let percent = false;
             if (this.peekKeyword('PERCENT')) {
-                top = (top ?? '') + ' PERCENT';
-                this.consume();
+                const percentToken = this.consume();
+                percent = true;
+                topEnd = percentToken.offset + percentToken.value.length;
             }
+
+            let withTies = false;
+            if (this.peekKeyword('WITH')) {
+                const withToken = this.consume();
+                topEnd = withToken.offset + withToken.value.length;
+                if (this.peekKeyword('TIES')) {
+                    const tiesToken = this.consume();
+                    withTies = true;
+                    topEnd = tiesToken.offset + tiesToken.value.length;
+                } else {
+                    topIncomplete = true;
+                    this.addRecoverableError(
+                        topErrors,
+                        'PARSE_TOP_WITH_TIES',
+                        'Expected TIES after WITH',
+                        topEnd,
+                        topEnd
+                    );
+                }
+            }
+
+            top = {
+                type: 'TopClause',
+                quantity,
+                percent,
+                withTies,
+                start: topToken.offset,
+                end: topEnd,
+                ...(topIncomplete ? { incomplete: true } : {}),
+                ...(topErrors.length ? { errors: topErrors } : {}),
+            };
         }
 
         // Recovery state
@@ -1197,7 +1297,6 @@ export class Parser {
                     );
                 }
 
-                // required directive — AUTO, PATH, RAW, EXPLICIT etc.
                 const next = this.peek();
 
                 if (
@@ -1211,8 +1310,6 @@ export class Parser {
 
                 const directive = this.consume().value;
 
-                // PATH('element') or RAW('name') — paren arg is separate
-                // from the directive name and separate from options
                 let argument: string | undefined;
 
                 if (this.peek()?.type === TokenType.OpenParen) {
@@ -1232,7 +1329,6 @@ export class Parser {
                     argument = arg;
                 }
 
-                // comma-separated options: ROOT('x'), INCLUDE_NULL_VALUES, TYPE etc.
                 const options: string[] = [];
 
                 while (this.peek()?.type === TokenType.Comma) {
@@ -4527,6 +4623,14 @@ export class Parser {
                     };
                 }
 
+                // frame clause boundary — must not be consumed as identifier
+                if (value === 'ROWS' || value === 'RANGE') {
+                    this.pos--; // put it back
+                    throw new Error(
+                        `Unexpected keyword in expression: ${value}`
+                    );
+                }
+
                 // ------------------------------------
                 // multipart identifiers + functions
                 // ------------------------------------
@@ -5013,61 +5117,275 @@ export class Parser {
         const overToken = this.matchKeyword('OVER');
         this.match(TokenType.OpenParen);
 
-        // Initialize WindowDefinition with the 'OVER' token's start
         const windowStart = overToken.offset;
+        let windowIncomplete = false;
+        const windowErrors: string[] = [];
 
         let partitionBy: Expression[] | undefined = undefined;
         if (this.peekKeyword('PARTITION')) {
-            this.consume(); // PARTITION
-            this.matchKeyword('BY');
-            partitionBy = this.parseList(() => this.parseExpression());
+            try {
+                this.consume(); // PARTITION
+                this.matchKeyword('BY');
+                partitionBy = this.parseList(() => this.parseExpression());
+            } catch (e) {
+                windowIncomplete = true;
+                this.addRecoverableError(
+                    windowErrors,
+                    'PARSE_OVER_PARTITION_BY',
+                    e instanceof Error ? e.message : String(e),
+                    this.lastConsumedEnd()
+                );
+            }
         }
 
         let orderBy: OrderByNode[] | undefined = undefined;
         if (this.peekKeyword('ORDER')) {
-            this.consume(); // ORDER
-            this.matchKeyword('BY');
-            orderBy = this.parseList(() => {
-                const e = this.parseExpression();
-                let direction: 'ASC' | 'DESC' = 'ASC';
-                let itemEnd = e.end;
+            try {
+                this.consume(); // ORDER
+                this.matchKeyword('BY');
+                orderBy = this.parseList(() => {
+                    const e = this.parseExpression();
+                    let direction: 'ASC' | 'DESC' = 'ASC';
+                    let itemEnd = e.end;
 
-                if (this.peekKeyword('DESC')) {
-                    const dirToken = this.consume();
-                    direction = 'DESC';
-                    itemEnd = dirToken.offset + dirToken.value.length;
-                } else if (this.peekKeyword('ASC')) {
-                    const dirToken = this.consume();
-                    itemEnd = dirToken.offset + dirToken.value.length;
-                }
+                    if (this.peekKeyword('DESC')) {
+                        const dirToken = this.consume();
+                        direction = 'DESC';
+                        itemEnd = dirToken.offset + dirToken.value.length;
+                    } else if (this.peekKeyword('ASC')) {
+                        const dirToken = this.consume();
+                        itemEnd = dirToken.offset + dirToken.value.length;
+                    }
 
-                return {
-                    expression: e,
-                    direction,
-                    start: e.start,
-                    end: itemEnd
-                } as OrderByNode;
-            });
+                    return {
+                        expression: e,
+                        direction,
+                        start: e.start,
+                        end: itemEnd
+                    } as OrderByNode;
+                });
+            } catch (e) {
+                windowIncomplete = true;
+                this.addRecoverableError(
+                    windowErrors,
+                    'PARSE_OVER_ORDER_BY',
+                    e instanceof Error ? e.message : String(e),
+                    this.lastConsumedEnd()
+                );
+            }
         }
 
-        const closeParen = this.match(TokenType.CloseParen);
-        const windowEnd = closeParen.offset + closeParen.value.length;
+        // Frame clause — ROWS|RANGE BETWEEN ... AND ... or ROWS|RANGE <boundary>
+        let frame: FrameClause | undefined = undefined;
+        if (this.peekKeyword('ROWS') || this.peekKeyword('RANGE')) {
+            frame = this.parseFrameClause();
+            if (frame.incomplete) {
+                windowIncomplete = true;
+                windowErrors.push(...(frame.errors ?? []));
+            }
+        }
+
+        // Defensive close paren — frame error recovery may have consumed it
+        // or the user may have an unclosed OVER clause mid-edit
+        let windowEnd = this.lastConsumedEnd();
+        if (this.peek()?.type === TokenType.CloseParen) {
+            const closeParen = this.consume();
+            windowEnd = closeParen.offset + closeParen.value.length;
+        } else {
+            windowIncomplete = true;
+            this.addRecoverableError(
+                windowErrors,
+                'PARSE_OVER_CLOSE_PAREN',
+                'Expected ) to close OVER clause',
+                windowEnd
+            );
+        }
 
         const window: WindowDefinition = {
             type: 'WindowDefinition',
             partitionBy,
             orderBy,
+            ...(frame ? { frame } : {}),
             start: windowStart,
-            end: windowEnd
+            end: windowEnd,
+            ...(windowIncomplete ? { incomplete: true } : {}),
+            ...(windowErrors.length ? { errors: windowErrors } : {}),
         };
 
         return {
             type: 'OverExpression',
             expression: expr,
             window,
-            start: expr.start, // The full expression starts at the function name (e.g., ROW_NUMBER)
-            end: windowEnd     // And ends at the closing paren of the OVER clause
+            start: expr.start,
+            end: windowEnd
         };
+    }
+
+    private parseFrameClause(): FrameClause {
+        const unitToken = this.consume(); // ROWS or RANGE
+        const unit = unitToken.value.toUpperCase() as FrameUnit;
+        let frameEnd = unitToken.offset + unitToken.value.length;
+        let incomplete = false;
+        const errors: string[] = [];
+
+        let from: FrameBoundary | null = null;
+        let to: FrameBoundary | undefined = undefined;
+
+        if (this.peekKeyword('BETWEEN')) {
+            this.consume(); // BETWEEN
+            frameEnd = this.lastConsumedEnd();
+
+            // parse start boundary
+            try {
+                const result = this.parseFrameBoundary();
+                from = result.boundary;
+                frameEnd = result.end;
+            } catch (e) {
+                incomplete = true;
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_FRAME_START_BOUNDARY',
+                    e instanceof Error ? e.message : String(e),
+                    frameEnd,
+                    frameEnd
+                );
+            }
+
+            // AND
+            if (this.peekKeyword('AND')) {
+                this.consume();
+                frameEnd = this.lastConsumedEnd();
+
+                // parse end boundary
+                try {
+                    const result = this.parseFrameBoundary();
+                    to = result.boundary;
+                    frameEnd = result.end;
+                } catch (e) {
+                    incomplete = true;
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_FRAME_END_BOUNDARY',
+                        e instanceof Error ? e.message : String(e),
+                        frameEnd,
+                        frameEnd
+                    );
+                }
+            } else {
+                incomplete = true;
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_FRAME_AND',
+                    'Expected AND in frame clause BETWEEN',
+                    frameEnd,
+                    frameEnd
+                );
+            }
+
+        } else {
+            // single boundary form: ROWS UNBOUNDED PRECEDING etc.
+            const next = this.peek();
+            if (
+                !next ||
+                next.type === TokenType.CloseParen ||
+                next.type === TokenType.Semicolon ||
+                (next.type === TokenType.Keyword && RESYNC_KEYWORDS.has(next.value))
+            ) {
+                incomplete = true;
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_FRAME_BOUNDARY',
+                    'Expected frame boundary after ROWS/RANGE',
+                    frameEnd,
+                    frameEnd
+                );
+            } else {
+                try {
+                    const result = this.parseFrameBoundary();
+                    from = result.boundary;
+                    frameEnd = result.end;
+                } catch (e) {
+                    incomplete = true;
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_FRAME_BOUNDARY',
+                        e instanceof Error ? e.message : String(e),
+                        frameEnd,
+                        frameEnd
+                    );
+                }
+            }
+        }
+
+        return {
+            type: 'FrameClause',
+            unit,
+            from,
+            ...(to ? { to } : {}),
+            start: unitToken.offset,
+            end: frameEnd,
+            ...(incomplete ? { incomplete: true } : {}),
+            ...(errors.length ? { errors } : {}),
+        };
+    }
+
+    private parseFrameBoundary(): { boundary: FrameBoundary; end: number } {
+        const next = this.peek();
+
+        if (!next) {
+            throw new Error('Expected frame boundary');
+        }
+
+        // UNBOUNDED PRECEDING | UNBOUNDED FOLLOWING
+        if (this.peekKeyword('UNBOUNDED')) {
+            const unboundedToken = this.consume();
+            const end = unboundedToken.offset + unboundedToken.value.length;
+
+            if (this.peekKeyword('PRECEDING')) {
+                const t = this.consume();
+                return {
+                    boundary: { type: 'UNBOUNDED_PRECEDING' },
+                    end: t.offset + t.value.length
+                };
+            } else if (this.peekKeyword('FOLLOWING')) {
+                const t = this.consume();
+                return {
+                    boundary: { type: 'UNBOUNDED_FOLLOWING' },
+                    end: t.offset + t.value.length
+                };
+            } else {
+                throw new Error('Expected PRECEDING or FOLLOWING after UNBOUNDED');
+            }
+        }
+
+        // CURRENT ROW
+        if (this.peekKeyword('CURRENT')) {
+            this.consume();
+            const rowToken = this.matchKeyword('ROW');
+            return {
+                boundary: { type: 'CURRENT_ROW' },
+                end: rowToken.offset + rowToken.value.length
+            };
+        }
+
+        // <expr> PRECEDING | <expr> FOLLOWING
+        const value = this.parseExpression();
+
+        if (this.peekKeyword('PRECEDING')) {
+            const t = this.consume();
+            return {
+                boundary: { type: 'PRECEDING', value },
+                end: t.offset + t.value.length
+            };
+        } else if (this.peekKeyword('FOLLOWING')) {
+            const t = this.consume();
+            return {
+                boundary: { type: 'FOLLOWING', value },
+                end: t.offset + t.value.length
+            };
+        } else {
+            throw new Error('Expected PRECEDING or FOLLOWING after frame expression');
+        }
     }
 
     private hasName(expr: Expression): expr is (IdentifierNode | MemberExpression) & Expression {
@@ -7877,7 +8195,9 @@ export class Parser {
             'OPTION',
             'OFFSET',
             'FETCH',
-            'OUTPUT'
+            'OUTPUT',
+            'RANGE',
+            'ROWS'
         ].includes(token.value);
     }
 
