@@ -152,7 +152,7 @@ export class Lexer {
         'UNIQUEIDENTIFIER',
         'VARBINARY', 'BINARY', 'IMAGE',
         'XML', 'JSON',
-        'MAX',                               // VARCHAR(MAX), NVARCHAR(MAX)
+        'MAX', 'FOR'                              // VARCHAR(MAX), NVARCHAR(MAX)
 
     ]);
 

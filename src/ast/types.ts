@@ -211,6 +211,7 @@ export interface SelectNode extends NodeLocation, Recoverable {
 
     offset?: Expression | null;
     fetch?: Expression | null;
+    forClause?: ForClause | null;
 }
 
 // ===============================
@@ -611,4 +612,11 @@ export interface BreakNode extends NodeLocation {
 
 export interface ContinueNode extends NodeLocation {
     type: 'ContinueStatement';
+}
+
+export interface ForClause {
+    mode: 'JSON' | 'XML';
+    directive: string;
+    argument?: string; 
+    options?: string[];
 }

@@ -46,6 +46,7 @@ import {
     WindowDefinition,
     ReturnNode,
     CastExpression,
+    ForClause,
 
     // Table / relational
     TableReference,
@@ -1158,6 +1159,113 @@ export class Parser {
             }
         }
 
+        // 11. FOR JSON / FOR XML
+        let forClause: ForClause | null = null;
+
+        if (this.peekKeyword('FOR')) {
+            const forToken = this.consume();
+            endOffset =
+                forToken.offset + forToken.value.length;
+
+            try {
+                let mode: 'JSON' | 'XML';
+
+                if (this.peekKeyword('JSON')) {
+                    this.consume();
+                    mode = 'JSON';
+                } else if (this.peekKeyword('XML')) {
+                    this.consume();
+                    mode = 'XML';
+                } else {
+                    throw new Error(
+                        'Expected JSON or XML after FOR'
+                    );
+                }
+
+                // required directive — AUTO, PATH, RAW, EXPLICIT etc.
+                const next = this.peek();
+
+                if (
+                    !next ||
+                    next.type === TokenType.Semicolon
+                ) {
+                    throw new Error(
+                        'Expected FOR directive'
+                    );
+                }
+
+                const directive = this.consume().value;
+
+                // PATH('element') or RAW('name') — paren arg is separate
+                // from the directive name and separate from options
+                let argument: string | undefined;
+
+                if (this.peek()?.type === TokenType.OpenParen) {
+                    let arg = this.consume().value; // (
+
+                    while (
+                        this.peek() &&
+                        this.peek()?.type !== TokenType.CloseParen
+                    ) {
+                        arg += this.consume().value;
+                    }
+
+                    if (this.peek()?.type === TokenType.CloseParen) {
+                        arg += this.consume().value; // )
+                    }
+
+                    argument = arg;
+                }
+
+                // comma-separated options: ROOT('x'), INCLUDE_NULL_VALUES, TYPE etc.
+                const options: string[] = [];
+
+                while (this.peek()?.type === TokenType.Comma) {
+                    this.consume(); // ,
+
+                    let option = this.consume().value;
+
+                    if (this.peek()?.type === TokenType.OpenParen) {
+                        option += this.consume().value; // (
+
+                        while (
+                            this.peek() &&
+                            this.peek()?.type !== TokenType.CloseParen
+                        ) {
+                            option += this.consume().value;
+                        }
+
+                        if (this.peek()?.type === TokenType.CloseParen) {
+                            option += this.consume().value; // )
+                        }
+                    }
+
+                    options.push(option);
+                }
+
+                forClause = {
+                    mode,
+                    directive,
+                    ...(argument !== undefined ? { argument } : {}),
+                    ...(options.length ? { options } : {})
+                };
+
+                endOffset = this.lastConsumedEnd();
+
+            } catch (e) {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_SELECT_FOR',
+                    e instanceof Error
+                        ? e.message
+                        : String(e),
+                    endOffset
+                );
+            }
+        }
+
         return {
             type: 'SelectStatement',
             distinct,
@@ -1171,6 +1279,7 @@ export class Parser {
             orderBy,
             ...(offset ? { offset } : {}),
             ...(fetch ? { fetch } : {}),
+            ...(forClause ? { forClause } : {}),
             start: startToken.offset,
             end: endOffset,
             ...(incomplete ? { incomplete: true } : {}),
@@ -1717,18 +1826,43 @@ export class Parser {
         let incomplete = false;
         const errors: string[] = [];
 
-        let refs: TableReference[] = [];
+        const refs: TableReference[] = [];
 
         try {
-            refs = this.parseList(() =>
-                this.parseTableSource(fromToken.offset)
-            );
+            while (this.pos < this.tokens.length) {
+                // stop at next clause
+                if (this.isFromBoundary(this.peek())) {
+                    break;
+                }
+
+                const table =
+                    this.parseTableSource(fromToken.offset);
+
+                refs.push(table);
+
+                // comma-separated table sources
+                if (
+                    this.peek()?.type === TokenType.Comma
+                ) {
+                    this.consume();
+                    continue;
+                }
+
+                // stop if next clause begins
+                if (this.isFromBoundary(this.peek())) {
+                    break;
+                }
+
+                // otherwise parseTableSource()
+                // should already have consumed joins / alias.
+                // no more table refs.
+                break;
+            }
 
             if (refs.length > 0) {
                 return refs;
             }
 
-            // empty list case
             incomplete = true;
 
             this.addRecoverableError(
@@ -1750,17 +1884,19 @@ export class Parser {
                 fromToken.offset + fromToken.value.length
             );
 
-            // attempt resync
             this.recoverTo([
                 'WHERE',
                 'GROUP',
                 'HAVING',
                 'ORDER',
+                'FOR',
+                'OPTION',
+                'OFFSET',
+                'FETCH',
                 'OUTPUT'
             ]);
         }
 
-        // Recovery fallback
         return [
             {
                 type: 'TableReference',
@@ -1858,13 +1994,7 @@ export class Parser {
             }
             else if (
                 source &&
-                token &&
-                (
-                    token.type === TokenType.Identifier ||
-                    token.type === TokenType.Keyword
-                ) &&
-                !this.isStructuralKeyword(token.value) &&
-                !this.peekKeyword('WITH')
+                this.canStartAlias(token)
             ) {
                 const id =
                     this.parseMultipartIdentifier();
@@ -2277,11 +2407,7 @@ export class Parser {
 
                     if (
                         potentialAlias &&
-                        (
-                            potentialAlias.type === TokenType.Identifier ||
-                            potentialAlias.type === TokenType.Keyword
-                        ) &&
-                        !this.isStructuralKeyword(potentialAlias.value)
+                        this.canStartAlias(potentialAlias)
                     ) {
                         const aliasExpr = this.parseMultipartIdentifier();
 
@@ -3957,7 +4083,9 @@ export class Parser {
             'FROM', 'WHERE', 'GROUP', 'ORDER', 'HAVING',
             'UNION', 'ALL', 'EXCEPT', 'INTERSECT',
             'JOIN', 'ON', 'APPLY', 'INTO',
-            'OUTER', 'VALUES', 'OUTPUT'
+            'OUTER', 'VALUES', 'OUTPUT', 'FOR'
+            , 'OPTION', 'FETCH', 'OFFSET', 'CROSS'
+            , 'PIVOT', 'UNPIVOT', 'WHEN', 'THEN'
         ];
 
         const startOffset = this.peek()?.offset ?? 0;
@@ -4585,23 +4713,19 @@ export class Parser {
     private parseList<T>(parserFn: () => T): T[] {
         const list: T[] = [];
 
-        // Rule #1: Resilience. If the list is empty (e.g., FUNC()), return early.
-        const next = this.peek();
-        if (!next || next.type === TokenType.CloseParen || next.type === TokenType.Semicolon) {
+        // empty list
+        if (this.isClauseBoundary(this.peek())) {
             return list;
         }
 
-        // Parse the first mandatory item
+        // first item
         list.push(parserFn());
 
-        // Continue as long as we see a comma
         while (this.peek()?.type === TokenType.Comma) {
-            this.consume(); // Consume ','
+            this.consume();
 
-            // T-SQL "Gold Standard": Check for trailing comma or immediate close
-            const afterComma = this.peek();
-            if (!afterComma || afterComma.type === TokenType.CloseParen) {
-                // Optional: You could log a warning here for better LSP diagnostics
+            // trailing comma / boundary
+            if (this.isClauseBoundary(this.peek())) {
                 break;
             }
 
@@ -7651,5 +7775,94 @@ export class Parser {
             start: token.offset,
             end: token.offset + token.value.length
         };
+    }
+
+    private canStartAlias(token?: Token): boolean {
+        if (!token) {
+            return false;
+        }
+
+        if (
+            token.type !== TokenType.Identifier &&
+            token.type !== TokenType.Keyword
+        ) {
+            return false;
+        }
+
+        const STOP = new Set([
+            'WITH',
+            'ON',
+            'WHERE',
+            'GROUP',
+            'ORDER',
+            'HAVING',
+            'UNION',
+            'EXCEPT',
+            'INTERSECT',
+            'JOIN',
+            'INNER',
+            'LEFT',
+            'RIGHT',
+            'FULL',
+            'CROSS',
+            'OUTER',
+            'APPLY',
+            'FOR',
+            'OPTION',
+            'OFFSET',
+            'FETCH'
+        ]);
+
+        return !STOP.has(token.value);
+    }
+
+    private isFromBoundary(token?: Token): boolean {
+        if (!token) return true;
+
+        return [
+            'WHERE',
+            'GROUP',
+            'HAVING',
+            'ORDER',
+            'UNION',
+            'EXCEPT',
+            'INTERSECT',
+            'FOR',
+            'OPTION',
+            'OFFSET',
+            'FETCH'
+        ].includes(token.value);
+    }
+
+    private isClauseBoundary(token?: Token): boolean {
+        if (!token) {
+            return true;
+        }
+
+        if (
+            token.type === TokenType.Semicolon ||
+            token.type === TokenType.CloseParen
+        ) {
+            return true;
+        }
+
+        return [
+            'FROM',
+            'WHERE',
+            'GROUP',
+            'HAVING',
+            'ORDER',
+            'UNION',
+            'EXCEPT',
+            'INTERSECT',
+            'JOIN',
+            'ON',
+            'APPLY',
+            'FOR',
+            'OPTION',
+            'OFFSET',
+            'FETCH',
+            'OUTPUT'
+        ].includes(token.value);
     }
 }

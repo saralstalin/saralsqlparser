@@ -127,9 +127,6 @@ describe('T-SQL Parser - CREATE INDEX', () => {
                 CREATE INDEX ix_Order_Date
                 ON dbo.Order (OrderDate DESC)
             `);
-
-            console.log(JSON.stringify(stmt, null, 2));
-
             expect(stmt.columns[0].direction)
                 .toBe('DESC');
         });
