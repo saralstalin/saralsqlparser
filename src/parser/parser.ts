@@ -74,7 +74,10 @@ import {
     ContinueNode,
     BreakNode,
     TryCatchNode,
-    ThrowNode
+    ThrowNode,
+
+    TransactionAction,
+    TransactionNode
 
 } from '../ast/types';
 
@@ -148,7 +151,9 @@ const STRUCTURAL_KEYWORDS = new Set([
 const RESYNC_KEYWORDS = new Set([
     'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'SET',
     'DECLARE', 'IF', 'BEGIN', 'CREATE', 'DROP', 'WITH', 'GO',
-    'WHEN', 'THEN', 'ELSE', 'END', 'MERGE', 'PRINT', 'THROW', 'BREAK', 'CONTINUE', 'TRY', 'RAISERROR', 'RETURN', 'EXEC', 'EXECUTE', 'WHILE'
+    'WHEN', 'THEN', 'ELSE', 'END', 'MERGE', 'PRINT', 'THROW',
+    'BREAK', 'CONTINUE', 'TRY', 'RAISERROR', 'RETURN', 'EXEC', 'EXECUTE', 'WHILE',
+    'COMMIT', 'ROLLBACK', 'SAVE', 'TRANSACTION', 'DISTRIBUTED', 'TRAN', 'TRY', 'CATCH'
 ]);
 
 const CREATE_OBJECT_TYPES: Record<string, CreateNode['objectType']> = {
@@ -594,14 +599,6 @@ export class Parser {
                 case 'ALTER': stmt = this.parseCreate(true); break;;
                 case 'DROP': stmt = this.parseDrop(); break;
                 case 'IF': stmt = this.parseIf(); break;
-                case 'BEGIN':
-                    // BEGIN TRY ... END TRY BEGIN CATCH ... END CATCH
-                    if (this.peek(1)?.value === 'TRY') {
-                        stmt = this.parseTryCatch();
-                    } else {
-                        stmt = this.parseBlock();
-                    }
-                    break;
                 case 'WITH': stmt = this.parseWith(); break;
                 case 'PRINT': stmt = this.parsePrint(); break;
                 case 'RETURN': stmt = this.parseReturn(); break;
@@ -613,6 +610,24 @@ export class Parser {
                 case 'THROW': stmt = this.parseThrow(); break;
                 case 'BREAK': stmt = this.parseBreak(); break;
                 case 'CONTINUE': stmt = this.parseContinue(); break;
+                case 'BEGIN':
+                    if (this.peek(1)?.value === 'TRY') {
+                        stmt = this.parseTryCatch();
+                    } else if (
+                        this.peek(1)?.value === 'TRANSACTION' ||
+                        this.peek(1)?.value === 'TRAN' ||
+                        this.peek(1)?.value === 'DISTRIBUTED'
+                    ) {
+                        stmt = this.parseTransaction();
+                    } else {
+                        stmt = this.parseBlock();
+                    }
+                    break;
+                case 'COMMIT':
+                case 'ROLLBACK':
+                case 'SAVE':
+                    stmt = this.parseTransaction();
+                    break; case 'CONTINUE': stmt = this.parseContinue(); break;
                 case 'GO':
                     this.consume();
                     return null;
@@ -7864,5 +7879,88 @@ export class Parser {
             'FETCH',
             'OUTPUT'
         ].includes(token.value);
+    }
+
+    private parseTransaction(): TransactionNode {
+        const startToken = this.consume(); // BEGIN / COMMIT / ROLLBACK / SAVE
+        const action = startToken.value as TransactionAction;
+
+        let incomplete = false;
+        const errors: string[] = [];
+        let endOffset =
+            startToken.offset + startToken.value.length;
+
+        let distributed = false;
+        let name: string | undefined;
+
+        // BEGIN DISTRIBUTED TRANSACTION
+        if (
+            action === 'BEGIN' &&
+            this.peek()?.value === 'DISTRIBUTED'
+        ) {
+            this.consume();
+            distributed = true;
+            endOffset = this.lastConsumedEnd();
+        }
+
+        // consume optional TRANSACTION / TRAN keyword
+        if (
+            this.peek()?.value === 'TRANSACTION' ||
+            this.peek()?.value === 'TRAN'
+        ) {
+            this.consume();
+            endOffset = this.lastConsumedEnd();
+        }
+
+        // optional name for BEGIN/COMMIT/ROLLBACK
+        // required name for SAVE
+        const next = this.peek();
+        const hasName =
+            next &&
+            next.type !== TokenType.Semicolon &&
+            (
+                next.type === TokenType.Identifier ||
+                next.type === TokenType.Variable ||
+                // unquoted name that happens to be a non-structural keyword
+                (
+                    next.type === TokenType.Keyword &&
+                    !this.isStructuralKeyword(next.value)
+                )
+            );
+
+        if (hasName) {
+            try {
+                name = this.consume().value;
+                endOffset = this.lastConsumedEnd();
+            } catch (e) {
+                incomplete = true;
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_TRANSACTION_NAME',
+                    e instanceof Error ? e.message : String(e),
+                    endOffset
+                );
+            }
+        } else if (action === 'SAVE') {
+            // SAVE TRAN requires a name
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_TRANSACTION_SAVE_NAME',
+                'SAVE TRANSACTION requires a savepoint name',
+                endOffset
+            );
+        }
+
+        return {
+            type: 'TransactionStatement',
+            action,
+            ...(name !== undefined ? { name } : {}),
+            ...(distributed ? { distributed: true } : {}),
+            start: startToken.offset,
+            end: endOffset,
+            ...(incomplete ? { incomplete: true } : {}),
+            ...(errors.length ? { errors } : {})
+        };
     }
 }

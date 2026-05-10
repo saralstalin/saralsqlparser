@@ -152,7 +152,12 @@ export class Lexer {
         'UNIQUEIDENTIFIER',
         'VARBINARY', 'BINARY', 'IMAGE',
         'XML', 'JSON',
-        'MAX', 'FOR'                              // VARCHAR(MAX), NVARCHAR(MAX)
+        'MAX', 'FOR',                              // VARCHAR(MAX), NVARCHAR(MAX)
+
+        // ── Transactions ──────────────────────────────────────────────────────────
+        'TRANSACTION', 'TRAN',
+        'DISTRIBUTED',
+        'COMMIT', 'ROLLBACK', 'SAVE'
 
     ]);
 

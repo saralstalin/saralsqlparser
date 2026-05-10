@@ -190,7 +190,8 @@ export type Statement = (
     ThrowNode | 
     BreakNode | 
     ContinueNode |
-    CreateIndexNode
+    CreateIndexNode |
+    TransactionNode   // for extensibility
 ) & NodeLocation;
 
 // ===============================
@@ -619,4 +620,21 @@ export interface ForClause {
     directive: string;
     argument?: string; 
     options?: string[];
+}
+
+// ===============================
+// TRANSACTIONS
+// ===============================
+
+export type TransactionAction =
+    | 'BEGIN'
+    | 'COMMIT'
+    | 'ROLLBACK'
+    | 'SAVE';
+
+export interface TransactionNode extends NodeLocation, Recoverable {
+    type: 'TransactionStatement';
+    action: TransactionAction;
+    name?: string;        // optional for BEGIN/COMMIT/ROLLBACK, required for SAVE
+    distributed?: boolean; // BEGIN DISTRIBUTED TRANSACTION
 }
