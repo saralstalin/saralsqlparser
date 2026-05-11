@@ -1,0 +1,389 @@
+import {
+    parseOne,
+    expectSql
+} from './parser.helpers';
+
+import { Parser } from '../src/parser/parser';
+import { Lexer } from '../src/parser/lexer';
+
+describe('T-SQL Parser - DDL Changes', () => {
+
+    describe('DROP IF EXISTS', () => {
+        test('should parse DROP TABLE IF EXISTS', () => {
+            const stmt = parseOne<any>('DROP TABLE IF EXISTS dbo.Users');
+
+            expect(stmt.type).toBe('DropStatement');
+            expect(stmt.objectType).toBe('TABLE');
+            expect(stmt.ifExists).toBe(true);
+            expect(stmt.target.name).toBe('dbo.Users');
+        });
+
+        test('should parse standard DROP VIEW', () => {
+            const stmt = parseOne<any>('DROP VIEW MyView');
+
+            expect(stmt.type).toBe('DropStatement');
+            expect(stmt.ifExists).toBe(false);
+            expect(stmt.target.name).toBe('MyView');
+        });
+
+        test('DROP PROCEDURE IF EXISTS', () => {
+            const stmt = parseOne<any>(
+                'DROP PROCEDURE IF EXISTS dbo.usp_GetEmployee'
+            );
+
+            expect(stmt.type).toBe('DropStatement');
+            expect(stmt.objectType).toBe('PROCEDURE');
+            expect(stmt.ifExists).toBe(true);
+            expect(stmt.target.name).toBe('dbo.usp_GetEmployee');
+        });
+
+        test('DROP INDEX IF EXISTS', () => {
+            const stmt = parseOne<any>(
+                'DROP INDEX IF EXISTS ix_Employee_LastName ON dbo.Employee'
+            );
+
+            expect(stmt.type).toBe('DropStatement');
+            expect(stmt.objectType).toBe('INDEX');
+            expect(stmt.ifExists).toBe(true);
+        });
+    });
+
+    // ─────────────────────────────────────────────────────────
+    // ALTER TABLE ADD
+    // ─────────────────────────────────────────────────────────
+
+    describe('ALTER TABLE ADD', () => {
+        test('ADD COLUMN without COLUMN keyword', () => {
+            const stmt = parseOne<any>(
+                'ALTER TABLE Users ADD Email VARCHAR(255) NOT NULL'
+            );
+
+            expect(stmt.type).toBe('AlterTableStatement');
+            expect(stmt.table.name).toBe('Users');
+            expect(stmt.action.kind).toBe('ADD_COLUMN');
+            expect(stmt.action.column.name).toBe('Email');
+            expect(stmt.action.column.dataType).toBe('VARCHAR(255)');
+        });
+
+        test('ADD COLUMN with COLUMN keyword', () => {
+            const stmt = parseOne<any>(
+                'ALTER TABLE Users ADD COLUMN Phone VARCHAR(20) NULL'
+            );
+
+            expect(stmt.action.kind).toBe('ADD_COLUMN');
+            expect(stmt.action.column.name).toBe('Phone');
+            expect(stmt.action.column.dataType).toBe('VARCHAR(20)');
+        });
+
+        test('ADD COLUMN with DEFAULT constraint', () => {
+            const stmt = parseOne<any>(
+                'ALTER TABLE Users ADD IsActive BIT DEFAULT 1'
+            );
+
+            expect(stmt.action.kind).toBe('ADD_COLUMN');
+            expect(stmt.action.column.name).toBe('IsActive');
+
+            const def = stmt.action.column.constraints
+                .find((c: any) => c.kind === 'DEFAULT');
+
+            expect(def).toBeDefined();
+            expectSql(def.expression, '1');
+        });
+
+        test('ADD COLUMN with named DEFAULT constraint', () => {
+            const stmt = parseOne<any>(`
+                ALTER TABLE Users
+                ADD IsActive BIT
+                    CONSTRAINT DF_Users_IsActive DEFAULT 1
+            `);
+
+            expect(stmt.action.kind).toBe('ADD_COLUMN');
+
+            const def = stmt.action.column.constraints
+                .find((c: any) => c.kind === 'DEFAULT');
+
+            expect(def.name).toBe('DF_Users_IsActive');
+        });
+
+        test('ADD CONSTRAINT PRIMARY KEY', () => {
+            const stmt = parseOne<any>(`
+                ALTER TABLE Orders
+                ADD CONSTRAINT PK_Orders PRIMARY KEY (OrderId)
+            `);
+
+            expect(stmt.action.kind).toBe('ADD_CONSTRAINT');
+            expect(stmt.action.constraint.name).toBe('PK_Orders');
+            expect(stmt.action.constraint.kind).toBe('PRIMARY KEY');
+            expect(stmt.action.constraint.columns)
+                .toContain('OrderId');
+        });
+
+        test('ADD CONSTRAINT FOREIGN KEY', () => {
+            const stmt = parseOne<any>(`
+                ALTER TABLE Orders
+                ADD CONSTRAINT FK_Orders_Customer
+                FOREIGN KEY (CustomerId)
+                REFERENCES Customer(CustomerId)
+            `);
+
+            expect(stmt.action.kind).toBe('ADD_CONSTRAINT');
+            expect(stmt.action.constraint.kind).toBe('FOREIGN KEY');
+            expect(stmt.action.constraint.columns)
+                .toContain('CustomerId');
+            expect(stmt.action.constraint.referencesTable)
+                .toBe('Customer');
+        });
+
+        test('ADD CONSTRAINT UNIQUE', () => {
+            const stmt = parseOne<any>(`
+                ALTER TABLE Users
+                ADD CONSTRAINT UQ_Users_Email UNIQUE (Email)
+            `);
+
+            expect(stmt.action.kind).toBe('ADD_CONSTRAINT');
+            expect(stmt.action.constraint.kind).toBe('UNIQUE');
+            expect(stmt.action.constraint.columns)
+                .toContain('Email');
+        });
+
+        test('ADD CONSTRAINT CHECK', () => {
+            const stmt = parseOne<any>(`
+                ALTER TABLE Orders
+                ADD CONSTRAINT CHK_Orders_Amount
+                CHECK (Amount > 0)
+            `);
+
+            expect(stmt.action.kind).toBe('ADD_CONSTRAINT');
+            expect(stmt.action.constraint.kind).toBe('CHECK');
+            expectSql(
+                stmt.action.constraint.expression,
+                'Amount > 0'
+            );
+        });
+    });
+
+    // ─────────────────────────────────────────────────────────
+    // ALTER TABLE DROP
+    // ─────────────────────────────────────────────────────────
+
+    describe('ALTER TABLE DROP', () => {
+        test('DROP COLUMN IF EXISTS', () => {
+            const stmt = parseOne<any>(
+                'ALTER TABLE Users DROP COLUMN IF EXISTS Phone'
+            );
+
+            expect(stmt.action.kind).toBe('DROP_COLUMN');
+            expect(stmt.action.name).toBe('Phone');
+            expect(stmt.action.ifExists).toBe(true);
+        });
+
+        test('DROP COLUMN without IF EXISTS', () => {
+            const stmt = parseOne<any>(
+                'ALTER TABLE Users DROP COLUMN Phone'
+            );
+
+            expect(stmt.action.kind).toBe('DROP_COLUMN');
+            expect(stmt.action.name).toBe('Phone');
+            expect(stmt.action.ifExists).toBeFalsy();
+        });
+
+        test('DROP COLUMN without COLUMN keyword', () => {
+            const stmt = parseOne<any>(
+                'ALTER TABLE Users DROP Phone'
+            );
+
+            expect(stmt.action.kind).toBe('DROP_COLUMN');
+            expect(stmt.action.name).toBe('Phone');
+        });
+
+        test('DROP CONSTRAINT IF EXISTS', () => {
+            const stmt = parseOne<any>(
+                'ALTER TABLE Orders DROP CONSTRAINT IF EXISTS FK_User'
+            );
+
+            expect(stmt.action.kind).toBe('DROP_CONSTRAINT');
+            expect(stmt.action.name).toBe('FK_User');
+            expect(stmt.action.ifExists).toBe(true);
+        });
+
+        test('DROP CONSTRAINT without IF EXISTS', () => {
+            const stmt = parseOne<any>(
+                'ALTER TABLE Orders DROP CONSTRAINT FK_User'
+            );
+
+            expect(stmt.action.kind).toBe('DROP_CONSTRAINT');
+            expect(stmt.action.name).toBe('FK_User');
+            expect(stmt.action.ifExists).toBeFalsy();
+        });
+    });
+
+    // ─────────────────────────────────────────────────────────
+    // ALTER TABLE ALTER COLUMN
+    // ─────────────────────────────────────────────────────────
+
+    describe('ALTER TABLE ALTER COLUMN', () => {
+        test('ALTER COLUMN change data type', () => {
+            const stmt = parseOne<any>(
+                'ALTER TABLE Users ALTER COLUMN Email NVARCHAR(500)'
+            );
+
+            expect(stmt.type).toBe('AlterTableStatement');
+            expect(stmt.table.name).toBe('Users');
+            expect(stmt.action.kind).toBe('ALTER_COLUMN');
+            expect(stmt.action.column.name).toBe('Email');
+            expect(stmt.action.column.dataType).toBe('NVARCHAR(500)');
+        });
+
+        test('ALTER COLUMN add NOT NULL', () => {
+            const stmt = parseOne<any>(
+                'ALTER TABLE Users ALTER COLUMN Email NVARCHAR(500) NOT NULL'
+            );
+
+            expect(stmt.action.kind).toBe('ALTER_COLUMN');
+            expect(stmt.action.column.name).toBe('Email');
+
+            const notNull = stmt.action.column.constraints
+                ?.find((c: any) => c.kind === 'NOT NULL');
+
+            expect(notNull).toBeDefined();
+        });
+
+        test('ALTER COLUMN remove NOT NULL (allow nulls)', () => {
+            const stmt = parseOne<any>(
+                'ALTER TABLE Users ALTER COLUMN Phone VARCHAR(20) NULL'
+            );
+
+            expect(stmt.action.kind).toBe('ALTER_COLUMN');
+
+            const nullable = stmt.action.column.constraints
+                ?.find((c: any) => c.kind === 'NULL');
+
+            expect(nullable).toBeDefined();
+        });
+
+        test('ALTER COLUMN without COLUMN keyword', () => {
+            const stmt = parseOne<any>(
+                'ALTER TABLE Users ALTER Email NVARCHAR(500)'
+            );
+
+            expect(stmt.action.kind).toBe('ALTER_COLUMN');
+            expect(stmt.action.column.name).toBe('Email');
+            expect(stmt.action.column.dataType).toBe('NVARCHAR(500)');
+        });
+
+        test('ALTER COLUMN schema-qualified table', () => {
+            const stmt = parseOne<any>(
+                'ALTER TABLE dbo.Employee ALTER COLUMN Salary DECIMAL(12,2) NOT NULL'
+            );
+
+            expect(stmt.table.name).toBe('dbo.Employee');
+            expect(stmt.action.kind).toBe('ALTER_COLUMN');
+            expect(stmt.action.column.name).toBe('Salary');
+            expect(stmt.action.column.dataType).toBe('DECIMAL(12,2)');
+        });
+
+        test('ALTER COLUMN carries source location', () => {
+            const sql =
+                'ALTER TABLE Users ALTER COLUMN Email NVARCHAR(500)';
+
+            const stmt = parseOne<any>(sql);
+
+            expect(stmt.start).toBe(0);
+            expect(stmt.end).toBe(sql.length);
+        });
+    });
+
+    // ─────────────────────────────────────────────────────────
+    // TRUNCATE TABLE
+    // ─────────────────────────────────────────────────────────
+
+    describe('TRUNCATE TABLE', () => {
+        test('bare TRUNCATE TABLE', () => {
+            const stmt = parseOne<any>('TRUNCATE TABLE Logs');
+
+            expect(stmt.type).toBe('TruncateStatement');
+            expect(stmt.table.name).toBe('Logs');
+        });
+
+        test('TRUNCATE TABLE schema-qualified', () => {
+            const stmt = parseOne<any>(
+                'TRUNCATE TABLE dbo.AuditLog'
+            );
+
+            expect(stmt.type).toBe('TruncateStatement');
+            expect(stmt.table.name).toBe('dbo.AuditLog');
+        });
+    });
+
+    // ─────────────────────────────────────────────────────────
+    // Routing logic
+    // ─────────────────────────────────────────────────────────
+
+    describe('Routing logic', () => {
+        test('ALTER TABLE routes to AlterTableStatement', () => {
+            const stmt = parseOne<any>('ALTER TABLE T ADD C INT');
+            expect(stmt.type).toBe('AlterTableStatement');
+        });
+
+        test('ALTER VIEW routes to CreateStatement with orAlter', () => {
+            const stmt = parseOne<any>('ALTER VIEW V AS SELECT 1');
+            expect(stmt.type).toBe('CreateStatement');
+            expect(stmt.orAlter).toBe(true);
+        });
+
+        test('ALTER PROCEDURE routes to CreateStatement with orAlter', () => {
+            const stmt = parseOne<any>(`
+                ALTER PROCEDURE dbo.usp_Test
+                AS
+                SELECT 1
+            `);
+
+            expect(stmt.type).toBe('CreateStatement');
+            expect(stmt.orAlter).toBe(true);
+        });
+    });
+
+    // ─────────────────────────────────────────────────────────
+    // Recoverability
+    // ─────────────────────────────────────────────────────────
+
+    describe('recoverability', () => {
+        test('continues after broken ALTER TABLE', () => {
+            const sql = `
+                ALTER TABLE Users ADD
+                SELECT 1
+            `;
+
+            const parser =
+                new Parser(new Lexer(sql));
+
+            const ast = parser.parse().ast;
+
+            expect(ast.body.length)
+                .toBeGreaterThanOrEqual(1);
+        });
+
+        test('TRUNCATE TABLE without name produces incomplete node', () => {
+            // TRUNCATE TABLE with no name — parseMultipartIdentifier returns
+            // an incomplete identifier rather than crashing. The batch stays alive.
+            const sql = `
+                TRUNCATE TABLE;
+                SELECT 1;
+            `;
+
+            const parser =
+                new Parser(new Lexer(sql));
+
+            const ast = parser.parse().ast;
+
+            expect(ast.body.length)
+                .toBeGreaterThanOrEqual(2);
+
+            expect(ast.body[0].type)
+                .toBe('TruncateStatement');
+
+            expect(ast.body[1].type)
+                .toBe('SelectStatement');
+        });
+    });
+});

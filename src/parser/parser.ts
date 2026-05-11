@@ -34,6 +34,9 @@ import {
     CreateIndexNode,
     IndexColumnNode,
     IndexOptionNode,
+    TruncateNode,
+    AlterTableNode,
+
 
     // Expressions
     Expression,
@@ -82,7 +85,9 @@ import {
     TransactionAction,
     TransactionNode,
 
-    TopClause
+    TopClause,
+    AlterTableAction,
+
 
 } from '../ast/types';
 
@@ -158,7 +163,8 @@ const RESYNC_KEYWORDS = new Set([
     'DECLARE', 'IF', 'BEGIN', 'CREATE', 'DROP', 'WITH', 'GO',
     'WHEN', 'THEN', 'ELSE', 'END', 'MERGE', 'PRINT', 'THROW',
     'BREAK', 'CONTINUE', 'TRY', 'RAISERROR', 'RETURN', 'EXEC', 'EXECUTE', 'WHILE',
-    'COMMIT', 'ROLLBACK', 'SAVE', 'TRANSACTION', 'DISTRIBUTED', 'TRAN', 'TRY', 'CATCH'
+    'COMMIT', 'ROLLBACK', 'SAVE', 'TRANSACTION', 'DISTRIBUTED', 'TRAN', 'TRY', 'CATCH',
+    'ALTER', 'TRUNCATE'
 ]);
 
 const CREATE_OBJECT_TYPES: Record<string, CreateNode['objectType']> = {
@@ -601,7 +607,15 @@ export class Parser {
                 case 'MERGE': stmt = this.parseMerge(); break;
                 case 'SET': stmt = this.parseSet(); break;
                 case 'CREATE': stmt = this.parseCreate(false); break;
-                case 'ALTER': stmt = this.parseCreate(true); break;;
+                case 'ALTER':
+                    // Check if this is an ALTER TABLE statement
+                    if (this.peek(1)?.value.toUpperCase() === 'TABLE') {
+                        stmt = this.parseAlterTable();
+                    } else {
+                        // Fallback for ALTER PROC, ALTER VIEW, etc.
+                        stmt = this.parseCreate(true);
+                    }
+                    break;
                 case 'DROP': stmt = this.parseDrop(); break;
                 case 'IF': stmt = this.parseIf(); break;
                 case 'WITH': stmt = this.parseWith(); break;
@@ -633,6 +647,8 @@ export class Parser {
                 case 'SAVE':
                     stmt = this.parseTransaction();
                     break; case 'CONTINUE': stmt = this.parseContinue(); break;
+                case 'TRUNCATE':
+                    return this.parseTruncate();
                 case 'GO':
                     this.consume();
                     return null;
@@ -4135,6 +4151,19 @@ export class Parser {
             );
         }
 
+        let ifExists = false;
+        if (this.peekKeyword('IF')) {
+            this.consume(); // Consume 'IF'
+            try {
+                this.matchKeyword('EXISTS');
+                ifExists = true;
+                endOffset = this.lastConsumedEnd();
+            } catch (e) {
+                incomplete = true;
+                this.addRecoverableError(errors, 'PARSE_DROP_IF_EXISTS', "Expected 'EXISTS' after 'IF'", endOffset);
+            }
+        }
+
         // 2. Target name
         let target: IdentifierNode | null = null;
 
@@ -4169,6 +4198,7 @@ export class Parser {
 
         return {
             type: 'DropStatement',
+            ifExists,
             objectType,
             target,
             start: startToken.offset,
@@ -8283,4 +8313,154 @@ export class Parser {
             ...(errors.length ? { errors } : {})
         };
     }
+
+    private parseAlterTable(): AlterTableNode {
+        const startToken = this.matchKeyword('ALTER');
+        this.matchKeyword('TABLE');
+        const table = this.parseMultipartIdentifier() as IdentifierNode;
+
+        const actionToken = this.consume(); // ADD or DROP
+        const actionVal = actionToken.value.toUpperCase();
+        let action: AlterTableAction;
+
+        if (actionVal === 'ADD') {
+            if (this.peekKeyword('CONSTRAINT')) {
+                // FIX: Do NOT consume 'CONSTRAINT' here.
+                // parseConstraint() needs to see that token to correctly parse the name.
+                action = {
+                    kind: 'ADD_CONSTRAINT',
+                    constraint: this.parseConstraint()
+                };
+            } else {
+                if (this.peekKeyword('COLUMN')) this.consume();
+                action = {
+                    kind: 'ADD_COLUMN',
+                    column: this.parseColumnDefinition()
+                };
+            }
+        } else if (actionVal === 'DROP') {
+            const isConstraint = this.peekKeyword('CONSTRAINT');
+            const isColumn = this.peekKeyword('COLUMN');
+            if (isConstraint || isColumn) this.consume();
+
+            let ifExists = false;
+            if (this.peekKeyword('IF')) {
+                this.consume(); // IF
+                this.matchKeyword('EXISTS');
+                ifExists = true;
+            }
+
+            const name = this.consume().value;
+            action = isConstraint
+                ? { kind: 'DROP_CONSTRAINT', name, ifExists }
+                : { kind: 'DROP_COLUMN', name, ifExists };
+        }
+        else if (actionVal === 'ALTER') {
+            if (this.peekKeyword('COLUMN')) this.consume(); // optional COLUMN keyword
+            action = {
+                kind: 'ALTER_COLUMN',
+                column: this.parseColumnDefinition()
+            };
+        } else {
+            throw new Error(`Unsupported ALTER TABLE action: ${actionVal}`);
+        }
+
+        return {
+            type: 'AlterTableStatement',
+            table,
+            action,
+            start: startToken.offset,
+            end: this.lastConsumedEnd()
+        };
+    }
+
+    private parseTruncate(): TruncateNode {
+        const startToken = this.matchKeyword('TRUNCATE');
+        this.matchKeyword('TABLE');
+        const table = this.parseMultipartIdentifier() as IdentifierNode;
+
+        return {
+            type: 'TruncateStatement',
+            table,
+            start: startToken.offset,
+            end: table.end
+        };
+    }
+
+    private parseColumnDefinition(): ColumnDefinition {
+        const startToken = this.peek()!;
+        const nameExpr = this.parseMultipartIdentifier();
+
+        if (nameExpr.type !== 'Identifier') {
+            throw new Error('Wildcards are not allowed as column names in table definitions');
+        }
+
+        const name = nameExpr.name;
+
+        // 1. Data Type
+        let dataType = '';
+        let parenDepth = 0;
+        while (this.peek()) {
+            const next = this.peek()!;
+            const val = next.value.toUpperCase();
+
+            if (parenDepth === 0) {
+                // Stop if we hit a separator or a column constraint keyword
+                if (next.type === TokenType.Comma || next.type === TokenType.CloseParen || next.type === TokenType.Semicolon) break;
+                if (['CONSTRAINT', 'PRIMARY', 'FOREIGN', 'UNIQUE', 'CHECK', 'DEFAULT', 'NOT', 'NULL', 'REFERENCES', 'IDENTITY'].includes(val)) break;
+            }
+
+            if (next.type === TokenType.OpenParen) parenDepth++;
+
+            const tokenValue = this.consume().value;
+
+            // Smarter spacing logic: 
+            // Only add space if both the last char and current token are "word" characters.
+            // This keeps "VARCHAR(255)" tight but "DOUBLE PRECISION" spaced.
+            if (dataType.length > 0) {
+                const lastChar = dataType[dataType.length - 1];
+                const isCurrentWord = /^[A-Za-z0-9_]+$/.test(tokenValue);
+                const isLastWord = /^[A-Za-z0-9_]+$/.test(lastChar);
+
+                if (isCurrentWord && isLastWord) {
+                    dataType += ' ';
+                }
+            }
+
+            dataType += tokenValue;
+
+            if (next.type === TokenType.CloseParen) parenDepth--;
+        }
+
+        // 2. Inline Constraints
+        const constraints: ConstraintNode[] = [];
+        while (this.peek()) {
+            const next = this.peek()!;
+            const val = next.value.toUpperCase();
+
+            // Standard boundary check
+            if (next.type === TokenType.Comma || next.type === TokenType.CloseParen || next.type === TokenType.Semicolon) break;
+
+            if (['CONSTRAINT', 'PRIMARY', 'FOREIGN', 'UNIQUE', 'CHECK', 'DEFAULT', 'NOT', 'NULL', 'REFERENCES', 'IDENTITY'].includes(val)) {
+                // parseConstraint handles its own name-check and keyword consumption
+                constraints.push(this.parseConstraint(name));
+
+                // Check if the constraint was followed by a separator
+                if (this.peek()?.type === TokenType.Comma || this.peek()?.type === TokenType.CloseParen) break;
+                continue;
+            }
+
+            // Skip unexpected tokens to reach next boundary
+            this.consume();
+        }
+
+        return {
+            name,
+            dataType,
+            ...(constraints.length ? { constraints } : {}),
+            start: startToken.offset,
+            end: this.lastConsumedEnd()
+        };
+    }
+
 }

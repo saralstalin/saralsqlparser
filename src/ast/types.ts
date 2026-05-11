@@ -192,7 +192,9 @@ export type Statement = (
     BreakNode | 
     ContinueNode |
     CreateIndexNode |
-    TransactionNode   // for extensibility
+    TransactionNode |
+    AlterTableNode |
+    TruncateNode
 ) & NodeLocation;
 
 // ===============================
@@ -392,8 +394,10 @@ export interface CreateNode extends NodeLocation, Recoverable {
 
 export interface DropNode extends NodeLocation, Recoverable {
     type: 'DropStatement';
+    ifExists?: boolean;
     objectType: 'TABLE' | 'VIEW' | 'PROCEDURE' | 'FUNCTION' | 'INDEX';
     target: IdentifierNode | null;
+    
 }
 
 // ===============================
@@ -663,4 +667,26 @@ export interface FrameClause extends NodeLocation, Recoverable {
     end: number;
     from: FrameBoundary | null;
     to?: FrameBoundary;  // present when BETWEEN ... AND ... form
+}
+
+
+
+    // ALTER TABLE
+export type AlterTableAction =
+    | { kind: 'ADD_COLUMN'; column: ColumnDefinition }
+    | { kind: 'DROP_COLUMN'; name: string, ifExists?: boolean }
+    | { kind: 'ADD_CONSTRAINT'; constraint: ConstraintNode }
+    | { kind: 'DROP_CONSTRAINT'; name: string, ifExists?: boolean }
+    | { kind: 'ALTER_COLUMN'; column: ColumnDefinition }; 
+
+export interface AlterTableNode extends NodeLocation, Recoverable {
+    type: 'AlterTableStatement';
+    table: IdentifierNode;
+    action: AlterTableAction | null;
+}
+
+// TRUNCATE
+export interface TruncateNode extends NodeLocation, Recoverable {
+    type: 'TruncateStatement';
+    table: IdentifierNode | null;
 }

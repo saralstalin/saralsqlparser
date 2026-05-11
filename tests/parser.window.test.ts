@@ -406,7 +406,5 @@ describe('T-SQL Parser - Window Functions', () => {
         )
         FROM dbo.Employee
     `);
-
-        console.log(JSON.stringify(stmt, null, 2));
     });
 });
