@@ -565,6 +565,25 @@ describe('Recoverability - Part 1B - Structural Recovery', () => {
             const stmt = first(sql);
             expect(['WithStatement', 'ErrorStatement']).toContain(stmt.type);
         });
+
+        test('wildcard CTE name stays recoverable inside WithStatement', () => {
+            const stmt = first('WITH dbo.* AS (SELECT 1) SELECT 1') as any;
+
+            expect(stmt.type).toBe('WithStatement');
+            expect(stmt.incomplete).toBe(true);
+            expect(stmt.errors).toContain('Wildcards are not allowed as CTE names');
+        });
+
+        test('missing body becomes incomplete WithStatement', () => {
+            const stmt = first('WITH X AS (SELECT 1)') as any;
+
+            expect(stmt.type).toBe('WithStatement');
+            expect(stmt.incomplete).toBe(true);
+            expect(stmt.errors).toContain(
+                'A Common Table Expression (CTE) must be followed by a query or DML statement.'
+            );
+            expect((stmt as any).body.type).toBe('ErrorStatement');
+        });
     });
 
     describe('Nested structural continuation', () => {

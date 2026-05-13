@@ -9,6 +9,9 @@ import {
     IdentifierNode,
     WildcardExpression,
     WithNode,
+    CreateNode,
+    IfNode,
+    BlockNode,
     InsertNode,
     UpdateNode,
     DeleteNode,
@@ -95,6 +98,18 @@ export class LineageBuilder {
                 this.visitWith(stmt);
                 break;
 
+            case 'CreateStatement':
+                this.visitCreate(stmt);
+                break;
+
+            case 'IfStatement':
+                this.visitIf(stmt);
+                break;
+
+            case 'BlockStatement':
+                this.visitBlock(stmt);
+                break;
+
             case 'InsertStatement':
                 this.visitInsert(stmt);
                 break;
@@ -111,6 +126,46 @@ export class LineageBuilder {
                 this.visitMerge(stmt);
                 break;
         }
+    }
+
+    private visitCreate(stmt: CreateNode): void {
+        if (!stmt.body) {
+            return;
+        }
+
+        if (Array.isArray(stmt.body)) {
+            for (const child of stmt.body) {
+                this.visitStatement(child);
+            }
+            return;
+        }
+
+        this.visitStatement(stmt.body);
+    }
+
+    private visitIf(stmt: IfNode): void {
+        this.visitBranch(stmt.thenBranch);
+
+        if (stmt.elseBranch) {
+            this.visitBranch(stmt.elseBranch);
+        }
+    }
+
+    private visitBlock(stmt: BlockNode): void {
+        for (const child of stmt.body) {
+            this.visitStatement(child);
+        }
+    }
+
+    private visitBranch(branch: Statement | Statement[]): void {
+        if (Array.isArray(branch)) {
+            for (const stmt of branch) {
+                this.visitStatement(stmt);
+            }
+            return;
+        }
+
+        this.visitStatement(branch);
     }
 
     private defineOutputPseudoSources(): void {

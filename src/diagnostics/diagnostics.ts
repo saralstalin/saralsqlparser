@@ -40,6 +40,7 @@ export enum DiagnosticCode {
     UpdateWithoutWhere = 'DML001',
     DeleteWithoutWhere = 'DML002',
     InsertWithoutColumnList = 'DML003',
+    UpdateTargetNoLock = 'DML004',
 
     SelectStar = 'SEL001',
     SelectStarInView = 'SEL002',
@@ -198,6 +199,16 @@ export class DiagnosticEngine {
 
     private checkUpdate(stmt: UpdateNode): void {
         if (stmt.incomplete) return;
+
+        if (this.updateTargetHasNoLockHint(stmt)) {
+            this.emit({
+                code: DiagnosticCode.UpdateTargetNoLock,
+                message: `UPDATE target table must not use WITH (NOLOCK)`,
+                severity: 'error',
+                start: stmt.start,
+                end: stmt.end,
+            });
+        }
 
         if (!stmt.where) {
             this.emit({
@@ -522,6 +533,36 @@ export class DiagnosticEngine {
         // Fallback for legacy Identifier nodes with '*' name
         if (expr.type === 'Identifier' && expr.name === '*') {
             return true;
+        }
+
+        return false;
+    }
+
+    private updateTargetHasNoLockHint(stmt: UpdateNode): boolean {
+        if (!stmt.target || stmt.target.type !== 'Identifier' || !stmt.from) {
+            return false;
+        }
+
+        const targetName = stmt.target.name.toLowerCase();
+
+        for (const ref of stmt.from) {
+            const hints = ref.hints ?? [];
+
+            if (!hints.some(h => h.toUpperCase() === 'NOLOCK')) {
+                continue;
+            }
+
+            if (ref.alias && ref.alias.toLowerCase() === targetName) {
+                return true;
+            }
+
+            if (
+                ref.table &&
+                ref.table.type === 'Identifier' &&
+                ref.table.name.toLowerCase() === targetName
+            ) {
+                return true;
+            }
         }
 
         return false;

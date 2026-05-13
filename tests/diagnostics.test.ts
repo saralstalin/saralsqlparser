@@ -406,6 +406,34 @@ describe('diagnostic ordering', () => {
 
 // ─── Combined scenarios ───────────────────────────────────────────────────────
 
+describe('DML004 â€” UPDATE target WITH (NOLOCK)', () => {
+    test('fires when update target alias uses NOLOCK in FROM', () => {
+        const d = only(
+            `UPDATE u SET Status = 1 FROM Users u WITH (NOLOCK) WHERE Id = 1`,
+            DiagnosticCode.UpdateTargetNoLock
+        );
+        expect(d.length).toBe(1);
+        expect(d[0].severity).toBe('error');
+    });
+
+    test('fires when update target table uses NOLOCK in FROM', () => {
+        const d = only(
+            `UPDATE Users SET Status = 1 FROM Users WITH (NOLOCK) WHERE Id = 1`,
+            DiagnosticCode.UpdateTargetNoLock
+        );
+        expect(d.length).toBe(1);
+        expect(d[0].severity).toBe('error');
+    });
+
+    test('does NOT fire when NOLOCK is on a non-target joined table', () => {
+        const d = only(
+            `UPDATE u SET Status = 1 FROM Users u JOIN Audit a WITH (NOLOCK) ON u.Id = a.UserId WHERE u.Id = 1`,
+            DiagnosticCode.UpdateTargetNoLock
+        );
+        expect(d.length).toBe(0);
+    });
+});
+
 describe('combined real-world scenarios', () => {
     test('dangerous proc: UPDATE without WHERE + unused param', () => {
         const d = run(`

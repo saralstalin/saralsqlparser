@@ -4,6 +4,17 @@ import {
     parseResult
 } from './parser.helpers';
 
+function parseBuiltResult(sql: string) {
+    const { Lexer } =
+        require('../dist/src/parser/lexer.js');
+    const { Parser } =
+        require('../dist/src/parser/parser.js');
+
+    return new Parser(
+        new Lexer(sql)
+    ).parse();
+}
+
 describe('T-SQL Parser - Cross Validation / Real World Quirks', () => {
 
     test('DECLARE AS variations parse successfully', () => {
@@ -338,7 +349,7 @@ describe('T-SQL Parser - Cross Validation / Real World Quirks', () => {
         }
     });
 
-    test('large real-world mixed workload parses under 75ms with zero issues', () => {
+    test('large real-world mixed workload parses under 60ms with zero issues in built JS', () => {
 
         const sqlParts: string[] = [];
 
@@ -430,17 +441,51 @@ describe('T-SQL Parser - Cross Validation / Real World Quirks', () => {
             sql.split('\n').length
         );
 
-        const start =
-            performance.now();
+        // Warm the built parser once so the timing reflects the
+        // runtime parser rather than one-off module/JIT startup.
+        const warmup =
+            parseBuiltResult(sql);
 
-        const result =
-            parseResult(sql);
+        expect(warmup.issues!.length)
+            .toBe(0);
+
+        const samples: number[] = [];
+        let result = warmup;
+
+        for (let i = 0; i < 7; i++) {
+            const start =
+                performance.now();
+
+            result =
+                parseBuiltResult(sql);
+
+            const elapsed =
+                performance.now() - start;
+
+            samples.push(elapsed);
+        }
+
+        const sorted =
+            [...samples].sort((a, b) => a - b);
+
+        const trimmed =
+            sorted.slice(0, -2);
 
         const elapsed =
-            performance.now() - start;
+            trimmed[Math.floor(trimmed.length / 2)];
 
         console.log(
-            'Parse time:',
+            'Built parse samples:',
+            samples.map(x => x.toFixed(2))
+        );
+
+        console.log(
+            'Trimmed built parse samples:',
+            trimmed.map(x => x.toFixed(2))
+        );
+
+        console.log(
+            'Median built parse time:',
             elapsed.toFixed(2),
             'ms'
         );
@@ -471,7 +516,7 @@ describe('T-SQL Parser - Cross Validation / Real World Quirks', () => {
         // -------------------------------------------------
 
         expect(elapsed)
-            .toBeLessThan(75);
+            .toBeLessThan(60);
 
         expect(result.issues!.length)
             .toBe(0);

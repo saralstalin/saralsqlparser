@@ -227,6 +227,55 @@ describe('T-SQL Parser - Window Functions', () => {
         });
     });
 
+    describe('frame clause - coverage matrix', () => {
+        test.each([
+            ['ROWS CURRENT ROW', 'ROWS', 'CURRENT_ROW', undefined, undefined, undefined],
+            ['ROWS 1 PRECEDING', 'ROWS', 'PRECEDING', undefined, '1', undefined],
+            ['ROWS 1 FOLLOWING', 'ROWS', 'FOLLOWING', undefined, '1', undefined],
+            ['ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING', 'ROWS', 'PRECEDING', 'FOLLOWING', '1', '1'],
+            ['ROWS BETWEEN CURRENT ROW AND CURRENT ROW', 'ROWS', 'CURRENT_ROW', 'CURRENT_ROW', undefined, undefined],
+            ['ROWS BETWEEN 1 FOLLOWING AND 2 FOLLOWING', 'ROWS', 'FOLLOWING', 'FOLLOWING', '1', '2'],
+            ['ROWS BETWEEN 1 PRECEDING AND 2 PRECEDING', 'ROWS', 'PRECEDING', 'PRECEDING', '1', '2'],
+            ['RANGE CURRENT ROW', 'RANGE', 'CURRENT_ROW', undefined, undefined, undefined],
+            ['RANGE BETWEEN CURRENT ROW AND CURRENT ROW', 'RANGE', 'CURRENT_ROW', 'CURRENT_ROW', undefined, undefined],
+            ['RANGE BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING', 'RANGE', 'CURRENT_ROW', 'UNBOUNDED_FOLLOWING', undefined, undefined],
+            ['RANGE BETWEEN 1 PRECEDING AND CURRENT ROW', 'RANGE', 'PRECEDING', 'CURRENT_ROW', '1', undefined],
+            ['RANGE 1 PRECEDING', 'RANGE', 'PRECEDING', undefined, '1', undefined],
+            ['RANGE 1 FOLLOWING', 'RANGE', 'FOLLOWING', undefined, '1', undefined],
+            ['RANGE BETWEEN 1 FOLLOWING AND 2 FOLLOWING', 'RANGE', 'FOLLOWING', 'FOLLOWING', '1', '2'],
+        ])(
+            '%s',
+            (frameSql, unit, fromType, toType, fromValue, toValue) => {
+                const stmt = parseOne<any>(`
+                    SELECT SUM(Salary) OVER(
+                        ORDER BY Salary
+                        ${frameSql}
+                    )
+                    FROM dbo.Employee
+                `);
+
+                const frame = stmt.columns[0].expression.window.frame;
+
+                expect(frame.unit).toBe(unit);
+                expect(frame.from.type).toBe(fromType);
+
+                if (toType) {
+                    expect(frame.to.type).toBe(toType);
+                } else {
+                    expect(frame.to).toBeUndefined();
+                }
+
+                if (fromValue) {
+                    expectSql(frame.from.value, fromValue);
+                }
+
+                if (toValue) {
+                    expectSql(frame.to.value, toValue);
+                }
+            }
+        );
+    });
+
     describe('frame clause - node location', () => {
         test('frame clause has start and end', () => {
             const stmt = parseOne<any>(`
@@ -382,6 +431,28 @@ describe('T-SQL Parser - Window Functions', () => {
             expect(frame.incomplete).toBe(true);
             expect(frame.from.type).toBe('UNBOUNDED_PRECEDING');
             expect(frame.to).toBeUndefined();
+        });
+
+        test('ROWS BETWEEN with omitted AND but present end boundary recovers and stays aligned', () => {
+            const sql = `
+                SELECT SUM(Salary) OVER(
+                    ORDER BY Salary
+                    ROWS BETWEEN 1 PRECEDING CURRENT ROW
+                ) AS RunningTotal
+                FROM dbo.Employee;
+                SELECT 1;
+            `;
+
+            const parser = new Parser(new Lexer(sql));
+            const result = parser.parse();
+            const stmt = result.ast.body[0] as any;
+            const frame = stmt.columns[0].expression.window.frame;
+
+            expect(frame.incomplete).toBe(true);
+            expect(frame.from.type).toBe('PRECEDING');
+            expectSql(frame.from.value, '1');
+            expect(frame.to.type).toBe('CURRENT_ROW');
+            expect(result.ast.body[1].type).toBe('SelectStatement');
         });
 
         test('continues parsing after broken frame clause', () => {

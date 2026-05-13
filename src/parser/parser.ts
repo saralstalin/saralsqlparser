@@ -1212,98 +1212,94 @@ export class Parser {
             endOffset =
                 forToken.offset + forToken.value.length;
 
-            try {
-                let mode: 'JSON' | 'XML';
+            let mode: 'JSON' | 'XML' | null = null;
 
-                if (this.peekKeyword('JSON')) {
-                    this.consume();
-                    mode = 'JSON';
-                } else if (this.peekKeyword('XML')) {
-                    this.consume();
-                    mode = 'XML';
-                } else {
-                    throw new Error(
-                        'Expected JSON or XML after FOR'
-                    );
-                }
+            if (this.peekKeyword('JSON')) {
+                this.consume();
+                mode = 'JSON';
+            } else if (this.peekKeyword('XML')) {
+                this.consume();
+                mode = 'XML';
+            } else {
+                incomplete = true;
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_SELECT_FOR',
+                    'Expected JSON or XML after FOR',
+                    endOffset
+                );
+            }
 
+            if (mode) {
                 const next = this.peek();
 
                 if (
                     !next ||
                     next.type === TokenType.Semicolon
                 ) {
-                    throw new Error(
-                        'Expected FOR directive'
+                    incomplete = true;
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_SELECT_FOR',
+                        'Expected FOR directive',
+                        endOffset
                     );
-                }
+                } else {
+                    const directive = this.consume().value;
 
-                const directive = this.consume().value;
-
-                let argument: string | undefined;
-
-                if (this.peek()?.type === TokenType.OpenParen) {
-                    let arg = this.consume().value; // (
-
-                    while (
-                        this.peek() &&
-                        this.peek()?.type !== TokenType.CloseParen
-                    ) {
-                        arg += this.consume().value;
-                    }
-
-                    if (this.peek()?.type === TokenType.CloseParen) {
-                        arg += this.consume().value; // )
-                    }
-
-                    argument = arg;
-                }
-
-                const options: string[] = [];
-
-                while (this.peek()?.type === TokenType.Comma) {
-                    this.consume(); // ,
-
-                    let option = this.consume().value;
+                    let argument: string | undefined;
 
                     if (this.peek()?.type === TokenType.OpenParen) {
-                        option += this.consume().value; // (
+                        let arg = this.consume().value; // (
 
                         while (
                             this.peek() &&
                             this.peek()?.type !== TokenType.CloseParen
                         ) {
-                            option += this.consume().value;
+                            arg += this.consume().value;
                         }
 
                         if (this.peek()?.type === TokenType.CloseParen) {
-                            option += this.consume().value; // )
+                            arg += this.consume().value; // )
                         }
+
+                        argument = arg;
                     }
 
-                    options.push(option);
+                    const options: string[] = [];
+
+                    while (this.peek()?.type === TokenType.Comma) {
+                        this.consume(); // ,
+
+                        let option = this.consume().value;
+
+                        if (this.peek()?.type === TokenType.OpenParen) {
+                            option += this.consume().value; // (
+
+                            while (
+                                this.peek() &&
+                                this.peek()?.type !== TokenType.CloseParen
+                            ) {
+                                option += this.consume().value;
+                            }
+
+                            if (this.peek()?.type === TokenType.CloseParen) {
+                                option += this.consume().value; // )
+                            }
+                        }
+
+                        options.push(option);
+                    }
+
+                    forClause = {
+                        mode,
+                        directive,
+                        ...(argument !== undefined ? { argument } : {}),
+                        ...(options.length ? { options } : {})
+                    };
+
+                    endOffset = this.lastConsumedEnd();
                 }
-
-                forClause = {
-                    mode,
-                    directive,
-                    ...(argument !== undefined ? { argument } : {}),
-                    ...(options.length ? { options } : {})
-                };
-
-                endOffset = this.lastConsumedEnd();
-
-            } catch (e) {
-                incomplete = true;
-
-                this.addRecoverableError(
-                    errors,
-                    'PARSE_SELECT_FOR',
-                    e instanceof Error
-                        ? e.message
-                        : String(e),
-                    endOffset
-                );
             }
         }
 
@@ -5658,10 +5654,6 @@ export class Parser {
             startToken.offset +
             startToken.value.length;
 
-        // -------------------------------------------------
-        // 1. IF condition
-        // -------------------------------------------------
-
         try {
             const next =
                 this.peek();
@@ -5674,14 +5666,6 @@ export class Parser {
                     next.value
                 )
             ) {
-                // IMPORTANT:
-                // IF condition owns statement boundary.
-                //
-                // Stop parsing before:
-                // BEGIN
-                // ELSE
-                // END
-                // statement starters
                 condition =
                     this.parseExpression(
                         Precedence.LOWEST,
@@ -5738,10 +5722,6 @@ export class Parser {
             );
         }
 
-        // -------------------------------------------------
-        // 2. THEN branch
-        // -------------------------------------------------
-
         try {
             const stmt =
                 this.parseStatement();
@@ -5779,10 +5759,6 @@ export class Parser {
                 endOffset
             );
         }
-
-        // -------------------------------------------------
-        // 3. ELSE branch
-        // -------------------------------------------------
 
         if (this.peekKeyword('ELSE')) {
             const elseToken =
@@ -5857,7 +5833,6 @@ export class Parser {
             startToken.offset +
             startToken.value.length;
 
-        // 1. Body
         while (
             this.pos < this.tokens.length &&
             !this.peekKeyword('END')
@@ -5870,11 +5845,6 @@ export class Parser {
                     endOffset = stmt.end;
                 }
                 else {
-                    // IMPORTANT:
-                    // parseStatement() now returns null
-                    // for structural delimiters.
-                    //
-                    // These belong to enclosing grammar.
                     if (
                         this.peekKeyword('END') ||
                         this.peekKeyword('ELSE') ||
@@ -5883,7 +5853,6 @@ export class Parser {
                         break;
                     }
 
-                    // stray semicolon
                     if (
                         this.peek()?.type ===
                         TokenType.Semicolon
@@ -5892,20 +5861,16 @@ export class Parser {
                         continue;
                     }
 
-                    // avoid infinite loop
                     break;
                 }
             }
-            catch (e) {
+            catch {
                 incomplete = true;
 
                 this.resyncToBlockBoundary();
             }
-
-
         }
 
-        // 2. END
         try {
             if (this.peekKeyword('END')) {
                 const endToken =
@@ -5959,15 +5924,27 @@ export class Parser {
         // Capture the 'WITH' token that was just peeked/consumed
         const startToken = this.matchKeyword('WITH');
         const ctes: CTENode[] = [];
+        let incomplete = false;
+        const errors: string[] = [];
 
         while (true) {
             // Use the multipart identifier for the CTE name
             const nameExpr = this.parseMultipartIdentifier();
             let columns: string[] | undefined = undefined;
+            let name = '*';
 
             // Validation: CTE names must be identifiers, not wildcards
-            if (nameExpr.type !== 'Identifier') {
-                throw new Error("Wildcards are not allowed as CTE names");
+            if (nameExpr.type === 'Identifier') {
+                name = nameExpr.name;
+            } else {
+                incomplete = true;
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_WITH_CTE_NAME',
+                    'Wildcards are not allowed as CTE names',
+                    nameExpr.start,
+                    nameExpr.end
+                );
             }
 
             // Optional column list: WITH MyCTE (Col1, Col2)
@@ -5985,7 +5962,7 @@ export class Parser {
             const closeParen = this.match(TokenType.CloseParen);
 
             ctes.push({
-                name: nameExpr.name, // Safe to access after type check
+                name,
                 columns,
                 query,
                 start: nameExpr.start,
@@ -6001,10 +5978,29 @@ export class Parser {
         }
 
         // The statement that follows the CTE (SELECT, INSERT, UPDATE, DELETE)
-        const body = this.parseStatement();
+        const bodyStart = this.peek()?.offset ?? this.lastConsumedEnd();
+        let body = this.parseStatement();
 
         if (!body) {
-            throw new Error("A Common Table Expression (CTE) must be followed by a query or DML statement.");
+            incomplete = true;
+
+            const message =
+                'A Common Table Expression (CTE) must be followed by a query or DML statement.';
+
+            this.addRecoverableError(
+                errors,
+                'PARSE_WITH_BODY',
+                message,
+                bodyStart,
+                bodyStart + 1
+            );
+
+            body = {
+                type: 'ErrorStatement',
+                message,
+                start: bodyStart,
+                end: bodyStart + 1
+            };
         }
 
         return {
@@ -6012,7 +6008,9 @@ export class Parser {
             ctes,
             body,
             start: startToken.offset,
-            end: body.end
+            end: body.end,
+            ...(incomplete ? { incomplete: true } : {}),
+            ...(errors.length ? { errors } : {})
         };
     }
 
@@ -6183,6 +6181,19 @@ export class Parser {
                     frameEnd,
                     frameEnd
                 );
+
+                // Recovery: if the user omitted AND but immediately wrote a
+                // valid end boundary, consume it so the OVER clause can still
+                // close cleanly and outer statement parsing stays aligned.
+                if (this.canStartFrameBoundary(this.peek())) {
+                    try {
+                        const result = this.parseFrameBoundary();
+                        to = result.boundary;
+                        frameEnd = result.end;
+                    } catch {
+                        // Keep the original AND error only.
+                    }
+                }
             }
 
         } else {
@@ -6289,6 +6300,29 @@ export class Parser {
         } else {
             throw new Error('Expected PRECEDING or FOLLOWING after frame expression');
         }
+    }
+
+    private canStartFrameBoundary(token?: Token): boolean {
+        if (!token) {
+            return false;
+        }
+
+        if (this.peekKeyword('UNBOUNDED') || this.peekKeyword('CURRENT')) {
+            return true;
+        }
+
+        if (
+            token.type === TokenType.CloseParen ||
+            token.type === TokenType.Semicolon
+        ) {
+            return false;
+        }
+
+        if (token.type === TokenType.Keyword && RESYNC_KEYWORDS.has(token.value)) {
+            return false;
+        }
+
+        return true;
     }
 
     private hasName(expr: Expression): expr is (IdentifierNode | MemberExpression) & Expression {
@@ -8265,9 +8299,6 @@ export class Parser {
         let condition: Expression | null = null;
         let body: Statement | null = null;
 
-        // -----------------------------
-        // condition
-        // -----------------------------
         try {
             const next = this.peek();
 
@@ -8310,9 +8341,6 @@ export class Parser {
             );
         }
 
-        // -----------------------------
-        // body statement
-        // -----------------------------
         try {
             const next = this.peek();
 
@@ -8923,7 +8951,6 @@ export class Parser {
     }
 
     private parseTransaction(): TransactionNode {
-
         const startToken =
             this.consume(); // BEGIN / COMMIT / ROLLBACK / SAVE
 
