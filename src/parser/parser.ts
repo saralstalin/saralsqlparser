@@ -92,131 +92,28 @@ import {
 
 } from '../ast/types';
 
+import {
+    CREATE_OBJECT_TYPES,
+    DROP_OBJECT_TYPES,
+    JoinKeyword,
+    JoinKeywords,
+    JoinTypes,
+    PRECEDENCE_MAP,
+    Precedence,
+    RESYNC_KEYWORDS,
+    STRUCTURAL_KEYWORDS
+} from './grammar';
 
-export const JoinKeywords = {
-    JOIN: 'JOIN',
-    INNER: 'INNER',
-    LEFT: 'LEFT',
-    RIGHT: 'RIGHT',
-    FULL: 'FULL',
-    CROSS: 'CROSS',
-    OUTER: 'OUTER',
-    APPLY: 'APPLY'
-} as const;
+import { stringifyExpression as stringifyExpressionNode } from './expressionStringifier';
+import {
+    canStartAlias,
+    isClauseBoundary,
+    isFromBoundary,
+    isJoinToken
+} from './boundaries';
 
-export type JoinKeyword =
-    typeof JoinKeywords[keyof typeof JoinKeywords];
-
-const JoinTypes: Record<string, JoinType> = {
-    INNER: 'INNER JOIN',
-    LEFT_OUTER: 'LEFT OUTER JOIN',
-    RIGHT_OUTER: 'RIGHT OUTER JOIN',
-    FULL_OUTER: 'FULL OUTER JOIN',
-    CROSS: 'CROSS JOIN',
-    CROSS_APPLY: 'CROSS APPLY',
-    OUTER_APPLY: 'OUTER APPLY',
-};
-
-enum Precedence {
-    LOWEST,
-    OR,
-    AND,
-    NOT,     // Infix NOT (NOT IN, NOT LIKE)
-    COMPARE, // =, <>, <, >, <=, >=
-    SUM,     // +, -
-    PRODUCT, // *, /, %
-    PREFIX,  // -X, NOT X  
-    UNARY,   // +X (unary plus), -X (unary minus) 
-    CALL     // Function calls
-}
-
-const STRUCTURAL_KEYWORDS = new Set([
-    'INNER',
-    'LEFT',
-    'RIGHT',
-    'FULL',
-    'CROSS',
-    'JOIN',
-
-    'WHERE',
-    'GROUP',
-    'ORDER',
-    'HAVING',
-
-    'UNION',
-    'ALL',
-    'EXCEPT',
-    'INTERSECT',
-
-    'ON',
-    'APPLY',
-    'OUTER',
-
-    'WITH',
-    'FOR',
-    'TABLESAMPLE',
-    'PIVOT',
-    'UNPIVOT'
-]);
-
-const RESYNC_KEYWORDS = new Set([
-    'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'SET',
-    'DECLARE', 'IF', 'BEGIN', 'CREATE', 'DROP', 'WITH', 'GO',
-    'WHEN', 'THEN', 'ELSE', 'END', 'MERGE', 'PRINT', 'THROW',
-    'BREAK', 'CONTINUE', 'TRY', 'RAISERROR', 'RETURN', 'EXEC', 'EXECUTE', 'WHILE',
-    'COMMIT', 'ROLLBACK', 'SAVE', 'TRANSACTION', 'DISTRIBUTED', 'TRAN', 'TRY', 'CATCH',
-    'ALTER', 'TRUNCATE', 'VALUES', 'OUTPUT', 'FETCH', 'OFFSET', 'OPTION'
-]);
-
-const ALIAS_STOP_KEYWORDS = new Set([
-    ...STRUCTURAL_KEYWORDS,
-    ...RESYNC_KEYWORDS
-]);
-
-const CREATE_OBJECT_TYPES: Record<string, CreateNode['objectType']> = {
-    TABLE: 'TABLE', VIEW: 'VIEW', PROCEDURE: 'PROCEDURE',
-    FUNCTION: 'FUNCTION', TYPE: 'TYPE', PROC: 'PROCEDURE'
-};
-
-const DROP_OBJECT_TYPES: Record<string, DropNode['objectType']> = {
-    TABLE: 'TABLE', VIEW: 'VIEW', PROCEDURE: 'PROCEDURE',
-    FUNCTION: 'FUNCTION', INDEX: 'INDEX', PROC: 'PROCEDURE'
-};
-
-// Precedence mapping for operators
-const PRECEDENCE_MAP: Record<string, Precedence> = {
-    '.': Precedence.CALL,
-    'OR': Precedence.OR,
-    'AND': Precedence.AND,
-    'NOT': Precedence.NOT,
-    'IS': Precedence.COMPARE,
-    'IN': Precedence.COMPARE,
-    'BETWEEN': Precedence.COMPARE,
-    'LIKE': Precedence.COMPARE,
-    '=': Precedence.COMPARE,
-    '<>': Precedence.COMPARE,
-    '!=': Precedence.COMPARE,
-    '<': Precedence.COMPARE,
-    '>': Precedence.COMPARE,
-    '>=': Precedence.COMPARE,
-    '<=': Precedence.COMPARE,
-
-    // Bitwise (Essential for the negative/bitwise tests)
-    '&': Precedence.SUM,
-    '|': Precedence.SUM,
-    '^': Precedence.SUM,
-
-    '+': Precedence.SUM,
-    '-': Precedence.SUM,
-
-    '*': Precedence.PRODUCT,
-    '/': Precedence.PRODUCT,
-    '%': Precedence.PRODUCT, // Modulo support
-
-    // High Precedence
-    'COLLATE': Precedence.CALL,
-    '(': Precedence.CALL,
-};
+export { JoinKeywords };
+export type { JoinKeyword };
 
 
 export class Parser {
@@ -1975,7 +1872,7 @@ export class Parser {
         try {
             while (this.pos < this.tokens.length) {
                 // stop at next clause
-                if (this.isFromBoundary(this.peek())) {
+                if (isFromBoundary(this.peek())) {
                     break;
                 }
 
@@ -1993,7 +1890,7 @@ export class Parser {
                 }
 
                 // stop if next clause begins
-                if (this.isFromBoundary(this.peek())) {
+                if (isFromBoundary(this.peek())) {
                     break;
                 }
 
@@ -2138,7 +2035,7 @@ export class Parser {
             }
             else if (
                 source &&
-                this.canStartAlias(token)
+                canStartAlias(token)
             ) {
                 const id =
                     this.parseMultipartIdentifier();
@@ -2199,7 +2096,7 @@ export class Parser {
         // ------------------------------------------------------------
         const joins: JoinNode[] = [];
 
-        while (this.isJoinToken(this.peek())) {
+        while (isJoinToken(this.peek())) {
             const join = this.parseJoin();
 
             joins.push(join);
@@ -2551,7 +2448,7 @@ export class Parser {
 
                     if (
                         potentialAlias &&
-                        this.canStartAlias(potentialAlias)
+                        canStartAlias(potentialAlias)
                     ) {
                         const aliasExpr = this.parseMultipartIdentifier();
 
@@ -4612,11 +4509,6 @@ export class Parser {
         };
     }
 
-    private isJoinToken(token: Token | undefined): boolean {
-        if (!token) return false;
-        return Object.values(JoinKeywords).includes(token.value as JoinKeyword);
-    }
-
     private parseExpression(
         precedence: Precedence = Precedence.LOWEST,
         stopTokens?: Set<string>
@@ -5670,7 +5562,7 @@ export class Parser {
         // ---------------------------------------------
 
         if (
-            this.isClauseBoundary(
+            isClauseBoundary(
                 this.peek()
             )
         ) {
@@ -5726,7 +5618,7 @@ export class Parser {
 
                 // trailing comma
                 if (
-                    this.isClauseBoundary(
+                    isClauseBoundary(
                         this.peek()
                     )
                 ) {
@@ -6748,106 +6640,7 @@ export class Parser {
     }
 
     private stringifyExpression(expr: Expression | null): string {
-        if (!expr) {
-            return '<missing>';
-        }
-
-        switch (expr.type) {
-            // Add this case to handle the new WildcardExpression type
-            case 'WildcardExpression': {
-                if (expr.tablePrefix) {
-                    // Recursively stringify the prefix (IdentifierNode)
-                    return `${this.stringifyExpression(expr.tablePrefix)}.*`;
-                }
-                return '*';
-            }
-
-            case 'Literal':
-                return expr.variant === 'string'
-                    ? `'${expr.value}'`
-                    : String(expr.value);
-
-            case 'Identifier':
-                return expr.name;
-
-            case 'Variable':
-                return expr.name;
-
-            case 'SubqueryExpression':
-                return 'derived_table';
-
-            case 'BinaryExpression': {
-                const left = this.stringifyExpression(expr.left);
-                const right = this.stringifyExpression(expr.right);
-
-                if (!expr.right && expr.incomplete) {
-                    return `${left} ${expr.operator}`;
-                }
-
-                return `${left} ${expr.operator} ${right}`;
-            }
-
-            case 'UnaryExpression': {
-                const rightSide = this.stringifyExpression(expr.right);
-                const isPostfix =
-                    ['IS NULL', 'IS NOT NULL']
-                        .includes(expr.operator.toUpperCase());
-
-                if (!expr.right && expr.incomplete) {
-                    return isPostfix
-                        ? expr.operator
-                        : `${expr.operator}`;
-                }
-
-                return isPostfix
-                    ? `${rightSide} ${expr.operator}`
-                    : `${expr.operator} ${rightSide}`;
-            }
-
-            case 'BetweenExpression': {
-                const left = this.stringifyExpression(expr.left);
-                const lower = this.stringifyExpression(expr.lowerBound);
-                const upper = this.stringifyExpression(expr.upperBound);
-
-                return `${left} ${expr.isNot ? 'NOT ' : ''
-                    }BETWEEN ${lower} AND ${upper}`;
-            }
-
-            case 'FunctionCall':
-                return `${expr.name}(${expr.args
-                    .map(a => this.stringifyExpression(a))
-                    .join(', ')})`;
-
-            case 'GroupingExpression':
-                return `(${this.stringifyExpression(expr.expression)})`;
-
-            case 'CaseExpression':
-                return 'CASE ... END';
-
-            case 'InExpression': {
-                const left = this.stringifyExpression(expr.left);
-
-                if (expr.subquery) {
-                    return `${left} ${expr.isNot ? 'NOT ' : ''}IN (subquery)`;
-                }
-
-                const list = expr.list?.length
-                    ? expr.list.map(x => this.stringifyExpression(x)).join(', ')
-                    : '';
-
-                return `${left} ${expr.isNot ? 'NOT ' : ''}IN (${list})`;
-            }
-
-            case 'MemberExpression':
-                return expr.name ||
-                    `${this.stringifyExpression(expr.object)}.${expr.property}`;
-
-            case 'OverExpression':
-                return `${this.stringifyExpression(expr.expression)} OVER (...)`;
-
-            default:
-                return '';
-        }
+        return stringifyExpressionNode(expr);
     }
 
     private resync(): void {
@@ -9127,73 +8920,6 @@ export class Parser {
             start: token.offset,
             end: token.offset + token.value.length
         };
-    }
-
-    private canStartAlias(token?: Token): boolean {
-        if (!token) {
-            return false;
-        }
-
-        if (
-            token.type !== TokenType.Identifier &&
-            token.type !== TokenType.Keyword
-        ) {
-            return false;
-        }
-
-        return !ALIAS_STOP_KEYWORDS.has(token.value);
-    }
-
-    private isFromBoundary(token?: Token): boolean {
-        if (!token) return true;
-
-        return [
-            'WHERE',
-            'GROUP',
-            'HAVING',
-            'ORDER',
-            'UNION',
-            'EXCEPT',
-            'INTERSECT',
-            'FOR',
-            'OPTION',
-            'OFFSET',
-            'FETCH'
-        ].includes(token.value);
-    }
-
-    private isClauseBoundary(token?: Token): boolean {
-        if (!token) {
-            return true;
-        }
-
-        if (
-            token.type === TokenType.Semicolon ||
-            token.type === TokenType.CloseParen
-        ) {
-            return true;
-        }
-
-        return [
-            'FROM',
-            'WHERE',
-            'GROUP',
-            'HAVING',
-            'ORDER',
-            'UNION',
-            'EXCEPT',
-            'INTERSECT',
-            'JOIN',
-            'ON',
-            'APPLY',
-            'FOR',
-            'OPTION',
-            'OFFSET',
-            'FETCH',
-            'OUTPUT',
-            'RANGE',
-            'ROWS'
-        ].includes(token.value);
     }
 
     private parseTransaction(): TransactionNode {
