@@ -71,6 +71,8 @@ function toSql(expr: any): string {
         case 'SubqueryExpression':
             // Standardize all subqueries to this string to satisfy 'toContain' tests
             return 'SelectStatement';
+        case 'ExistsExpression':
+            return `EXISTS (${toSql(expr.query)})`;
 
         default:
             // Helpful debugging hint for new nodes
@@ -116,7 +118,8 @@ describe('T-SQL Parser', () => {
     test('should handle T-SQL TOP clause', () => {
         const sql = 'SELECT TOP 10 * FROM Logs;';
         const ast = parse(sql);
-        expect(((ast.body[0] as SelectNode).top?.quantity as LiteralNode).value).toBe(10);    });
+        expect(((ast.body[0] as SelectNode).top?.quantity as LiteralNode).value).toBe(10);
+    });
 
     // 3. TOP with Parentheses and Joins
     test('should handle T-SQL TOP (10) and JOINs', () => {
@@ -459,10 +462,23 @@ describe('T-SQL Parser', () => {
 
     // 35. EXISTS
     test('should handle EXISTS subquery', () => {
-        const sql = `SELECT 1 WHERE EXISTS (SELECT 1)`;
-        expect(toSql((parse(sql).body[0] as SelectNode).where)).toContain('EXISTS');
-    });
+        const sql =
+            `SELECT 1 WHERE EXISTS (SELECT 1)`;
 
+        const where =
+            (parse(sql).body[0] as SelectNode)
+                .where;
+
+        expect(where).toBeDefined();
+
+        expect(where!.type)
+            .toBe('ExistsExpression');
+
+        expect(
+            toSql(where!)
+        ).toContain('EXISTS');
+    });
+    
     // 36. UNION / EXCEPT
     test('should handle UNION and EXCEPT', () => {
         const sql = `SELECT 1 UNION SELECT 2 EXCEPT SELECT 3`;
@@ -1250,7 +1266,7 @@ OUTPUT inserted.Id, deleted.Id INTO Audit(InsertedId, DeletedId);`;
         });
     });
 
-    
+
 
 });
 

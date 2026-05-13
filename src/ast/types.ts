@@ -56,7 +56,8 @@ export type Expression =
     | OverExpression
     | MemberExpression
     | WildcardExpression
-    | CastExpression;
+    | CastExpression
+    | ExistsExpression;
 
 export interface BinaryExpression extends NodeLocation, Recoverable {
     type: 'BinaryExpression';
@@ -689,4 +690,10 @@ export interface AlterTableNode extends NodeLocation, Recoverable {
 export interface TruncateNode extends NodeLocation, Recoverable {
     type: 'TruncateStatement';
     table: IdentifierNode | null;
+}
+
+export interface ExistsExpression
+    extends NodeLocation, Recoverable {
+    type: 'ExistsExpression';
+    query: QueryStatement;
 }

@@ -1,3 +1,4 @@
+import { IfNode, UnaryExpression } from '@/ast/types';
 import {
     parseOne,
     parseBody,
@@ -57,18 +58,19 @@ describe('T-SQL Parser - IF / ELSE / BEGIN / END', () => {
 
         test('EXISTS condition', () => {
             const stmt = parseOne<any>(`
-                IF EXISTS (
-                    SELECT 1
-                    FROM Users
-                )
-                    SELECT 1
-            `);
+        IF EXISTS (
+            SELECT 1
+            FROM Users
+        )
+            SELECT 1
+    `);
 
             expect(stmt.condition.type)
-                .toBe('UnaryExpression');
+                .toBe('ExistsExpression');
 
-            expect(stmt.condition.operator)
-                .toBe('EXISTS');
+            expect(
+                stmt.condition.query.type
+            ).toBe('SelectStatement');
 
             expect(stmt.thenBranch.type)
                 .toBe('SelectStatement');
@@ -336,7 +338,7 @@ describe('T-SQL Parser - IF / ELSE / BEGIN / END', () => {
                     SELECT 1
             `);
 
-            console.log(JSON.stringify(stmt, null, 2));
+            //console.log(JSON.stringify(stmt, null, 2));
 
             expect(stmt.incomplete)
                 .toBe(true);
@@ -422,5 +424,151 @@ describe('T-SQL Parser - IF / ELSE / BEGIN / END', () => {
             expect(stmt.incomplete)
                 .toBeUndefined();
         });
+    });
+
+    test('CASE with ISNULL assignment expression', () => {
+        const stmt = parseOne<any>(`
+        SELECT
+            @Var1 =
+                CASE
+                    WHEN ISNULL(@Var, '') = ''
+                        THEN @Var2
+                    ELSE Var1
+                END
+    `);
+
+
+
+        expect(stmt.type)
+            .toBe('SelectStatement');
+
+        expect(stmt.columns)
+            .toHaveLength(1);
+
+        const col =
+            stmt.columns[0];
+
+        expect(col.expression.type)
+            .toBe('BinaryExpression');
+
+        const assign =
+            col.expression;
+
+        expect(assign.operator)
+            .toBe('=');
+
+        expect(assign.left.type)
+            .toBe('Variable');
+
+        expect(assign.right.type)
+            .toBe('CaseExpression');
+
+        const caseExpr =
+            assign.right;
+
+        expect(
+            caseExpr.branches.length
+        ).toBe(1);
+
+        const whenExpr =
+            caseExpr.branches[0].when;
+
+
+
+        expect(whenExpr.type)
+            .toBe('BinaryExpression');
+
+        expect(
+            whenExpr.operator
+        ).toBe('=');
+
+        expect(
+            whenExpr.left.type
+        ).toBe('FunctionCall');
+
+        expect(whenExpr.left.name
+        ).toBe('ISNULL');
+
+        expect(
+            caseExpr.branches[0]
+                .then.type
+        ).toBe('Variable');
+
+        expect(
+            caseExpr.elseBranch.type
+        ).toBe('Identifier');
+
+        expect(stmt.incomplete)
+            .toBeUndefined();
+    });
+
+    test('CASE expression does not poison next statement', () => {
+        const body = parseBody(`
+        SET @Var1 =
+            CASE
+                WHEN ISNULL(@Var, '') = ''
+                    THEN @Var2
+                ELSE Var1
+            END
+
+        SELECT 1
+    `);
+
+
+        expect(body.length)
+            .toBeGreaterThanOrEqual(2);
+
+        expect(body[0].type)
+            .toBe('SetStatement');
+
+        expect(body[1].type)
+            .toBe('SelectStatement');
+    });
+
+    test('CASE followed by IF NOT EXISTS', () => {
+        const body = parseBody(`
+        SELECT @Var1 =
+            CASE
+                WHEN ISNULL(@Var, '') = ''
+                    THEN @Var2
+                ELSE Var1
+            END
+
+        IF NOT EXISTS (
+            SELECT TOP 1 1
+            FROM MyTable
+            WHERE Column1 = @Var1
+        )
+        BEGIN
+            SELECT 1
+        END
+    `);
+
+        expect(body.length)
+            .toBeGreaterThanOrEqual(2);
+
+        expect(body[0].type)
+            .toBe('SelectStatement');
+
+        expect(body[1].type)
+            .toBe('IfStatement');
+
+
+
+        const ifStmt =
+            body[1] as IfNode;
+
+        const condition =
+            ifStmt.condition as UnaryExpression;
+
+        expect(condition.type)
+            .toBe('UnaryExpression');
+
+        expect(condition.operator)
+            .toBe('NOT');
+
+        expect(
+            condition.right!.type
+        ).toBe('ExistsExpression');
     });
 });

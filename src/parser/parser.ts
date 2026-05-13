@@ -87,6 +87,7 @@ import {
 
     TopClause,
     AlterTableAction,
+    ExistsExpression,
 
 
 } from '../ast/types';
@@ -165,6 +166,11 @@ const RESYNC_KEYWORDS = new Set([
     'BREAK', 'CONTINUE', 'TRY', 'RAISERROR', 'RETURN', 'EXEC', 'EXECUTE', 'WHILE',
     'COMMIT', 'ROLLBACK', 'SAVE', 'TRANSACTION', 'DISTRIBUTED', 'TRAN', 'TRY', 'CATCH',
     'ALTER', 'TRUNCATE', 'VALUES', 'OUTPUT', 'FETCH', 'OFFSET', 'OPTION'
+]);
+
+const ALIAS_STOP_KEYWORDS = new Set([
+    ...STRUCTURAL_KEYWORDS,
+    ...RESYNC_KEYWORDS
 ]);
 
 const CREATE_OBJECT_TYPES: Record<string, CreateNode['objectType']> = {
@@ -654,7 +660,7 @@ export class Parser {
                 case 'ROLLBACK':
                 case 'SAVE':
                     stmt = this.parseTransaction();
-                    break; case 'CONTINUE': stmt = this.parseContinue(); break;
+                    break;
                 case 'TRUNCATE':
                     return this.parseTruncate();
                 case 'GO':
@@ -687,7 +693,7 @@ export class Parser {
 
             const errors: string[] = [];
 
-            // ✅ FIX: use centralized error pipeline
+            // FIX: use centralized error pipeline
             this.addRecoverableError(
                 errors,
                 'PARSE_STATEMENT_ERROR',
@@ -898,7 +904,7 @@ export class Parser {
                     'Expected SELECT column list',
                     startToken.offset,
                     startToken.offset + startToken.value.length
-                    
+
                 );
 
                 this.resyncToSelectBoundary();
@@ -2886,6 +2892,23 @@ export class Parser {
                     ]);
                 }
 
+                //optional AS
+                //
+                // T-SQL supports:
+                //
+                // DECLARE @X INT
+                // DECLARE @X AS INT
+                if (
+                    this.peekKeyword('AS')
+                ) {
+                    const asToken =
+                        this.consume();
+
+                    endOffset =
+                        asToken.offset +
+                        asToken.value.length;
+                }
+
                 // 2) TABLE variable
                 if (this.peekKeyword('TABLE')) {
                     const tableToken =
@@ -2955,6 +2978,10 @@ export class Parser {
                 }
 
                 // 3) scalar datatype
+
+
+
+                // 4) scalar datatype
                 try {
                     const next = this.peek();
 
@@ -4342,18 +4369,48 @@ export class Parser {
         const errors: string[] = [];
 
         const STOP_KEYWORDS = [
-            'FROM', 'WHERE', 'GROUP', 'ORDER', 'HAVING',
-            'UNION', 'ALL', 'EXCEPT', 'INTERSECT',
-            'JOIN', 'ON', 'APPLY', 'INTO',
-            'OUTER', 'VALUES', 'OUTPUT', 'FOR',
-            'OPTION', 'FETCH', 'OFFSET', 'CROSS',
-            'PIVOT', 'UNPIVOT', 'WHEN', 'THEN',
+            'FROM',
+            'WHERE',
+            'GROUP',
+            'ORDER',
+            'HAVING',
 
-            // control-flow boundaries
+            'UNION',
+            'ALL',
+            'EXCEPT',
+            'INTERSECT',
+
+            'JOIN',
+            'ON',
+            'APPLY',
+            'INTO',
+
+            'OUTER',
+            'VALUES',
+            'OUTPUT',
+            'FOR',
+
+            'OPTION',
+            'FETCH',
+            'OFFSET',
+            'CROSS',
+
+            'PIVOT',
+            'UNPIVOT',
+
+            'WHEN',
+            'THEN',
+
+            // block/control flow
             'BEGIN',
             'END',
             'ELSE',
-            'CATCH'
+            'CATCH',
+
+            // statement starters
+            ...Array.from(
+                RESYNC_KEYWORDS
+            )
         ];
 
         const startOffset =
@@ -4490,7 +4547,7 @@ export class Parser {
                     startOffset
             };
 
-            
+
         }
 
         // -------------------------------------------------
@@ -4884,9 +4941,15 @@ export class Parser {
     }
 
     private parsePrefix(): Expression {
-        const token = this.consume();
-        const value = token.value;
-        const start = token.offset;
+
+        const token =
+            this.consume();
+
+        const value =
+            token.value;
+
+        const start =
+            token.offset;
 
         switch (token.type) {
 
@@ -4895,6 +4958,7 @@ export class Parser {
             // -------------------------------------------------
 
             case TokenType.Number:
+
                 return {
                     type: 'Literal',
                     value: Number(value),
@@ -4908,6 +4972,7 @@ export class Parser {
             // -------------------------------------------------
 
             case TokenType.Variable:
+
                 return {
                     type: 'Variable',
                     name: value,
@@ -4920,6 +4985,7 @@ export class Parser {
             // -------------------------------------------------
 
             case TokenType.String: {
+
                 const content =
                     value.startsWith("'") &&
                         value.endsWith("'")
@@ -4943,6 +5009,7 @@ export class Parser {
             // -------------------------------------------------
 
             case TokenType.TempTable:
+
                 return this.parseMultipartIdentifier();
 
             // -------------------------------------------------
@@ -4953,8 +5020,10 @@ export class Parser {
 
                 // wildcard
                 if (value === '*') {
+
                     return {
-                        type: 'WildcardExpression',
+                        type:
+                            'WildcardExpression',
                         start,
                         end: start + 1
                     } as WildcardExpression;
@@ -4962,12 +5031,15 @@ export class Parser {
 
                 // folded negative number
                 if (value === '-') {
-                    const next = this.peek();
+
+                    const next =
+                        this.peek();
 
                     if (
                         next?.type ===
                         TokenType.Number
                     ) {
+
                         const numToken =
                             this.consume();
 
@@ -5001,6 +5073,7 @@ export class Parser {
 
                 // bitwise not
                 if (value === '~') {
+
                     const right =
                         this.parseExpression(
                             Precedence.PREFIX
@@ -5020,14 +5093,19 @@ export class Parser {
                 );
 
             // -------------------------------------------------
-            // Identifiers / keywords
+            // IDENTIFIERS + EXPRESSION KEYWORDS
             // -------------------------------------------------
 
             case TokenType.Identifier:
-            case TokenType.Keyword:
+            case TokenType.Keyword: {
+
+                // ---------------------------------------------
+                // Dedicated keyword expressions FIRST
+                // ---------------------------------------------
 
                 // NULL literal
                 if (value === 'NULL') {
+
                     return {
                         type: 'Literal',
                         value: null,
@@ -5042,7 +5120,7 @@ export class Parser {
                     return this.parseCaseExpression();
                 }
 
-                // EXISTS
+                // EXISTS (...)
                 if (value === 'EXISTS') {
                     return this.parseExists(token);
                 }
@@ -5053,13 +5131,38 @@ export class Parser {
                     value === 'TRY_CAST' ||
                     value === 'CONVERT'
                 ) {
+
                     this.pos--;
 
                     return this.parseCastExpression();
                 }
 
-                // unary NOT
+                // NOT / NOT EXISTS
                 if (value === 'NOT') {
+
+                    // NOT EXISTS (...)
+                    if (
+                        this.peekKeyword('EXISTS')
+                    ) {
+
+                        const existsToken =
+                            this.consume();
+
+                        const existsExpr =
+                            this.parseExists(
+                                existsToken
+                            );
+
+                        return {
+                            type: 'UnaryExpression',
+                            operator: 'NOT',
+                            right: existsExpr,
+                            start,
+                            end: existsExpr.end
+                        };
+                    }
+
+                    // generic NOT
                     const right =
                         this.parseExpression(
                             Precedence.NOT
@@ -5074,10 +5177,16 @@ export class Parser {
                     };
                 }
 
-                // frame clause boundaries
+                // ---------------------------------------------
+                // Reject statement keywords
+                // ---------------------------------------------
+
                 if (
-                    value === 'ROWS' ||
-                    value === 'RANGE'
+                    token.type === TokenType.Keyword &&
+                    (
+                        RESYNC_KEYWORDS.has(value) ||
+                        STRUCTURAL_KEYWORDS.has(value)
+                    )
                 ) {
                     this.pos--;
 
@@ -5086,47 +5195,28 @@ export class Parser {
                     );
                 }
 
-                // -------------------------------------------------
-                // IMPORTANT:
-                // prevent statement keywords from becoming identifiers
-                // -------------------------------------------------
-
-                if (
-                    token.type === TokenType.Keyword &&
-                    (
-                        RESYNC_KEYWORDS.has(value) ||
-                        STRUCTURAL_KEYWORDS.has(value)
-                    ) &&
-                    value !== 'NULL' &&
-                    value !== 'CASE' &&
-                    value !== 'EXISTS' &&
-                    value !== 'CAST' &&
-                    value !== 'TRY_CAST' &&
-                    value !== 'CONVERT' &&
-                    value !== 'NOT'
-                ) {
-                    throw new Error(
-                        `Unexpected keyword in expression: ${value}`
-                    );
-                }
-
-                // -------------------------------------------------
-                // Multipart identifiers / functions
-                // -------------------------------------------------
+                // ---------------------------------------------
+                // Multipart identifier
+                // ---------------------------------------------
 
                 this.pos--;
 
                 const idNode =
                     this.parseMultipartIdentifier();
 
-                // function call
+                // ---------------------------------------------
+                // Function call
+                // ---------------------------------------------
+
                 if (
                     this.peek()?.type ===
                     TokenType.OpenParen
                 ) {
+
                     this.consume(); // (
 
-                    const args: Expression[] = [];
+                    const args:
+                        Expression[] = [];
 
                     if (
                         idNode.type !==
@@ -5139,11 +5229,12 @@ export class Parser {
 
                     // subquery arg
                     if (
-                        this.peek()?.value ===
-                        'SELECT'
+                        this.peekKeyword(
+                            'SELECT'
+                        )
                     ) {
-                        const subquery =
-                            this.parseSelect() as QueryStatement;
+
+                        const subquery = this.parseSelect() as QueryStatement;
 
                         const closeParen =
                             this.match(
@@ -5154,7 +5245,8 @@ export class Parser {
                             type:
                                 'SubqueryExpression',
                             query: subquery,
-                            start: subquery.start,
+                            start:
+                                subquery.start,
                             end:
                                 closeParen.offset +
                                 closeParen.value.length
@@ -5163,6 +5255,7 @@ export class Parser {
 
                     // normal args
                     else {
+
                         args.push(
                             ...this.parseList(() =>
                                 this.parseExpression(
@@ -5177,11 +5270,20 @@ export class Parser {
                             TokenType.CloseParen
                         );
 
-                    let result: Expression = {
-                        type: 'FunctionCall',
-                        name: idNode.name,
+                    let result:
+                        Expression = {
+
+                        type:
+                            'FunctionCall',
+
+                        name:
+                            idNode.name,
+
                         args,
-                        start: idNode.start,
+
+                        start:
+                            idNode.start,
+
                         end:
                             closeParen.offset +
                             closeParen.value.length
@@ -5189,8 +5291,9 @@ export class Parser {
 
                     // window function
                     if (
-                        this.peek()?.value ===
-                        'OVER'
+                        this.peekKeyword(
+                            'OVER'
+                        )
                     ) {
                         result =
                             this.parseOverClause(
@@ -5202,6 +5305,7 @@ export class Parser {
                 }
 
                 return idNode;
+            }
 
             // -------------------------------------------------
             // Parentheses
@@ -5211,11 +5315,12 @@ export class Parser {
 
                 // subquery
                 if (
-                    this.peek()?.value ===
-                    'SELECT'
+                    this.peekKeyword(
+                        'SELECT'
+                    )
                 ) {
-                    const query =
-                        this.parseSelect() as QueryStatement;
+
+                    const query = this.parseSelect() as QueryStatement;
 
                     const closeParen =
                         this.match(
@@ -5223,7 +5328,8 @@ export class Parser {
                         );
 
                     return {
-                        type: 'SubqueryExpression',
+                        type:
+                            'SubqueryExpression',
                         query,
                         start,
                         end:
@@ -5244,7 +5350,8 @@ export class Parser {
                     );
 
                 return {
-                    type: 'GroupingExpression',
+                    type:
+                        'GroupingExpression',
                     expression: inner,
                     start,
                     end:
@@ -5257,6 +5364,15 @@ export class Parser {
             // -------------------------------------------------
 
             default:
+
+                if (
+                    token.type === TokenType.Semicolon ||
+                    token.type === TokenType.CloseParen ||
+                    token.type === TokenType.Comma
+                ) {
+                    this.pos--;
+                }
+
                 throw new Error(
                     `Unexpected token at line ${token.line}: ${token.value} (${TokenType[token.type]})`
                 );
@@ -5266,25 +5382,32 @@ export class Parser {
     /**
      * Helper to keep parsePrefix clean
      */
-    private parseExists(existsToken: Token): Expression {
-        // existsToken was already consumed by parsePrefix
-        this.match(TokenType.OpenParen);
-        const subquery = this.parseSelect() as QueryStatement;
-        const closeParen = this.match(TokenType.CloseParen);
+    private parseExists(
+        existsToken: Token
+    ): ExistsExpression {
 
-        const subqueryExpr: SubqueryExpression = {
-            type: 'SubqueryExpression',
-            query: subquery,
-            start: subquery.start,
-            end: closeParen.offset + closeParen.value.length
-        };
+        // EXISTS (
+        this.match(
+            TokenType.OpenParen
+        );
+
+        // subquery
+        const subquery =
+            this.parseSelect() as QueryStatement;
+
+        // )
+        const closeParen =
+            this.match(
+                TokenType.CloseParen
+            );
 
         return {
-            type: 'UnaryExpression',
-            operator: 'EXISTS',
-            right: subqueryExpr,
+            type: 'ExistsExpression',
+            query: subquery,
             start: existsToken.offset,
-            end: closeParen.offset + closeParen.value.length
+            end:
+                closeParen.offset +
+                closeParen.value.length
         };
     }
 
@@ -5396,6 +5519,13 @@ export class Parser {
             catch {
                 incomplete = true;
 
+                this.addIssue(
+                    'PARSE_CASE_THEN',
+                    'Expected THEN in CASE expression',
+                    this.peek()?.offset ?? startOffset,
+                    this.peek()?.offset ?? startOffset
+                );
+
                 this.resyncToCaseBoundary();
             }
 
@@ -5403,21 +5533,15 @@ export class Parser {
             // THEN expression
             // -----------------------------
 
-            try {
-                then =
-                    this.parseExpression(
-                        Precedence.LOWEST,
-                        new Set([
-                            'WHEN',
-                            'ELSE',
-                            'END'
-                        ])
-                    );
-            }
-            catch {
+            if (
+                !this.peek() ||
+                this.peek()?.type === TokenType.Semicolon ||
+                (
+                    this.peek()?.type === TokenType.Keyword &&
+                    RESYNC_KEYWORDS.has(this.peek()!.value)
+                )
+            ) {
                 incomplete = true;
-
-                this.resyncToCaseBoundary();
 
                 then = {
                     type: 'Identifier',
@@ -5426,6 +5550,39 @@ export class Parser {
                     start: this.peek()?.offset ?? startOffset,
                     end: this.peek()?.offset ?? startOffset
                 };
+
+                branches.push({
+                    when,
+                    then
+                });
+
+                break;
+            }
+            else {
+                try {
+                    then =
+                        this.parseExpression(
+                            Precedence.LOWEST,
+                            new Set([
+                                'WHEN',
+                                'ELSE',
+                                'END'
+                            ])
+                        );
+                }
+                catch {
+                    incomplete = true;
+
+                    this.resyncToCaseBoundary();
+
+                    then = {
+                        type: 'Identifier',
+                        name: '__ERROR__',
+                        parts: ['__ERROR__'],
+                        start: this.peek()?.offset ?? startOffset,
+                        end: this.peek()?.offset ?? startOffset
+                    };
+                }
             }
 
             branches.push({
@@ -5521,7 +5678,7 @@ export class Parser {
         }
 
         // ---------------------------------------------
-        // Parse items recoverably
+        // Parse recoverably
         // ---------------------------------------------
 
         while (
@@ -5541,11 +5698,18 @@ export class Parser {
 
             catch {
 
-                // avoid infinite loop
+                // -------------------------------------
+                // Recovery:
+                // move to next comma or clause boundary
+                // -------------------------------------
+
+                this.resyncToSelectBoundary();
+
+                // no forward progress possible
                 if (
                     this.pos === beforePos
                 ) {
-                    return list;
+                    break;
                 }
             }
 
@@ -5557,6 +5721,7 @@ export class Parser {
                 this.peek()?.type ===
                 TokenType.Comma
             ) {
+
                 this.consume();
 
                 // trailing comma
@@ -5692,6 +5857,10 @@ export class Parser {
             if (stmt) {
                 thenBranch = stmt;
                 endOffset = stmt.end;
+
+                if ((stmt as any).incomplete) {
+                    incomplete = true;
+                }
             }
 
             else {
@@ -5734,6 +5903,10 @@ export class Parser {
                 if (stmt) {
                     elseBranch = stmt;
                     endOffset = stmt.end;
+
+                    if ((stmt as any).incomplete) {
+                        incomplete = true;
+                    }
                 }
 
                 else {
@@ -8968,31 +9141,7 @@ export class Parser {
             return false;
         }
 
-        const STOP = new Set([
-            'WITH',
-            'ON',
-            'WHERE',
-            'GROUP',
-            'ORDER',
-            'HAVING',
-            'UNION',
-            'EXCEPT',
-            'INTERSECT',
-            'JOIN',
-            'INNER',
-            'LEFT',
-            'RIGHT',
-            'FULL',
-            'CROSS',
-            'OUTER',
-            'APPLY',
-            'FOR',
-            'OPTION',
-            'OFFSET',
-            'FETCH'
-        ]);
-
-        return !STOP.has(token.value);
+        return !ALIAS_STOP_KEYWORDS.has(token.value);
     }
 
     private isFromBoundary(token?: Token): boolean {
@@ -9048,68 +9197,110 @@ export class Parser {
     }
 
     private parseTransaction(): TransactionNode {
-        const startToken = this.consume(); // BEGIN / COMMIT / ROLLBACK / SAVE
-        const action = startToken.value as TransactionAction;
+
+        const startToken =
+            this.consume(); // BEGIN / COMMIT / ROLLBACK / SAVE
+
+        const action =
+            startToken.value as TransactionAction;
 
         let incomplete = false;
         const errors: string[] = [];
+
         let endOffset =
-            startToken.offset + startToken.value.length;
+            startToken.offset +
+            startToken.value.length;
 
         let distributed = false;
         let name: string | undefined;
 
+        // -------------------------------------------------
         // BEGIN DISTRIBUTED TRANSACTION
+        // -------------------------------------------------
+
         if (
             action === 'BEGIN' &&
-            this.peek()?.value === 'DISTRIBUTED'
+            this.peekKeyword('DISTRIBUTED')
         ) {
+
             this.consume();
+
             distributed = true;
-            endOffset = this.lastConsumedEnd();
+
+            endOffset =
+                this.lastConsumedEnd();
         }
 
-        // consume optional TRANSACTION / TRAN keyword
+        // -------------------------------------------------
+        // Optional TRAN / TRANSACTION
+        // -------------------------------------------------
+
+        const nextValue =
+            this.peek()?.value?.toUpperCase();
+
         if (
-            this.peek()?.value === 'TRANSACTION' ||
-            this.peek()?.value === 'TRAN'
+            nextValue === 'TRANSACTION' ||
+            nextValue === 'TRAN'
         ) {
             this.consume();
-            endOffset = this.lastConsumedEnd();
+
+            endOffset =
+                this.lastConsumedEnd();
         }
 
-        // optional name for BEGIN/COMMIT/ROLLBACK
-        // required name for SAVE
-        const next = this.peek();
+        // -------------------------------------------------
+        // Optional transaction/savepoint name
+        //
+        // CRITICAL:
+        // Do NOT consume statement keywords
+        // like UPDATE/SELECT/INSERT/etc
+        // as transaction names.
+        // -------------------------------------------------
+
+        const next =
+            this.peek();
+
         const hasName =
             next &&
             next.type !== TokenType.Semicolon &&
             (
                 next.type === TokenType.Identifier ||
-                next.type === TokenType.Variable ||
-                // unquoted name that happens to be a non-structural keyword
-                (
-                    next.type === TokenType.Keyword &&
-                    !this.isStructuralKeyword(next.value)
-                )
+                next.type === TokenType.Variable
             );
 
         if (hasName) {
+
             try {
-                name = this.consume().value;
-                endOffset = this.lastConsumedEnd();
-            } catch (e) {
+
+                name =
+                    this.consume().value;
+
+                endOffset =
+                    this.lastConsumedEnd();
+            }
+            catch (e) {
+
                 incomplete = true;
+
                 this.addRecoverableError(
                     errors,
                     'PARSE_TRANSACTION_NAME',
-                    e instanceof Error ? e.message : String(e),
+                    e instanceof Error
+                        ? e.message
+                        : String(e),
                     endOffset
                 );
             }
-        } else if (action === 'SAVE') {
-            // SAVE TRAN requires a name
+        }
+
+        // -------------------------------------------------
+        // SAVE TRAN requires name
+        // -------------------------------------------------
+
+        else if (action === 'SAVE') {
+
             incomplete = true;
+
             this.addRecoverableError(
                 errors,
                 'PARSE_TRANSACTION_SAVE_NAME',
@@ -9121,12 +9312,25 @@ export class Parser {
         return {
             type: 'TransactionStatement',
             action,
-            ...(name !== undefined ? { name } : {}),
-            ...(distributed ? { distributed: true } : {}),
+
+            ...(name !== undefined
+                ? { name }
+                : {}),
+
+            ...(distributed
+                ? { distributed: true }
+                : {}),
+
             start: startToken.offset,
             end: endOffset,
-            ...(incomplete ? { incomplete: true } : {}),
-            ...(errors.length ? { errors } : {})
+
+            ...(incomplete
+                ? { incomplete: true }
+                : {}),
+
+            ...(errors.length
+                ? { errors }
+                : {})
         };
     }
 

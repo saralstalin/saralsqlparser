@@ -333,4 +333,118 @@ describe('T-SQL Parser - DECLARE', () => {
         expect(body[1].type)
             .toBe('SelectStatement');
     });
+
+    test('DECLARE with AS datatype', () => {
+        const stmt = declareStmt(`
+        DECLARE @Id AS INT
+    `);
+
+        expect(stmt.type)
+            .toBe('DeclareStatement');
+
+        expect(stmt.variables)
+            .toHaveLength(1);
+
+        expect(stmt.variables[0].name)
+            .toBe('@Id');
+
+        expect(stmt.variables[0].dataType)
+            .toBe('INT');
+
+        expect(stmt.incomplete)
+            .toBeUndefined();
+    });
+
+    test('DECLARE with AS datatype and initializer', () => {
+        const stmt = declareStmt(`
+        DECLARE @Id AS INT = 1
+    `);
+
+        expect(stmt.variables[0].dataType)
+            .toBe('INT');
+
+        expectSql(
+            stmt.variables[0].initialValue,
+            '1'
+        );
+
+        expect(stmt.incomplete)
+            .toBeUndefined();
+    });
+
+    test('multiple DECLARE variables with AS', () => {
+        const stmt = declareStmt(`
+        DECLARE
+            @Id AS INT,
+            @Name AS VARCHAR(50)
+    `);
+
+        expect(stmt.variables)
+            .toHaveLength(2);
+
+        expect(
+            stmt.variables[0].dataType
+        ).toBe('INT');
+
+        expect(
+            stmt.variables[1].dataType
+        ).toBe('VARCHAR(50)');
+    });
+
+    test('DECLARE TABLE variable with AS', () => {
+        const stmt = declareStmt(`
+        DECLARE @Users AS TABLE (
+            Id INT,
+            Name VARCHAR(50)
+        )
+    `);
+
+        expect(stmt.variables)
+            .toHaveLength(1);
+
+        expect(
+            stmt.variables[0].dataType
+        ).toBe('TABLE');
+
+        expect(
+            stmt.variables[0].columns
+        ).toHaveLength(2);
+
+        expect(stmt.incomplete)
+            .toBeUndefined();
+    });
+
+    test('DECLARE AS does not poison next statement', () => {
+        const body = parseBody(`
+        DECLARE @Id AS INT
+
+        SELECT 1
+    `);
+
+        expect(body.length)
+            .toBeGreaterThanOrEqual(2);
+
+        expect(body[0].type)
+            .toBe('DeclareStatement');
+
+        expect(body[1].type)
+            .toBe('SelectStatement');
+    });
+
+    test('DECLARE AS initializer does not poison next statement', () => {
+        const body = parseBody(`
+        DECLARE @Id AS INT = 1
+
+        SELECT 1
+    `);
+
+        expect(body.length)
+            .toBeGreaterThanOrEqual(2);
+
+        expect(body[0].type)
+            .toBe('DeclareStatement');
+
+        expect(body[1].type)
+            .toBe('SelectStatement');
+    });
 });
