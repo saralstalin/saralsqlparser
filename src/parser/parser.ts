@@ -3974,7 +3974,7 @@ export class Parser {
                         next &&
                         next.type !== TokenType.Semicolon &&
                         next.type !== TokenType.Comma &&
-                        !this.isStructuralKeyword(next.value)
+                        this.canStartExpressionToken(next)
                     ) {
                         value = this.parseExpression();
 
@@ -4620,6 +4620,10 @@ export class Parser {
 
                             const pName =
                                 this.consume().value;
+
+                            if (this.peekKeyword('AS')) {
+                                this.consume();
+                            }
 
                             const pType =
                                 this.parseDataType();
@@ -5655,6 +5659,47 @@ export class Parser {
                     };
                 }
 
+                // unary plus
+                if (value === '+') {
+
+                    const next =
+                        this.peek();
+
+                    if (
+                        next?.type ===
+                        TokenType.Number
+                    ) {
+
+                        const numToken =
+                            this.consume();
+
+                        return {
+                            type: 'Literal',
+                            value: Number(
+                                numToken.value
+                            ),
+                            variant: 'number',
+                            start,
+                            end:
+                                numToken.offset +
+                                numToken.value.length
+                        };
+                    }
+
+                    const right =
+                        this.parseExpression(
+                            Precedence.PREFIX
+                        );
+
+                    return {
+                        type: 'UnaryExpression',
+                        operator: '+',
+                        right,
+                        start,
+                        end: right.end
+                    };
+                }
+
                 // bitwise not
                 if (value === '~') {
 
@@ -5761,12 +5806,35 @@ export class Parser {
                     };
                 }
 
+                const canBeFunctionCall =
+                    this.peek()?.type ===
+                    TokenType.OpenParen;
+
+                if (
+                    token.type === TokenType.Keyword &&
+                    canBeFunctionCall &&
+                    (
+                        RESYNC_KEYWORDS.has(value) ||
+                        STRUCTURAL_KEYWORDS.has(value)
+                    )
+                ) {
+                    return this.parseTableValuedFunction({
+                        type: 'Identifier',
+                        name: value,
+                        parts: [value],
+                        start,
+                        end: start + value.length
+                    });
+                }
+
                 // ---------------------------------------------
-                // Reject statement keywords
+                // Reject statement keywords unless they are
+                // being used as function names like LEFT(...)
                 // ---------------------------------------------
 
                 if (
                     token.type === TokenType.Keyword &&
+                    !canBeFunctionCall &&
                     (
                         RESYNC_KEYWORDS.has(value) ||
                         STRUCTURAL_KEYWORDS.has(value)
@@ -6010,6 +6078,28 @@ export class Parser {
         const token = this.peek();
         // Compare against the Uppercase version since Lexer normalized it
         return token?.type === TokenType.Keyword && token.value === value;
+    }
+
+    private canStartExpressionToken(token: Token | undefined): boolean {
+        if (!token) {
+            return false;
+        }
+
+        if (
+            token.type === TokenType.Semicolon ||
+            token.type === TokenType.Comma
+        ) {
+            return false;
+        }
+
+        if (
+            token.type === TokenType.Keyword &&
+            this.isStructuralKeyword(token.value)
+        ) {
+            return this.peek(1)?.type === TokenType.OpenParen;
+        }
+
+        return !RESYNC_KEYWORDS.has(token.value);
     }
 
     private parseCaseExpression(): Expression {
@@ -6344,6 +6434,14 @@ export class Parser {
             token.type === TokenType.CloseParen
         ) {
             return true;
+        }
+
+        if (
+            token === this.peek() &&
+            token.type === TokenType.Keyword &&
+            this.peek(1)?.type === TokenType.OpenParen
+        ) {
+            return false;
         }
 
         return (
@@ -8125,7 +8223,8 @@ export class Parser {
         if (
             this.peek() &&
             this.peek()!.type !== TokenType.Semicolon &&
-            !this.isStructuralKeyword(this.peek()!.value)
+            !this.isStructuralKeyword(this.peek()!.value) &&
+            !RESYNC_KEYWORDS.has(this.peek()!.value)
         ) {
             value = this.parseExpression();
             end = value.end;

@@ -1,6 +1,7 @@
 import {
     parseOne,
     parseAst,
+    parseResult,
     expectSql
 } from './parser.helpers';
 
@@ -102,6 +103,43 @@ describe('T-SQL Parser - RETURN', () => {
         expect(block.body).toHaveLength(1);
         expect(block.body[0].type).toBe('ReturnStatement');
         expectSql(block.body[0].value, '5');
+    });
+
+    test('should parse bare RETURN before END inside validation blocks', () => {
+        const result = parseResult(`
+            CREATE PROCEDURE dbo.ValidateInput
+                @Value INT
+            AS
+            BEGIN
+                IF @Value <= 0
+                BEGIN
+                    RAISERROR('Value must be greater than 0', 16, 1)
+                    RETURN
+                END
+            END
+        `);
+
+        expect(result.issues).toHaveLength(0);
+        expect(result.ast.body).toHaveLength(1);
+    });
+
+    test('should parse keyword function call in SET inside conditional block', () => {
+        const result = parseResult(`
+            CREATE PROCEDURE dbo.NormalizeRuleId
+                @RuleId VARCHAR(100)
+            AS
+            BEGIN
+                DECLARE @BaseRuleId VARCHAR(100) = @RuleId;
+
+                IF (@RuleId LIKE '%_REGION')
+                BEGIN
+                    SET @BaseRuleId = LEFT(@RuleId, CHARINDEX('_', @RuleId) - 1)
+                END
+            END
+        `);
+
+        expect(result.issues).toHaveLength(0);
+        expect(result.ast.body).toHaveLength(1);
     });
 });
 

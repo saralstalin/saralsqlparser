@@ -15,6 +15,9 @@ import {
     PrintNode,
     MergeNode,
     TryCatchNode,
+    RaiseErrorNode,
+    ThrowNode,
+    WhileNode,
     QueryStatement,
     TableReference,
     JoinNode,
@@ -182,8 +185,20 @@ export class ScopeBuilder {
                 this.visitPrint(stmt);
                 break;
 
+            case 'RaiseErrorStatement':
+                this.visitRaiseError(stmt);
+                break;
+
+            case 'ThrowStatement':
+                this.visitThrow(stmt);
+                break;
+
             case 'TryCatchStatement':
                 this.visitTryCatch(stmt);
+                break;
+
+            case 'WhileStatement':
+                this.visitWhile(stmt);
                 break;
 
             default:
@@ -238,9 +253,39 @@ export class ScopeBuilder {
         this.visitExpression(stmt.value);
     }
 
+    private visitRaiseError(stmt: RaiseErrorNode): void {
+        for (const arg of stmt.args) {
+            this.visitExpression(arg);
+        }
+    }
+
+    private visitThrow(stmt: ThrowNode): void {
+        if (stmt.errorNumber) {
+            this.visitExpression(stmt.errorNumber);
+        }
+
+        if (stmt.message) {
+            this.visitExpression(stmt.message);
+        }
+
+        if (stmt.state) {
+            this.visitExpression(stmt.state);
+        }
+    }
+
     private visitTryCatch(stmt: TryCatchNode): void {
         this.visitBlock(stmt.tryBlock);
         this.visitBlock(stmt.catchBlock);
+    }
+
+    private visitWhile(stmt: WhileNode): void {
+        if (stmt.condition) {
+            this.visitExpression(stmt.condition);
+        }
+
+        if (stmt.body) {
+            this.visitStatement(stmt.body);
+        }
     }
 
     private visitInsert(stmt: InsertNode): void {

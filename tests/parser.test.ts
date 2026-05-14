@@ -184,6 +184,34 @@ describe('T-SQL Parser', () => {
         expect((parse(sql).body[0] as SelectNode).distinct).toBe(true);
     });
 
+    test('should parse SELECT DISTINCT with leading unary plus concatenation', () => {
+        const sql = `
+            SELECT DISTINCT + @LineBreak + 'Message ' + CAST(item.RowNum AS VARCHAR(10))
+            FROM dbo.Items item
+        `;
+
+        const result = new Parser(new Lexer(sql)).parse();
+        const stmt = result.ast.body[0] as SelectNode;
+        const expr = stmt.columns[0].expression;
+
+        expect(result.issues).toHaveLength(0);
+        expect(stmt.distinct).toBe(true);
+        expect(expr.type).toBe('BinaryExpression');
+        if (expr.type !== 'BinaryExpression') {
+            throw new Error('Expected select expression to be a BinaryExpression');
+        }
+        const leftConcat = expr.left;
+        expect(leftConcat.type).toBe('BinaryExpression');
+        if (leftConcat.type !== 'BinaryExpression') {
+            throw new Error('Expected left concatenation to be a BinaryExpression');
+        }
+        expect(leftConcat.left.type).toBe('UnaryExpression');
+        if (leftConcat.left.type !== 'UnaryExpression') {
+            throw new Error('Expected leading expression to be a UnaryExpression');
+        }
+        expect(leftConcat.left.operator).toBe('+');
+    });
+
     // 10. ALL (Explicit)
     test('should handle SELECT ALL', () => {
         const sql = `SELECT ALL Name FROM Users`;
@@ -1229,6 +1257,27 @@ OUTPUT inserted.Id, deleted.Id INTO Audit(InsertedId, DeletedId);`;
             expect(stmt.columns[1].alias).toBe('Modified Date');
             expect(stmt.from).toHaveLength(1);
             expect(stmt.from?.[0].joins).toHaveLength(1);
+        });
+
+        test('should parse procedure TVP parameter with optional AS', () => {
+            const sql = `
+                CREATE PROCEDURE dbo.ProcessItems
+                    @ItemIds AS [dbo].[IdType] READONLY,
+                    @ChangedBy VARCHAR(255)
+                AS
+                BEGIN
+                    DECLARE @AuditItems [dbo].[AuditType];
+                END
+            `;
+
+            const result = new Parser(new Lexer(sql)).parse();
+            const stmt = result.ast.body[0] as CreateNode;
+
+            expect(result.issues).toHaveLength(0);
+            expect(stmt.type).toBe('CreateStatement');
+            expect(stmt.parameters).toHaveLength(2);
+            expect(stmt.parameters?.[0].dataType).toBe('[dbo].[IdType]');
+            expect(stmt.parameters?.[0].isReadOnly).toBe(true);
         });
 
         test('should parse OUTPUT INTO table', () => {

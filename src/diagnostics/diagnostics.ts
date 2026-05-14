@@ -214,7 +214,7 @@ export class DiagnosticEngine {
             });
         }
 
-        if (!stmt.where) {
+        if (!stmt.where && !this.hasJoinedFromClause(stmt.from)) {
             this.emit({
                 code: DiagnosticCode.UpdateWithoutWhere,
                 message: `UPDATE statement has no WHERE clause — all rows will be affected`,
@@ -228,7 +228,7 @@ export class DiagnosticEngine {
     private checkDelete(stmt: DeleteNode): void {
         if (stmt.incomplete) return;
 
-        if (!stmt.where) {
+        if (!stmt.where && !this.hasJoinedFromClause(stmt.from)) {
             this.emit({
                 code: DiagnosticCode.DeleteWithoutWhere,
                 message: `DELETE statement has no WHERE clause — all rows will be deleted`,
@@ -681,6 +681,16 @@ export class DiagnosticEngine {
         }
 
         return null;
+    }
+
+    private hasJoinedFromClause(
+        from: SelectNode['from'] | UpdateNode['from'] | DeleteNode['from'] | undefined
+    ): boolean {
+        if (!from?.length) {
+            return false;
+        }
+
+        return from.some(ref => ref.joins.length > 0);
     }
 
     private normalizeColumnName(name: string): string {

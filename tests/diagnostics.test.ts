@@ -164,6 +164,45 @@ describe('VAR002 — unused variable', () => {
         // Table variables are SymbolKind.Table not Variable, so no warning
         expect(d.length).toBe(0);
     });
+
+    test('does NOT fire when variable is used in RAISERROR', () => {
+        const d = only(
+            `
+            DECLARE @Message VARCHAR(100) = 'bad';
+            RAISERROR(@Message, 16, 1);
+            `,
+            DiagnosticCode.UnusedVariable
+        );
+
+        expect(d.length).toBe(0);
+    });
+
+    test('does NOT fire when variable is used in THROW', () => {
+        const d = only(
+            `
+            DECLARE @Message VARCHAR(100) = 'bad';
+            THROW 50001, @Message, 1;
+            `,
+            DiagnosticCode.UnusedVariable
+        );
+
+        expect(d.length).toBe(0);
+    });
+
+    test('does NOT fire when variable is used in WHILE condition and loop body', () => {
+        const d = only(
+            `
+            DECLARE @DepthLevel INT = 0;
+            WHILE @DepthLevel < 3
+            BEGIN
+                SET @DepthLevel = @DepthLevel + 1;
+            END
+            `,
+            DiagnosticCode.UnusedVariable
+        );
+
+        expect(d.length).toBe(0);
+    });
 });
 
 // ─── VAR003: Unused parameter ────────────────────────────────────────────────
@@ -271,6 +310,20 @@ describe('DML001 — UPDATE without WHERE', () => {
             DiagnosticCode.UpdateWithoutWhere
         );
         expect(d.length).toBe(1);
+    });
+
+    test('does NOT fire when joined FROM clause limits rows', () => {
+        const d = only(
+            `
+            UPDATE targetRow
+            SET Status = 0
+            FROM dbo.Users targetRow
+            JOIN dbo.AllowedUsers allowedRow
+                ON allowedRow.Id = targetRow.Id
+            `,
+            DiagnosticCode.UpdateWithoutWhere
+        );
+        expect(d.length).toBe(0);
     });
 
     test('diagnostic start offset points to UPDATE keyword', () => {
@@ -570,6 +623,34 @@ describe('LOG001 â€” self comparison', () => {
             FROM dbo.Users
             WHERE UserId = RoleId;
         `, DiagnosticCode.SelfComparison);
+
+        expect(d.length).toBe(0);
+    });
+});
+
+describe('joined DML without WHERE', () => {
+    test('UPDATE without WHERE does NOT fire when joined FROM clause limits rows', () => {
+        const d = only(
+            `
+            UPDATE targetRow
+            SET Status = 0
+            FROM dbo.Users targetRow
+            JOIN dbo.AllowedUsers allowedRow
+                ON allowedRow.Id = targetRow.Id
+            `,
+            DiagnosticCode.UpdateWithoutWhere
+        );
+
+        expect(d.length).toBe(0);
+    });
+
+    test('DELETE without WHERE does NOT fire when joined FROM clause limits rows', () => {
+        const d = only(`
+            DELETE targetRow
+            FROM dbo.Users targetRow
+            JOIN dbo.AllowedUsers allowedRow
+                ON allowedRow.Id = targetRow.Id
+        `, DiagnosticCode.DeleteWithoutWhere);
 
         expect(d.length).toBe(0);
     });
