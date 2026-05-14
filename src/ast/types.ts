@@ -316,7 +316,7 @@ export interface MergeWhenClause extends NodeLocation, Recoverable {
 
 export interface MergeNode extends NodeLocation, Recoverable {
     type: 'MergeStatement';
-    top?: string | null;
+    top?: TopClause | null;
     target: Expression | null;
     targetAlias?: string;
     using: TableReference | null;

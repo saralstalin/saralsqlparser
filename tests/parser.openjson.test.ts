@@ -73,7 +73,7 @@ describe('OPENJSON parsing', () => {
         expect(fn.openJsonWith).toHaveLength(3);
         expect(fn.openJsonWith[2]).toMatchObject({
             name: 'period',
-            dataType: 'NVARCHAR(MAX)',
+            dataType: 'NVARCHAR(max)',
             asJson: true
         });
         expect(stmt.from?.[0].alias).toBe('career');

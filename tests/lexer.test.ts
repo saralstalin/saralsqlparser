@@ -97,4 +97,50 @@ describe('T-SQL Lexer - Tests', () => {
         expect(t.type).toBe(TokenType.Number);
         expect(t.value).toBe('123.45');
     });
+
+    test('MAX: Should lex as Identifier, not Keyword', () => {
+        const lexer = new Lexer('MAX(Value)');
+        const t = lexer.nextToken();
+
+        expect(t.type).toBe(TokenType.Identifier);
+        expect(t.value).toBe('MAX');
+    });
+
+    test('Numbers: Should handle scientific notation', () => {
+        const lexer = new Lexer('1e10 2.5E-3');
+        const t1 = lexer.nextToken();
+        const t2 = lexer.nextToken();
+
+        expect(t1.type).toBe(TokenType.Number);
+        expect(t1.value).toBe('1e10');
+        expect(t2.type).toBe(TokenType.Number);
+        expect(t2.value).toBe('2.5E-3');
+    });
+
+    test('Numbers: Should handle hex literals', () => {
+        const lexer = new Lexer('0x1A 0Xff');
+        const t1 = lexer.nextToken();
+        const t2 = lexer.nextToken();
+
+        expect(t1.type).toBe(TokenType.Number);
+        expect(t1.value).toBe('0x1A');
+        expect(t2.type).toBe(TokenType.Number);
+        expect(t2.value).toBe('0Xff');
+    });
+
+    test('String Literals: Unterminated string emits lexer issue', () => {
+        const lexer = new Lexer("'unterminated");
+        const t = lexer.nextToken();
+
+        expect(t.type).toBe(TokenType.String);
+        expect(t.value).toBe("'unterminated");
+        expect(lexer.getIssues()).toEqual([
+            {
+                code: 'LEX_UNTERMINATED_STRING',
+                message: 'Unterminated string literal',
+                start: 0,
+                end: 13
+            }
+        ]);
+    });
 });

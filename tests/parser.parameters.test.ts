@@ -117,4 +117,18 @@ describe('T-SQL Parser - Procedure Parameters', () => {
         expect(stmt.parameters)
             .toHaveLength(3);
     });
+
+    test('broken parameter list still recovers to AS body', () => {
+        const stmt = parseOne<any>(`
+            CREATE PROC Test
+                @Id INT,
+                @Bad INT = )
+            AS
+            SELECT 1
+        `);
+
+        expect(stmt.type).toBe('CreateStatement');
+        expect(stmt.parameters).toHaveLength(1);
+        expect(stmt.body[1].type).toBe('SelectStatement');
+    });
 });

@@ -1,3 +1,5 @@
+import type { ParseIssue } from '../ast/types';
+
 export enum TokenType {
     Keyword,
     Identifier,
@@ -29,6 +31,7 @@ export class Lexer {
     private pos = 0;
     private line = 1;
     private col = 1;
+    private issues: ParseIssue[] = [];
 
     // Rule #3: Keywords are stored in UpperCase for normalized comparison
     private KEYWORDS = new Set([
@@ -68,7 +71,7 @@ export class Lexer {
         // ── Window functions ──────────────────────────────────────────────────────
         // OVER (PARTITION BY ... ORDER BY ... ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
         'OVER', 'PARTITION',
-        'UNBOUNDED', 'PRECEDING', 'FOLLOWING', 'CURRENT', 'RANGE', 'CURRENT', 'ROW',
+        'UNBOUNDED', 'PRECEDING', 'FOLLOWING', 'CURRENT', 'RANGE', 'ROW',
         // ROWS already listed under Pagination — serves double duty here
 
         // ── DML ───────────────────────────────────────────────────────────────────
@@ -152,7 +155,7 @@ export class Lexer {
         'UNIQUEIDENTIFIER',
         'VARBINARY', 'BINARY', 'IMAGE',
         'XML', 'JSON',
-        'MAX', 'FOR',                              // VARCHAR(MAX), NVARCHAR(MAX)
+        'FOR',                              // VARCHAR(MAX), NVARCHAR(MAX)
 
         // ── Transactions ──────────────────────────────────────────────────────────
         'TRANSACTION', 'TRAN',
@@ -162,6 +165,10 @@ export class Lexer {
     ]);
 
     constructor(private input: string) { }
+
+    public getIssues(): ParseIssue[] {
+        return [...this.issues];
+    }
 
     private peek(offset: number = 0) {
         return this.input[this.pos + offset];
@@ -259,6 +266,23 @@ export class Lexer {
         let val = "";
         let hasDot = false;
 
+        if (
+            this.peek() === '0' &&
+            (this.peek(1) === 'x' || this.peek(1) === 'X')
+        ) {
+            val += this.consume();
+            val += this.consume();
+
+            while (
+                this.pos < this.input.length &&
+                /[0-9a-fA-F]/.test(this.peek())
+            ) {
+                val += this.consume();
+            }
+
+            return { type: TokenType.Number, value: val, line, col, offset };
+        }
+
         while (this.pos < this.input.length) {
             const ch = this.peek();
             if (/[0-9]/.test(ch)) {
@@ -269,6 +293,26 @@ export class Lexer {
                 val += this.consume();
             } else {
                 break;
+            }
+        }
+
+        if (
+            (this.peek() === 'e' || this.peek() === 'E') &&
+            /[+-]?[0-9]/.test(
+                `${this.peek(1) ?? ''}${this.peek(2) ?? ''}`
+            )
+        ) {
+            val += this.consume();
+
+            if (this.peek() === '+' || this.peek() === '-') {
+                val += this.consume();
+            }
+
+            while (
+                this.pos < this.input.length &&
+                /[0-9]/.test(this.peek())
+            ) {
+                val += this.consume();
             }
         }
 
@@ -315,6 +359,7 @@ export class Lexer {
 
         const quote = this.consume();
         value += quote;
+        let terminated = false;
 
         while (this.pos < this.input.length) {
             if (this.peek() === "'" && this.peek(1) === "'") {
@@ -322,10 +367,20 @@ export class Lexer {
                 value += this.consume();
             } else if (this.peek() === "'") {
                 value += this.consume();
+                terminated = true;
                 break;
             } else {
                 value += this.consume();
             }
+        }
+
+        if (!terminated) {
+            this.issues.push({
+                code: 'LEX_UNTERMINATED_STRING',
+                message: 'Unterminated string literal',
+                start: startOffset,
+                end: startOffset + value.length
+            });
         }
 
         return { type: TokenType.String, value, line, col, offset: startOffset };

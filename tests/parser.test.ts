@@ -923,9 +923,26 @@ WHEN MATCHED THEN DELETE;`;
             const stmt = ast.body[0] as any;
 
             expect(stmt.type).toBe('MergeStatement');
-            expect(stmt.top).toBe('10');
+            expect(stmt.top?.type).toBe('TopClause');
+            expect(stmt.top?.percent).toBe(false);
+            expect(stmt.top?.withTies).toBe(false);
+            expect((stmt.top?.quantity as LiteralNode).value).toBe(10);
             expect(stmt.whenClauses).toHaveLength(1);
             expect(stmt.whenClauses[0].action.type).toBe('MergeDeleteAction');
+        });
+
+        test('should parse MERGE TOP variable expression', () => {
+            const sql = `MERGE TOP (@n) dbo.Target AS T
+USING dbo.Source AS S
+ON T.Id = S.Id
+WHEN MATCHED THEN DELETE;`;
+            const ast = parse(sql);
+            const stmt = ast.body[0] as any;
+
+            expect(stmt.type).toBe('MergeStatement');
+            expect(stmt.top?.type).toBe('TopClause');
+            expect(stmt.top?.quantity?.type).toBe('Variable');
+            expect(stmt.top?.quantity?.name).toBe('@n');
         });
 
         test('should parse MERGE NOT MATCHED BY SOURCE with INSERT SELECT', () => {

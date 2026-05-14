@@ -499,5 +499,16 @@ describe('T-SQL Parser - CREATE INDEX', () => {
             expect(stmt.columns)
                 .toHaveLength(1);
         });
+
+        test('broken INCLUDE list does not swallow filtered-index WHERE', () => {
+            const stmt = parseOne<any>(`
+                CREATE INDEX ix_X ON dbo.X (Id)
+                INCLUDE (dbo.*)
+                WHERE IsActive = 1
+            `);
+
+            expect(stmt.include).toEqual([]);
+            expect(stmt.where).toBeDefined();
+        });
     });
 });

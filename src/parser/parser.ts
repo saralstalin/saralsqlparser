@@ -132,6 +132,7 @@ export class Parser {
             this.tokens.push(t);
         }
         this.inputLength = t.offset;
+        this.issues.push(...lexer.getIssues());
     }
 
     private peek(offset: number = 0) {
@@ -222,10 +223,6 @@ export class Parser {
                 }
             }
 
-            // consume semicolon
-            if (this.peek()?.type === TokenType.Semicolon) {
-                this.consume();
-            }
         }
 
         const ast: Program = {
@@ -3879,17 +3876,21 @@ export class Parser {
             } catch {
                 incomplete = true;
 
-                this.recoverTo([
-                    ',',
-                    ')',
-                    ';',
-                    ...RESYNC_KEYWORDS
-                ]);
+                this.resyncToBoundary(
+                    this.isTableDefinitionRecoveryBoundary.bind(this)
+                );
 
                 if (
                     this.peek()?.type === TokenType.Comma
                 ) {
                     this.consume();
+                    continue;
+                }
+
+                if (
+                    this.peek() &&
+                    !this.isTableDefinitionRecoveryBoundary(this.peek())
+                ) {
                     continue;
                 }
 
@@ -4227,6 +4228,9 @@ export class Parser {
                                 end:
                                     this.lastConsumedEnd()
                             };
+                        }, {
+                            isBoundary:
+                                this.isParameterListBoundary.bind(this)
                         });
 
                     endOffset =
@@ -5774,17 +5778,23 @@ export class Parser {
     }
 
     private parseList<T>(
-        parserFn: () => T
+        parserFn: () => T,
+        options?: {
+            isBoundary?: (token?: Token) => boolean;
+        }
     ): T[] {
 
         const list: T[] = [];
+        const isBoundary =
+            options?.isBoundary ??
+            this.isDefaultListBoundary.bind(this);
 
         // ---------------------------------------------
         // Empty list
         // ---------------------------------------------
 
         if (
-            isClauseBoundary(
+            isBoundary(
                 this.peek()
             )
         ) {
@@ -5817,7 +5827,9 @@ export class Parser {
                 // move to next comma or clause boundary
                 // -------------------------------------
 
-                this.resyncToSelectBoundary();
+                this.resyncToBoundary(
+                    isBoundary
+                );
 
                 // no forward progress possible
                 if (
@@ -5840,7 +5852,7 @@ export class Parser {
 
                 // trailing comma
                 if (
-                    isClauseBoundary(
+                    isBoundary(
                         this.peek()
                     )
                 ) {
@@ -5854,6 +5866,97 @@ export class Parser {
         }
 
         return list;
+    }
+
+    private isDefaultListBoundary(token?: Token): boolean {
+        if (!token) {
+            return true;
+        }
+
+        if (
+            token.type === TokenType.Semicolon ||
+            token.type === TokenType.CloseParen
+        ) {
+            return true;
+        }
+
+        return (
+            token.type === TokenType.Keyword &&
+            (
+                STRUCTURAL_KEYWORDS.has(token.value) ||
+                RESYNC_KEYWORDS.has(token.value)
+            )
+        );
+    }
+
+    private isParameterListBoundary(token?: Token): boolean {
+        if (!token) {
+            return true;
+        }
+
+        if (
+            token.type === TokenType.Semicolon ||
+            token.type === TokenType.CloseParen
+        ) {
+            return true;
+        }
+
+        return (
+            token.type === TokenType.Keyword &&
+            (
+                token.value === 'AS' ||
+                token.value === 'RETURNS'
+            )
+        );
+    }
+
+    private isCreateIndexIncludeBoundary(token?: Token): boolean {
+        if (!token) {
+            return true;
+        }
+
+        if (
+            token.type === TokenType.Semicolon ||
+            token.type === TokenType.CloseParen
+        ) {
+            return true;
+        }
+
+        return (
+            token.type === TokenType.Keyword &&
+            (
+                token.value === 'WHERE' ||
+                token.value === 'WITH' ||
+                token.value === 'OPTION'
+            )
+        );
+    }
+
+    private isIndexOptionBoundary(token?: Token): boolean {
+        if (!token) {
+            return true;
+        }
+
+        return (
+            token.type === TokenType.Semicolon ||
+            token.type === TokenType.CloseParen
+        );
+    }
+
+    private isTableDefinitionRecoveryBoundary(token?: Token): boolean {
+        if (!token) {
+            return true;
+        }
+
+        return (
+            token.type === TokenType.Comma ||
+            token.type === TokenType.CloseParen ||
+            token.type === TokenType.Semicolon ||
+            (
+                token.type === TokenType.Keyword &&
+                RESYNC_KEYWORDS.has(token.value)
+            )
+        );
     }
 
     private parseIf(): IfNode {
@@ -6561,12 +6664,6 @@ export class Parser {
         return last.offset + last.value.length;
     }
 
-    private isSetOperator(token: Token | null): boolean {
-        if (!token || token.type !== TokenType.Keyword) return false;
-        const val = token.value; // Already Uppercase from Lexer
-        return val === 'UNION' || val === 'EXCEPT' || val === 'INTERSECT';
-    }
-
     private parseQueryExpression(): QueryStatement {
         const left = this.parseSelect();
         return this.parseSetOperation(left);
@@ -6904,7 +7001,7 @@ export class Parser {
 
     private resync(): void {
         // 1. Always move forward at least one token to avoid infinite loops
-        this.pos++;
+        this.consume();
 
         // 2. Skip tokens until we find a semicolon or a major statement keyword
         while (this.pos < this.tokens.length) {
@@ -6914,19 +7011,8 @@ export class Parser {
                 break;
             }
             if (RESYNC_KEYWORDS.has(val!)) break;
-            this.pos++;
+            this.consume();
         }
-    }
-
-    private isMergeBoundary(token?: Token): boolean {
-        if (!token) return true;
-
-        return (
-            token.type === TokenType.Semicolon ||
-            token.value === 'WHEN' ||
-            token.value === 'OUTPUT' ||
-            token.value === 'OPTION'
-        );
     }
 
     private parseMerge(): MergeNode {
@@ -6937,7 +7023,7 @@ export class Parser {
         let endOffset =
             startToken.offset + startToken.value.length;
 
-        let top: string | null = null;
+        let top: TopClause | null = null;
         let target: Expression | null = null;
         let targetAlias: string | undefined;
         let usingTable: TableReference | null = null;
@@ -6949,7 +7035,11 @@ export class Parser {
         // TOP(...)
         // ------------------------------------------------------------
         if (this.peekKeyword('TOP')) {
-            this.consume();
+            const topToken = this.consume();
+            let topEnd =
+                topToken.offset + topToken.value.length;
+            const topErrors: string[] = [];
+            let topIncomplete = false;
 
             const hasParens =
                 this.peek()?.type === TokenType.OpenParen;
@@ -6959,27 +7049,113 @@ export class Parser {
             }
 
             try {
-                const topToken = this.consume();
-                top = topToken.value;
-                endOffset =
-                    topToken.offset + topToken.value.length;
-            } catch {
-                incomplete = true;
+                const next = this.peek();
+                let quantity: Expression | null = null;
 
+                if (
+                    !next ||
+                    next.type === TokenType.Semicolon ||
+                    (
+                        next.type === TokenType.Keyword &&
+                        RESYNC_KEYWORDS.has(next.value)
+                    )
+                ) {
+                    topIncomplete = true;
+                    this.addRecoverableError(
+                        topErrors,
+                        'PARSE_MERGE_TOP',
+                        'Expected TOP value',
+                        topEnd,
+                        topEnd
+                    );
+                } else if (hasParens && next.type === TokenType.CloseParen) {
+                    topIncomplete = true;
+                    this.addRecoverableError(
+                        topErrors,
+                        'PARSE_MERGE_TOP',
+                        'Expected TOP value',
+                        topEnd,
+                        topEnd
+                    );
+                } else if (hasParens) {
+                    quantity = this.parseExpression();
+                    topEnd = quantity.end;
+                } else {
+                    const quantityToken = this.consume();
+                    const numVal = Number(quantityToken.value);
+                    quantity = {
+                        type: 'Literal',
+                        variant:
+                            numVal !== numVal
+                                ? 'string'
+                                : 'number',
+                        value:
+                            numVal !== numVal
+                                ? quantityToken.value
+                                : numVal,
+                        start: quantityToken.offset,
+                        end:
+                            quantityToken.offset +
+                            quantityToken.value.length,
+                    };
+                    topEnd = quantity.end;
+                }
+
+                top = {
+                    type: 'TopClause',
+                    quantity,
+                    percent: false,
+                    withTies: false,
+                    start: topToken.offset,
+                    end: topEnd,
+                    ...(topIncomplete ? { incomplete: true } : {}),
+                    ...(topErrors.length ? { errors: topErrors } : {}),
+                };
+                endOffset = top.end;
+            } catch {
+                topIncomplete = true;
                 this.addRecoverableError(
-                    errors,
+                    topErrors,
                     'PARSE_MERGE_TOP',
                     'Expected TOP value',
-                    endOffset
+                    topEnd,
+                    topEnd
                 );
+
+                top = {
+                    type: 'TopClause',
+                    quantity: null,
+                    percent: false,
+                    withTies: false,
+                    start: topToken.offset,
+                    end: topEnd,
+                    incomplete: true,
+                    errors: topErrors,
+                };
+                endOffset = top.end;
             }
 
-            if (
-                hasParens &&
-                this.peek()?.type === TokenType.CloseParen
-            ) {
-                this.consume();
-                endOffset = this.lastConsumedEnd();
+            if (hasParens) {
+                if (this.peek()?.type === TokenType.CloseParen) {
+                    this.consume();
+                    endOffset = this.lastConsumedEnd();
+                    if (top) {
+                        top.end = endOffset;
+                    }
+                } else {
+                    topIncomplete = true;
+                    this.addRecoverableError(
+                        topErrors,
+                        'PARSE_MERGE_TOP_CLOSE_PAREN',
+                        'Expected ) after TOP expression',
+                        topEnd,
+                        topEnd
+                    );
+                    if (top) {
+                        top.incomplete = true;
+                        top.errors = topErrors;
+                    }
+                }
             }
         }
 
@@ -8773,6 +8949,8 @@ export class Parser {
                     start: colStart,
                     end: this.lastConsumedEnd()
                 };
+            }, {
+                isBoundary: this.isCreateIndexIncludeBoundary.bind(this)
             });
 
             if (this.peek()?.type === TokenType.CloseParen) {
@@ -8817,6 +8995,8 @@ export class Parser {
                         );
                     }
                     return colExpr;
+                }, {
+                    isBoundary: this.isCreateIndexIncludeBoundary.bind(this)
                 });
 
                 if (this.peek()?.type === TokenType.CloseParen) {
@@ -8907,6 +9087,8 @@ export class Parser {
                         start: optStart,
                         end: this.lastConsumedEnd()
                     };
+                }, {
+                    isBoundary: this.isIndexOptionBoundary.bind(this)
                 });
 
                 if (this.peek()?.type === TokenType.CloseParen) {
@@ -9583,7 +9765,9 @@ export class Parser {
         }
     }
 
-    private resyncToSelectBoundary(): void {
+    private resyncToBoundary(
+        isBoundary: (token?: Token) => boolean
+    ): void {
         while (this.pos < this.tokens.length) {
             const token = this.peek();
 
@@ -9617,26 +9801,18 @@ export class Parser {
                 return;
             }
 
-            // ---------------------------------------------
-            // Structural / statement boundaries
-            // ---------------------------------------------
-
-            if (
-                token.type === TokenType.Keyword &&
-                (
-                    STRUCTURAL_KEYWORDS.has(
-                        token.value
-                    ) ||
-                    RESYNC_KEYWORDS.has(
-                        token.value
-                    )
-                )
-            ) {
+            if (isBoundary(token)) {
                 return;
             }
 
             this.consume();
         }
+    }
+
+    private resyncToSelectBoundary(): void {
+        this.resyncToBoundary(
+            this.isDefaultListBoundary.bind(this)
+        );
     }
 
 }

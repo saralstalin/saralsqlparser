@@ -334,6 +334,20 @@ describe('T-SQL Parser - Constraints', () => {
                 ast.body[1].type
             ).toBe('SelectStatement');
         });
+
+        test('broken table column definition recovers to next column', () => {
+            const stmt = parseOne<any>(`
+                CREATE TABLE X(
+                    Id INT,
+                    dbo.* INT,
+                    Name NVARCHAR(50)
+                )
+            `);
+
+            expect(
+                stmt.columns.some((c: any) => c.name === 'Name')
+            ).toBe(true);
+        });
     });
 });
 
