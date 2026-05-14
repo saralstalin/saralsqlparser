@@ -41,6 +41,7 @@ import {
     // Expressions
     Expression,
     IdentifierNode,
+    FunctionCallNode,
     GroupingExpression,
     SubqueryExpression,
     OverExpression,
@@ -53,6 +54,9 @@ import {
     ReturnNode,
     CastExpression,
     ForClause,
+    ForJsonOption,
+    ForXmlOption,
+    OpenJsonColumnDefinition,
 
     // Table / relational
     TableReference,
@@ -237,15 +241,19 @@ export class Parser {
         };
     }
 
-    private parseMultipartIdentifier(): Expression {
+    private parseMultipartIdentifier(
+        firstConsumed?: Token
+    ): Expression {
         const segments: Token[] = [];
 
-        const startToken = this.peek();
+        const startToken =
+            firstConsumed ?? this.peek();
         let startOffset = startToken?.offset ?? 0;
         let endOffset = startOffset;
 
         // --- 1. First segment (never throw) ---
-        const first = this.peek();
+        const first =
+            firstConsumed ?? this.peek();
 
         if (
             !first ||
@@ -279,7 +287,8 @@ export class Parser {
             } as IdentifierNode;
         }
 
-        const consumedFirst = this.consume();
+        const consumedFirst =
+            firstConsumed ?? this.consume();
         segments.push(consumedFirst);
 
         startOffset = consumedFirst.offset;
@@ -369,39 +378,313 @@ export class Parser {
         } as IdentifierNode;
     }
 
-    private normalizeSetTree(node: QueryStatement): QueryStatement {
-        if (node.type !== 'SetOperator') {
-            return node;
+    private parseTableValuedFunction(
+        idNode: IdentifierNode
+    ): FunctionCallNode {
+        this.match(TokenType.OpenParen);
+
+        const args: Expression[] = [];
+
+        if (this.peek()?.type !== TokenType.CloseParen) {
+            args.push(
+                ...this.parseList(() =>
+                    this.parseExpression(
+                        Precedence.LOWEST
+                    )
+                )
+            );
         }
 
-        // normalize children first
-        const left = this.normalizeSetTree(node.left);
-        const right = this.normalizeSetTree(node.right);
+        const closeParen =
+            this.match(TokenType.CloseParen);
 
-        // 🔥 rotate left-deep → right-deep
-        if (left.type === 'SetOperator') {
-            return {
-                type: 'SetOperator',
-                operator: left.operator,
-                left: left.left,
-                right: this.normalizeSetTree({
-                    type: 'SetOperator',
-                    operator: node.operator,
-                    left: left.right,
-                    right: right,
-                    start: left.right.start,
-                    end: right.end
-                }),
-                start: left.start,
-                end: right.end
-            };
+        let openJsonWith:
+            OpenJsonColumnDefinition[] | undefined;
+
+        if (
+            idNode.name.toUpperCase() === 'OPENJSON' &&
+            this.peekKeyword('WITH')
+        ) {
+            openJsonWith =
+                this.parseOpenJsonWithClause();
         }
 
         return {
-            ...node,
-            left,
-            right
+            type: 'FunctionCall',
+            name: idNode.name,
+            args,
+            start: idNode.start,
+            end:
+                openJsonWith?.length
+                    ? openJsonWith[
+                        openJsonWith.length - 1
+                    ].end
+                    : closeParen.offset +
+                    closeParen.value.length,
+            ...(openJsonWith
+                ? { openJsonWith }
+                : {})
         };
+    }
+
+    private parseOpenJsonWithClause(): OpenJsonColumnDefinition[] {
+        this.matchKeyword('WITH');
+        this.match(TokenType.OpenParen);
+
+        const columns: OpenJsonColumnDefinition[] = [];
+
+        while (this.peek()) {
+            if (this.peek()?.type === TokenType.CloseParen) {
+                this.consume();
+                break;
+            }
+
+            const startToken = this.peek()!;
+            const nameExpr =
+                this.parseMultipartIdentifier();
+
+            if (nameExpr.type !== 'Identifier') {
+                throw new Error(
+                    'Wildcards are not allowed as OPENJSON column names'
+                );
+            }
+
+            const dataTypeParts: string[] = [];
+            let parenDepth = 0;
+
+            while (this.peek()) {
+                const token = this.peek()!;
+
+                if (
+                    parenDepth === 0 &&
+                    (
+                        token.type === TokenType.Comma ||
+                        token.type === TokenType.CloseParen ||
+                        token.type === TokenType.String
+                    )
+                ) {
+                    break;
+                }
+
+                if (
+                    parenDepth === 0 &&
+                    token.type === TokenType.Keyword &&
+                    token.value === 'AS'
+                ) {
+                    break;
+                }
+
+                if (token.type === TokenType.OpenParen) {
+                    parenDepth++;
+                }
+
+                if (token.type === TokenType.CloseParen) {
+                    parenDepth--;
+                }
+
+                dataTypeParts.push(token.value);
+                this.consume();
+            }
+
+            const dataType =
+                dataTypeParts.join('');
+
+            let path: string | undefined;
+            let asJson = false;
+
+            if (
+                this.peek()?.type ===
+                TokenType.String
+            ) {
+                path = this.consume().value;
+            }
+
+            if (this.peekKeyword('AS')) {
+                this.consume();
+                this.matchKeyword('JSON');
+                asJson = true;
+            }
+
+            columns.push({
+                name: nameExpr.name,
+                dataType,
+                ...(path ? { path } : {}),
+                ...(asJson ? { asJson: true } : {}),
+                start: startToken.offset,
+                end: this.lastConsumedEnd()
+            });
+
+            if (this.peek()?.type === TokenType.Comma) {
+                this.consume();
+                continue;
+            }
+
+            if (this.peek()?.type === TokenType.CloseParen) {
+                this.consume();
+                break;
+            }
+        }
+
+        return columns;
+    }
+
+    private parseTableSourceExpression(): Expression | null {
+        const next = this.peek();
+        const nextNext = this.peek(1);
+
+        if (
+            next?.type === TokenType.OpenParen &&
+            (
+                nextNext?.value === 'SELECT' ||
+                nextNext?.value === 'WITH'
+            )
+        ) {
+            const openParen = this.consume();
+
+            const query =
+                this.parseQueryExpression();
+
+            const closeParen =
+                this.match(TokenType.CloseParen);
+
+            return {
+                type: 'SubqueryExpression',
+                query,
+                start: openParen.offset,
+                end:
+                    closeParen.offset +
+                    closeParen.value.length
+            };
+        }
+
+        const source =
+            this.parseMultipartIdentifier();
+
+        if (
+            source.type === 'Identifier' &&
+            this.peek()?.type === TokenType.OpenParen
+        ) {
+            return this.parseTableValuedFunction(
+                source
+            );
+        }
+
+        return source;
+    }
+
+    private parseParenthesizedTokenText(): string {
+        this.match(TokenType.OpenParen);
+
+        let depth = 1;
+        let text = '';
+
+        while (this.peek() && depth > 0) {
+            const token = this.consume();
+
+            if (token.type === TokenType.OpenParen) {
+                depth++;
+            } else if (token.type === TokenType.CloseParen) {
+                depth--;
+
+                if (depth === 0) {
+                    break;
+                }
+            }
+
+            text += token.value;
+        }
+
+        return text;
+    }
+
+    private parseForJsonOption(): ForJsonOption {
+        const optionToken = this.consume();
+        const option = optionToken.value.toUpperCase();
+
+        switch (option) {
+            case 'ROOT': {
+                const value =
+                    this.peek()?.type === TokenType.OpenParen
+                        ? this.parseParenthesizedTokenText()
+                        : undefined;
+
+                return {
+                    kind: 'ROOT',
+                    ...(value !== undefined ? { value } : {})
+                };
+            }
+
+            case 'INCLUDE_NULL_VALUES':
+                return { kind: 'INCLUDE_NULL_VALUES' };
+
+            case 'WITHOUT_ARRAY_WRAPPER':
+                return { kind: 'WITHOUT_ARRAY_WRAPPER' };
+
+            default:
+                return {
+                    kind: 'UNKNOWN',
+                    value: optionToken.value
+                };
+        }
+    }
+
+    private parseForXmlOption(): ForXmlOption {
+        const optionToken = this.consume();
+        const option = optionToken.value.toUpperCase();
+
+        switch (option) {
+            case 'TYPE':
+                return { kind: 'TYPE' };
+
+            case 'ELEMENTS': {
+                let xsinil = false;
+
+                if (this.peekKeyword('XSINIL')) {
+                    this.consume();
+                    xsinil = true;
+                }
+
+                return {
+                    kind: 'ELEMENTS',
+                    ...(xsinil ? { xsinil: true } : {})
+                };
+            }
+
+            case 'ROOT': {
+                const value =
+                    this.peek()?.type === TokenType.OpenParen
+                        ? this.parseParenthesizedTokenText()
+                        : undefined;
+
+                return {
+                    kind: 'ROOT',
+                    ...(value !== undefined ? { value } : {})
+                };
+            }
+
+            case 'BINARY':
+                if (this.peekKeyword('BASE64')) {
+                    this.consume();
+                    return { kind: 'BINARY_BASE64' };
+                }
+
+                return {
+                    kind: 'UNKNOWN',
+                    value: optionToken.value
+                };
+
+            case 'XMLSCHEMA':
+                return { kind: 'XMLSCHEMA' };
+
+            case 'XMLDATA':
+                return { kind: 'XMLDATA' };
+
+            default:
+                return {
+                    kind: 'UNKNOWN',
+                    value: optionToken.value
+                };
+        }
     }
 
     private parseSetOperation(
@@ -450,12 +733,11 @@ export class Parser {
                 next.type !== TokenType.Semicolon &&
                 next.value !== ')'
             ) {
-                // FIX: DO NOT use precedence + 1
                 const rightStart = this.parseSelect();
 
                 right = this.parseSetOperation(
                     rightStart,
-                    precedence
+                    precedence + 1
                 );
             }
 
@@ -1245,58 +1527,43 @@ export class Parser {
                         endOffset
                     );
                 } else {
-                    const directive = this.consume().value;
+                    const directive =
+                        this.consume().value.toUpperCase();
 
-                    let argument: string | undefined;
+                    if (mode === 'JSON') {
+                        const options: ForJsonOption[] = [];
 
-                    if (this.peek()?.type === TokenType.OpenParen) {
-                        let arg = this.consume().value; // (
-
-                        while (
-                            this.peek() &&
-                            this.peek()?.type !== TokenType.CloseParen
-                        ) {
-                            arg += this.consume().value;
+                        while (this.peek()?.type === TokenType.Comma) {
+                            this.consume();
+                            options.push(this.parseForJsonOption());
                         }
 
-                        if (this.peek()?.type === TokenType.CloseParen) {
-                            arg += this.consume().value; // )
-                        }
-
-                        argument = arg;
-                    }
-
-                    const options: string[] = [];
-
-                    while (this.peek()?.type === TokenType.Comma) {
-                        this.consume(); // ,
-
-                        let option = this.consume().value;
+                        forClause = {
+                            mode: 'JSON',
+                            directive: directive as 'AUTO' | 'PATH',
+                            ...(options.length ? { options } : {})
+                        };
+                    } else {
+                        let argument: string | undefined;
 
                         if (this.peek()?.type === TokenType.OpenParen) {
-                            option += this.consume().value; // (
-
-                            while (
-                                this.peek() &&
-                                this.peek()?.type !== TokenType.CloseParen
-                            ) {
-                                option += this.consume().value;
-                            }
-
-                            if (this.peek()?.type === TokenType.CloseParen) {
-                                option += this.consume().value; // )
-                            }
+                            argument = this.parseParenthesizedTokenText();
                         }
 
-                        options.push(option);
-                    }
+                        const options: ForXmlOption[] = [];
 
-                    forClause = {
-                        mode,
-                        directive,
-                        ...(argument !== undefined ? { argument } : {}),
-                        ...(options.length ? { options } : {})
-                    };
+                        while (this.peek()?.type === TokenType.Comma) {
+                            this.consume();
+                            options.push(this.parseForXmlOption());
+                        }
+
+                        forClause = {
+                            mode: 'XML',
+                            directive: directive as 'AUTO' | 'PATH' | 'RAW' | 'EXPLICIT',
+                            ...(argument !== undefined ? { argument } : {}),
+                            ...(options.length ? { options } : {})
+                        };
+                    }
 
                     endOffset = this.lastConsumedEnd();
                 }
@@ -1322,18 +1589,6 @@ export class Parser {
             ...(incomplete ? { incomplete: true } : {}),
             ...(errors.length ? { errors } : {})
         };
-    }
-
-    private isInsertRecoveryBoundary(token?: Token): boolean {
-        if (!token) {
-            return true;
-        }
-
-        return (
-            token.type === TokenType.Semicolon ||
-            token.type === TokenType.CloseParen ||
-            token.type === TokenType.Comma
-        );
     }
 
     private parseInsert(): InsertNode {
@@ -1966,42 +2221,10 @@ export class Parser {
         // 1. SOURCE
         // ------------------------------------------------------------
         try {
-            const next = this.peek();
-            const nextNext = this.peek(1);
+            source =
+                this.parseTableSourceExpression();
 
-            if (
-                next?.type === TokenType.OpenParen &&
-                (
-                    nextNext?.value === 'SELECT' ||
-                    nextNext?.value === 'WITH'
-                )
-            ) {
-                const openParen = this.consume();
-
-                const query =
-                    this.parseQueryExpression();
-
-                if (
-                    this.peek()?.type === TokenType.CloseParen
-                ) {
-                    const closeParen = this.consume();
-
-                    source = {
-                        type: 'SubqueryExpression',
-                        query,
-                        start: openParen.offset,
-                        end:
-                            closeParen.offset +
-                            closeParen.value.length
-                    };
-
-                    endOffset = source.end;
-                }
-            }
-            else {
-                source =
-                    this.parseMultipartIdentifier();
-
+            if (source) {
                 endOffset = source.end;
             }
 
@@ -2408,8 +2631,11 @@ export class Parser {
                 endOffset = tableTarget.end;
             }
             else {
-                tableTarget = this.parseMultipartIdentifier();
-                endOffset = tableTarget.end;
+                tableTarget =
+                    this.parseTableSourceExpression();
+                if (tableTarget) {
+                    endOffset = tableTarget.end;
+                }
             }
 
         } catch (e) {
@@ -4898,7 +5124,7 @@ export class Parser {
 
             case TokenType.TempTable:
 
-                return this.parseMultipartIdentifier();
+                return this.parseMultipartIdentifier(token);
 
             // -------------------------------------------------
             // Operators
@@ -6343,8 +6569,7 @@ export class Parser {
 
     private parseQueryExpression(): QueryStatement {
         const left = this.parseSelect();
-        const tree = this.parseSetOperation(left);
-        return this.normalizeSetTree(tree);
+        return this.parseSetOperation(left);
     }
 
     private parseDataType(): string {
@@ -9091,6 +9316,8 @@ export class Parser {
         const startToken = this.matchKeyword('ALTER');
         this.matchKeyword('TABLE');
         const table = this.parseMultipartIdentifier() as IdentifierNode;
+        let incomplete = false;
+        const errors: string[] = [];
 
         const actionToken = this.consume(); // ADD or DROP
         const actionVal = actionToken.value.toUpperCase();
@@ -9135,7 +9362,28 @@ export class Parser {
                 column: this.parseColumnDefinition()
             };
         } else {
-            throw new Error(`Unsupported ALTER TABLE action: ${actionVal}`);
+            incomplete = true;
+
+            this.addRecoverableError(
+                errors,
+                'PARSE_ALTER_TABLE_ACTION',
+                `Unsupported ALTER TABLE action: ${actionVal}`,
+                actionToken.offset,
+                actionToken.offset + actionToken.value.length
+            );
+
+            action = {
+                kind: 'DROP_COLUMN',
+                name: actionToken.value,
+                ifExists: false
+            };
+
+            while (
+                this.peek() &&
+                this.peek()?.type !== TokenType.Semicolon
+            ) {
+                this.consume();
+            }
         }
 
         return {
@@ -9143,7 +9391,9 @@ export class Parser {
             table,
             action,
             start: startToken.offset,
-            end: this.lastConsumedEnd()
+            end: this.lastConsumedEnd(),
+            ...(incomplete ? { incomplete: true } : {}),
+            ...(errors.length ? { errors } : {})
         };
     }
 

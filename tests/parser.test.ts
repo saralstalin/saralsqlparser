@@ -484,8 +484,34 @@ describe('T-SQL Parser', () => {
         const sql = `SELECT 1 UNION SELECT 2 EXCEPT SELECT 3`;
         const root = parse(sql).body[0] as SetOperatorNode;
 
+        expect(root.operator).toBe('EXCEPT');
+        expect((root.left as SetOperatorNode).operator).toBe('UNION');
+    });
+
+    test('should keep INTERSECT higher precedence than UNION', () => {
+        const sql = `SELECT 1 UNION SELECT 2 INTERSECT SELECT 3`;
+        const root = parse(sql).body[0] as SetOperatorNode;
+
         expect(root.operator).toBe('UNION');
-        expect((root.right as SetOperatorNode).operator).toBe('EXCEPT');
+        expect((root.right as SetOperatorNode).operator).toBe('INTERSECT');
+    });
+
+    test('should preserve temp table identifiers in expression position', () => {
+        const stmt = parse('SELECT #Temp;').body[0] as SelectNode;
+        const expr = stmt.columns[0].expression as IdentifierNode;
+
+        expect(expr.type).toBe('Identifier');
+        expect(expr.name).toBe('#Temp');
+        expect(expr.parts).toEqual(['#Temp']);
+    });
+
+    test('should preserve temp table multipart identifiers in expression position', () => {
+        const stmt = parse('SELECT #Temp.Id;').body[0] as SelectNode;
+        const expr = stmt.columns[0].expression as IdentifierNode;
+
+        expect(expr.type).toBe('Identifier');
+        expect(expr.name).toBe('#Temp.Id');
+        expect(expr.parts).toEqual(['#Temp', 'Id']);
     });
 
     // 37. IF...ELSE

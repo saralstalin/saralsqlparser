@@ -59,6 +59,6 @@ describe('Microsoft complex T-SQL corpus characterization', () => {
         expect(messages).toContain('Unexpected token: returns');
         expect(messages).toContain('Expected JSON or XML after FOR');
         expect(messages).toContain('Unexpected token: SYSTEM_TIME');
-        expect(messages).toContain('Unexpected token: (');
+        expect(messages).toContain('Expected CloseParen but found WHERE at line 10');
     });
 });

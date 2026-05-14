@@ -363,6 +363,34 @@ describe('T-SQL Parser - DDL Changes', () => {
                 .toBeGreaterThanOrEqual(1);
         });
 
+        test('unsupported ALTER TABLE action stays local to AlterTableStatement', () => {
+            const sql = `
+                ALTER TABLE Users SWITCH PARTITION 1 TO UsersArchive;
+                SELECT 1;
+            `;
+
+            const parser =
+                new Parser(new Lexer(sql));
+
+            const result = parser.parse();
+            const ast = result.ast;
+
+            expect(ast.body.length)
+                .toBeGreaterThanOrEqual(2);
+
+            expect(ast.body[0].type)
+                .toBe('AlterTableStatement');
+
+            expect((ast.body[0] as any).incomplete)
+                .toBe(true);
+
+            expect((ast.body[0] as any).errors)
+                .toContain('Unsupported ALTER TABLE action: SWITCH');
+
+            expect(ast.body[1].type)
+                .toBe('SelectStatement');
+        });
+
         test('TRUNCATE TABLE without name produces incomplete node', () => {
             // TRUNCATE TABLE with no name — parseMultipartIdentifier returns
             // an incomplete identifier rather than crashing. The batch stays alive.

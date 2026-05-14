@@ -22,9 +22,6 @@ describe('T-SQL Parser - FOR JSON / FOR XML', () => {
         expect(stmt.forClause.directive)
             .toBe('AUTO');
 
-        expect(stmt.forClause.argument)
-            .toBeUndefined();
-
         expect(stmt.forClause.options)
             .toBeUndefined();
     });
@@ -42,7 +39,7 @@ describe('T-SQL Parser - FOR JSON / FOR XML', () => {
         expect(stmt.forClause.directive)
             .toBe('PATH');
 
-        expect(stmt.forClause.argument)
+        expect(stmt.forClause.options)
             .toBeUndefined();
     });
 
@@ -60,12 +57,12 @@ describe('T-SQL Parser - FOR JSON / FOR XML', () => {
         expect(stmt.forClause.directive)
             .toBe('PATH');
 
-        expect(stmt.forClause.argument)
-            .toBeUndefined();
-
         expect(stmt.forClause.options)
             .toEqual([
-                "ROOT('Users')"
+                {
+                    kind: 'ROOT',
+                    value: "'Users'"
+                }
             ]);
     });
 
@@ -80,8 +77,13 @@ describe('T-SQL Parser - FOR JSON / FOR XML', () => {
 
         expect(stmt.forClause.options)
             .toEqual([
-                "ROOT('Users')",
-                'INCLUDE_NULL_VALUES'
+                {
+                    kind: 'ROOT',
+                    value: "'Users'"
+                },
+                {
+                    kind: 'INCLUDE_NULL_VALUES'
+                }
             ]);
     });
 
@@ -97,9 +99,6 @@ describe('T-SQL Parser - FOR JSON / FOR XML', () => {
 
         expect(stmt.forClause.directive)
             .toBe('AUTO');
-
-        expect(stmt.forClause.argument)
-            .toBeUndefined();
     });
 
     // ─────────────────────────────────────────────────────────
@@ -119,9 +118,6 @@ describe('T-SQL Parser - FOR JSON / FOR XML', () => {
         expect(stmt.forClause.directive)
             .toBe('PATH');
 
-        expect(stmt.forClause.argument)
-            .toBeUndefined();
-
         expect(stmt.forClause.options)
             .toBeUndefined();
     });
@@ -140,7 +136,7 @@ describe('T-SQL Parser - FOR JSON / FOR XML', () => {
             .toBe('PATH');
 
         expect(stmt.forClause.argument)
-            .toBe("('User')");
+            .toBe("'User'");
 
         expect(stmt.forClause.options)
             .toBeUndefined();
@@ -157,7 +153,7 @@ describe('T-SQL Parser - FOR JSON / FOR XML', () => {
             .toBe('PATH');
 
         expect(stmt.forClause.argument)
-            .toBe("('')");
+            .toBe("''");
 
         expect(stmt.forClause.options)
             .toBeUndefined();
@@ -174,7 +170,7 @@ describe('T-SQL Parser - FOR JSON / FOR XML', () => {
             .toBe('RAW');
 
         expect(stmt.forClause.argument)
-            .toBe("('row')");
+            .toBe("'row'");
     });
 
     test('FOR XML PATH with argument and TYPE option', () => {
@@ -192,11 +188,13 @@ describe('T-SQL Parser - FOR JSON / FOR XML', () => {
             .toBe('PATH');
 
         expect(stmt.forClause.argument)
-            .toBe("('User')");
+            .toBe("'User'");
 
         expect(stmt.forClause.options)
             .toEqual([
-                'TYPE'
+                {
+                    kind: 'TYPE'
+                }
             ]);
     });
 
@@ -213,12 +211,16 @@ describe('T-SQL Parser - FOR JSON / FOR XML', () => {
             .toBe('PATH');
 
         expect(stmt.forClause.argument)
-            .toBe("('User')");
+            .toBe("'User'");
 
         expect(stmt.forClause.options)
             .toEqual([
-                'TYPE',
-                'ELEMENTS'
+                {
+                    kind: 'TYPE'
+                },
+                {
+                    kind: 'ELEMENTS'
+                }
             ]);
     });
 
@@ -266,7 +268,7 @@ describe('T-SQL Parser - FOR JSON / FOR XML', () => {
         expect(stmt.forClause.directive)
             .toBe('PATH');
 
-        expect(stmt.forClause.argument)
+        expect(stmt.forClause.options)
             .toBeUndefined();
     });
 

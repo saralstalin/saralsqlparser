@@ -94,6 +94,14 @@ export interface FunctionCallNode extends NodeLocation, Recoverable {
     type: 'FunctionCall';
     name: string;
     args: Expression[];
+    openJsonWith?: OpenJsonColumnDefinition[];
+}
+
+export interface OpenJsonColumnDefinition extends NodeLocation, Recoverable {
+    name: string;
+    dataType: string;
+    path?: string;
+    asJson?: boolean;
 }
 
 export interface CaseBranch {
@@ -621,12 +629,43 @@ export interface ContinueNode extends NodeLocation {
     type: 'ContinueStatement';
 }
 
-export interface ForClause {
-    mode: 'JSON' | 'XML';
-    directive: string;
-    argument?: string; 
-    options?: string[];
-}
+export type ForJsonDirective =
+    | 'AUTO'
+    | 'PATH';
+
+export type ForXmlDirective =
+    | 'AUTO'
+    | 'PATH'
+    | 'RAW'
+    | 'EXPLICIT';
+
+export type ForJsonOption =
+    | { kind: 'ROOT'; value?: string }
+    | { kind: 'INCLUDE_NULL_VALUES' }
+    | { kind: 'WITHOUT_ARRAY_WRAPPER' }
+    | { kind: 'UNKNOWN'; value: string };
+
+export type ForXmlOption =
+    | { kind: 'TYPE' }
+    | { kind: 'ELEMENTS'; xsinil?: boolean }
+    | { kind: 'ROOT'; value?: string }
+    | { kind: 'BINARY_BASE64' }
+    | { kind: 'XMLSCHEMA' }
+    | { kind: 'XMLDATA' }
+    | { kind: 'UNKNOWN'; value: string };
+
+export type ForClause =
+    | {
+        mode: 'JSON';
+        directive: ForJsonDirective;
+        options?: ForJsonOption[];
+    }
+    | {
+        mode: 'XML';
+        directive: ForXmlDirective;
+        argument?: string;
+        options?: ForXmlOption[];
+    };
 
 // ===============================
 // TRANSACTIONS
