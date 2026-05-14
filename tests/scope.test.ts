@@ -268,6 +268,46 @@ describe('SELECT aliases', () => {
         const selectScope = scope.getChildren().find(x => x.name === 'select');
         expect(selectScope?.resolveLocal('UserName')?.kind).toBe(SymbolKind.Alias);
     });
+
+    test('PIVOT alias exposes pivot output columns in select scope', () => {
+        const scope = rootScope(`
+            SELECT pvt.ProductId, pvt.[North], pvt.[South]
+            FROM (
+                SELECT ProductId, RegionName, Amount
+                FROM dbo.Sales
+            ) src
+            PIVOT (
+                SUM(Amount)
+                FOR RegionName IN ([North], [South])
+            ) pvt;
+        `);
+
+        const selectScope = scope.getChildren().find(x => x.name === 'select');
+        const pivotAlias = selectScope?.resolveLocal('pvt');
+
+        expect(pivotAlias?.kind).toBe(SymbolKind.Alias);
+        expect(pivotAlias?.columns).toEqual(['ProductId', '[North]', '[South]']);
+    });
+
+    test('UNPIVOT alias exposes unpivot output columns in select scope', () => {
+        const scope = rootScope(`
+            SELECT u.ProductId, u.AttributeName, u.AttributeValue
+            FROM (
+                SELECT ProductId, Color, Size
+                FROM dbo.Products
+            ) src
+            UNPIVOT (
+                AttributeValue
+                FOR AttributeName IN ([Color], [Size])
+            ) u;
+        `);
+
+        const selectScope = scope.getChildren().find(x => x.name === 'select');
+        const unpivotAlias = selectScope?.resolveLocal('u');
+
+        expect(unpivotAlias?.kind).toBe(SymbolKind.Alias);
+        expect(unpivotAlias?.columns).toEqual(['ProductId', 'AttributeValue', 'AttributeName']);
+    });
 });
 
 describe('MERGE scope', () => {

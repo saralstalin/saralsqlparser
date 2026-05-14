@@ -97,6 +97,22 @@ export interface FunctionCallNode extends NodeLocation, Recoverable {
     openJsonWith?: OpenJsonColumnDefinition[];
 }
 
+export interface PivotClause extends NodeLocation, Recoverable {
+    type: 'PivotClause';
+    aggregate: Expression | null;
+    forColumn: IdentifierNode | null;
+    inColumns: IdentifierNode[];
+    sourceAlias?: string;
+}
+
+export interface UnpivotClause extends NodeLocation, Recoverable {
+    type: 'UnpivotClause';
+    valueColumn: IdentifierNode | null;
+    forColumn: IdentifierNode | null;
+    inColumns: IdentifierNode[];
+    sourceAlias?: string;
+}
+
 export interface OpenJsonColumnDefinition extends NodeLocation, Recoverable {
     name: string;
     dataType: string;
@@ -283,7 +299,8 @@ export interface DeleteNode extends NodeLocation, Recoverable {
 export type MergeMatchType =
     | 'MATCHED'
     | 'NOT MATCHED'
-    | 'NOT MATCHED BY SOURCE';
+    | 'NOT MATCHED BY SOURCE'
+    | 'NOT MATCHED BY TARGET';
 
 export interface MergeInsertAction extends NodeLocation, Recoverable {
     type: 'MergeInsertAction';
@@ -454,6 +471,8 @@ export interface TableReference extends NodeLocation, Recoverable {
     alias?: string;
     schema?: string;
     hints?: string[];
+    pivot?: PivotClause | null;
+    unpivot?: UnpivotClause | null;
     joins: JoinNode[];
 }
 

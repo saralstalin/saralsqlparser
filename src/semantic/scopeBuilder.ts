@@ -14,6 +14,7 @@ import {
     SetNode,
     PrintNode,
     MergeNode,
+    TryCatchNode,
     QueryStatement,
     TableReference,
     JoinNode,
@@ -181,6 +182,10 @@ export class ScopeBuilder {
                 this.visitPrint(stmt);
                 break;
 
+            case 'TryCatchStatement':
+                this.visitTryCatch(stmt);
+                break;
+
             default:
                 break;
         }
@@ -231,6 +236,11 @@ export class ScopeBuilder {
 
     private visitPrint(stmt: PrintNode): void {
         this.visitExpression(stmt.value);
+    }
+
+    private visitTryCatch(stmt: TryCatchNode): void {
+        this.visitBlock(stmt.tryBlock);
+        this.visitBlock(stmt.catchBlock);
     }
 
     private visitInsert(stmt: InsertNode): void {
@@ -574,6 +584,8 @@ export class ScopeBuilder {
         // -----------------------------------------
         if (ref.alias) {
             let tableName: string | undefined;
+            const columns =
+                this.getTableReferenceAliasColumns(ref);
 
             if (table?.type === 'Identifier') {
                 tableName = table.name;
@@ -584,6 +596,9 @@ export class ScopeBuilder {
                 kind: SymbolKind.Alias, // ✅ DO NOT CHANGE
                 location: ref,
                 references: [],
+                ...(columns?.length
+                    ? { columns }
+                    : {}),
                 metadata: tableName
                     ? { tableName }
                     : undefined,
@@ -809,6 +824,184 @@ export class ScopeBuilder {
 
         //  DO NOT attempt column resolution here
         //  DO NOT push undeclared for identifiers
+    }
+
+    private getTableReferenceAliasColumns(ref: TableReference): string[] | undefined {
+        if (ref.pivot) {
+            return this.getPivotOutputColumns(ref);
+        }
+
+        if (ref.unpivot) {
+            return this.getUnpivotOutputColumns(ref);
+        }
+
+        return undefined;
+    }
+
+    private getPivotOutputColumns(ref: TableReference): string[] | undefined {
+        const pivot = ref.pivot;
+        if (!pivot) {
+            return undefined;
+        }
+
+        const sourceColumns =
+            this.getExpressionOutputColumns(ref.table) ?? [];
+        const forColumnName =
+            pivot.forColumn?.name;
+        const aggregateInputColumns =
+            this.getExpressionIdentifierNames(pivot.aggregate);
+        const pivotColumns =
+            pivot.inColumns.map(col => col.name);
+
+        const preserved =
+            sourceColumns.filter(name =>
+                !this.isSameColumnName(name, forColumnName) &&
+                !aggregateInputColumns.some(input =>
+                    this.isSameColumnName(name, input)
+                )
+            );
+
+        const combined = [
+            ...preserved,
+            ...pivotColumns
+        ];
+
+        return combined.length
+            ? this.uniqueColumnNames(combined)
+            : undefined;
+    }
+
+    private getUnpivotOutputColumns(ref: TableReference): string[] | undefined {
+        const unpivot = ref.unpivot;
+        if (!unpivot) {
+            return undefined;
+        }
+
+        const sourceColumns =
+            this.getExpressionOutputColumns(ref.table) ?? [];
+        const inputColumns =
+            unpivot.inColumns.map(col => col.name);
+        const preserved =
+            sourceColumns.filter(name =>
+                !inputColumns.some(input =>
+                    this.isSameColumnName(name, input)
+                )
+            );
+
+        const combined = [
+            ...preserved,
+            ...(unpivot.valueColumn ? [unpivot.valueColumn.name] : []),
+            ...(unpivot.forColumn ? [unpivot.forColumn.name] : [])
+        ];
+
+        return combined.length
+            ? this.uniqueColumnNames(combined)
+            : undefined;
+    }
+
+    private getExpressionOutputColumns(expr: Expression | null | undefined): string[] | undefined {
+        if (!expr) {
+            return undefined;
+        }
+
+        if (expr.type === 'Identifier') {
+            return this.current.resolve(expr.name)?.columns;
+        }
+
+        if (expr.type === 'SubqueryExpression') {
+            return this.getQueryOutputColumns(expr.query);
+        }
+
+        return undefined;
+    }
+
+    private getQueryOutputColumns(query: QueryStatement | null | undefined): string[] | undefined {
+        if (!query) {
+            return undefined;
+        }
+
+        if (query.type === 'SetOperator') {
+            return this.getQueryOutputColumns(query.left);
+        }
+
+        const columns = query.columns
+            .map(col => col.alias || col.outputName || col.sourceName)
+            .filter((name): name is string => Boolean(name));
+
+        return columns.length
+            ? columns
+            : undefined;
+    }
+
+    private getExpressionIdentifierNames(expr: Expression | null | undefined): string[] {
+        if (!expr) {
+            return [];
+        }
+
+        switch (expr.type) {
+            case 'Identifier':
+                return [expr.name];
+
+            case 'FunctionCall':
+                return expr.args.flatMap(arg =>
+                    this.getExpressionIdentifierNames(arg)
+                );
+
+            case 'BinaryExpression':
+                return [
+                    ...this.getExpressionIdentifierNames(expr.left),
+                    ...this.getExpressionIdentifierNames(expr.right)
+                ];
+
+            case 'UnaryExpression':
+                return this.getExpressionIdentifierNames(expr.right);
+
+            case 'GroupingExpression':
+                return this.getExpressionIdentifierNames(expr.expression);
+
+            case 'MemberExpression':
+                return this.getExpressionIdentifierNames(expr.object);
+
+            case 'CastExpression':
+                return this.getExpressionIdentifierNames(expr.expression);
+
+            default:
+                return [];
+        }
+    }
+
+    private isSameColumnName(left: string | undefined, right: string | undefined): boolean {
+        if (!left || !right) {
+            return false;
+        }
+
+        return this.normalizeColumnName(left) === this.normalizeColumnName(right);
+    }
+
+    private normalizeColumnName(name: string): string {
+        return name
+            .trim()
+            .replace(/^\[(.*)\]$/, '$1')
+            .toLowerCase();
+    }
+
+    private uniqueColumnNames(columns: string[]): string[] {
+        const seen = new Set<string>();
+        const unique: string[] = [];
+
+        for (const column of columns) {
+            const key =
+                this.normalizeColumnName(column);
+
+            if (seen.has(key)) {
+                continue;
+            }
+
+            seen.add(key);
+            unique.push(column);
+        }
+
+        return unique;
     }
 
 

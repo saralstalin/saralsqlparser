@@ -42,6 +42,8 @@ import {
     Expression,
     IdentifierNode,
     FunctionCallNode,
+    PivotClause,
+    UnpivotClause,
     GroupingExpression,
     SubqueryExpression,
     OverExpression,
@@ -2209,6 +2211,8 @@ export class Parser {
         let source: Expression | null = null;
         let alias: string | null = null;
         let hints: string[] | undefined;
+        let pivot: PivotClause | null = null;
+        let unpivot: UnpivotClause | null = null;
 
         const startToken = this.peek();
         const startOffset = forcedStart ?? startToken?.offset ?? 0;
@@ -2229,39 +2233,51 @@ export class Parser {
             incomplete = true;
         }
 
-        // ------------------------------------------------------------
-        // 2. ALIAS
-        // ------------------------------------------------------------
-        try {
+        const parseOptionalAlias = (): string | null => {
             const token = this.peek();
 
-            if (
-                source &&
-                token?.value === 'AS'
-            ) {
+            if (!source) {
+                return null;
+            }
+
+            if (token?.value === 'AS') {
                 this.consume();
 
                 const id =
                     this.parseMultipartIdentifier();
 
                 if (id.type === 'Identifier') {
-                    alias = id.name;
                     endOffset = id.end;
+                    return id.name;
                 }
+
+                throw new Error(
+                    'Wildcards cannot be used as table aliases'
+                );
             }
-            else if (
-                source &&
-                canStartAlias(token)
-            ) {
+
+            if (canStartAlias(token)) {
                 const id =
                     this.parseMultipartIdentifier();
 
                 if (id.type === 'Identifier') {
-                    alias = id.name;
                     endOffset = id.end;
+                    return id.name;
                 }
+
+                throw new Error(
+                    'Wildcards cannot be used as table aliases'
+                );
             }
 
+            return null;
+        };
+
+        // ------------------------------------------------------------
+        // 2. ALIAS
+        // ------------------------------------------------------------
+        try {
+            alias = parseOptionalAlias();
         } catch {
             incomplete = true;
         }
@@ -2308,7 +2324,74 @@ export class Parser {
         }
 
         // ------------------------------------------------------------
-        // 5. JOINS
+        // 5. PIVOT / UNPIVOT
+        // ------------------------------------------------------------
+        try {
+            if (this.peekKeyword('PIVOT')) {
+                pivot =
+                    this.parsePivotClause(
+                        alias || undefined
+                    );
+                alias = null;
+                endOffset = pivot.end;
+
+                const pivotAlias =
+                    parseOptionalAlias();
+
+                if (pivotAlias) {
+                    alias = pivotAlias;
+                } else {
+                    incomplete = true;
+
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_PIVOT_ALIAS',
+                        'Expected alias after PIVOT clause',
+                        endOffset,
+                        endOffset
+                    );
+                }
+            } else if (this.peekKeyword('UNPIVOT')) {
+                unpivot =
+                    this.parseUnpivotClause(
+                        alias || undefined
+                    );
+                alias = null;
+                endOffset = unpivot.end;
+
+                const unpivotAlias =
+                    parseOptionalAlias();
+
+                if (unpivotAlias) {
+                    alias = unpivotAlias;
+                } else {
+                    incomplete = true;
+
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_UNPIVOT_ALIAS',
+                        'Expected alias after UNPIVOT clause',
+                        endOffset,
+                        endOffset
+                    );
+                }
+            }
+        } catch (e) {
+            incomplete = true;
+
+            this.addRecoverableError(
+                errors,
+                this.peekKeyword('UNPIVOT')
+                    ? 'PARSE_UNPIVOT'
+                    : 'PARSE_PIVOT',
+                e instanceof Error ? e.message : String(e),
+                endOffset,
+                endOffset
+            );
+        }
+
+        // ------------------------------------------------------------
+        // 6. JOINS
         // ------------------------------------------------------------
         const joins: JoinNode[] = [];
 
@@ -2338,8 +2421,294 @@ export class Parser {
             table: source,
             alias: alias || undefined,
             hints,
+            ...(pivot ? { pivot } : {}),
+            ...(unpivot ? { unpivot } : {}),
             joins,
             start: startOffset,
+            end: endOffset,
+            ...(incomplete ? { incomplete: true } : {}),
+            ...(errors.length ? { errors } : {})
+        };
+    }
+
+    private parsePivotClause(
+        sourceAlias?: string
+    ): PivotClause {
+        const pivotToken =
+            this.matchKeyword('PIVOT');
+        const errors: string[] = [];
+        let incomplete = false;
+        let endOffset =
+            pivotToken.offset + pivotToken.value.length;
+
+        this.match(TokenType.OpenParen);
+
+        let aggregate: Expression | null = null;
+        let forColumn: IdentifierNode | null = null;
+        let inColumns: IdentifierNode[] = [];
+
+        try {
+            aggregate =
+                this.parseExpression();
+            endOffset = aggregate.end;
+        } catch (e) {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_PIVOT_AGGREGATE',
+                e instanceof Error ? e.message : String(e),
+                endOffset,
+                endOffset
+            );
+        }
+
+        try {
+            this.matchKeyword('FOR');
+            endOffset = this.lastConsumedEnd();
+        } catch (e) {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_PIVOT_FOR',
+                e instanceof Error ? e.message : String(e),
+                endOffset,
+                endOffset
+            );
+        }
+
+        try {
+            const id =
+                this.parseMultipartIdentifier();
+
+            if (id.type === 'Identifier') {
+                forColumn = id;
+                endOffset = id.end;
+            } else {
+                throw new Error(
+                    'Expected pivot FOR column'
+                );
+            }
+        } catch (e) {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_PIVOT_COLUMN',
+                e instanceof Error ? e.message : String(e),
+                endOffset,
+                endOffset
+            );
+        }
+
+        try {
+            this.matchKeyword('IN');
+            endOffset = this.lastConsumedEnd();
+            this.match(TokenType.OpenParen);
+            endOffset = this.lastConsumedEnd();
+
+            inColumns = this.parseList(() => {
+                const id =
+                    this.parseMultipartIdentifier();
+
+                if (id.type === 'Identifier') {
+                    return id;
+                }
+
+                throw new Error(
+                    'Expected pivot IN column'
+                );
+            });
+
+            if (inColumns.length > 0) {
+                endOffset =
+                    inColumns[
+                        inColumns.length - 1
+                    ].end;
+            }
+
+            const inClose =
+                this.match(TokenType.CloseParen);
+            endOffset =
+                inClose.offset + inClose.value.length;
+        } catch (e) {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_PIVOT_IN',
+                e instanceof Error ? e.message : String(e),
+                endOffset,
+                endOffset
+            );
+        }
+
+        try {
+            const closeParen =
+                this.match(TokenType.CloseParen);
+            endOffset =
+                closeParen.offset + closeParen.value.length;
+        } catch (e) {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_PIVOT_CLOSE_PAREN',
+                e instanceof Error ? e.message : String(e),
+                endOffset,
+                endOffset
+            );
+        }
+
+        return {
+            type: 'PivotClause',
+            aggregate,
+            forColumn,
+            inColumns,
+            ...(sourceAlias ? { sourceAlias } : {}),
+            start: pivotToken.offset,
+            end: endOffset,
+            ...(incomplete ? { incomplete: true } : {}),
+            ...(errors.length ? { errors } : {})
+        };
+    }
+
+    private parseUnpivotClause(
+        sourceAlias?: string
+    ): UnpivotClause {
+        const unpivotToken =
+            this.matchKeyword('UNPIVOT');
+        const errors: string[] = [];
+        let incomplete = false;
+        let endOffset =
+            unpivotToken.offset + unpivotToken.value.length;
+
+        this.match(TokenType.OpenParen);
+
+        let valueColumn: IdentifierNode | null = null;
+        let forColumn: IdentifierNode | null = null;
+        let inColumns: IdentifierNode[] = [];
+
+        try {
+            const id =
+                this.parseMultipartIdentifier();
+
+            if (id.type === 'Identifier') {
+                valueColumn = id;
+                endOffset = id.end;
+            } else {
+                throw new Error(
+                    'Expected unpivot value column'
+                );
+            }
+        } catch (e) {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_UNPIVOT_VALUE_COLUMN',
+                e instanceof Error ? e.message : String(e),
+                endOffset,
+                endOffset
+            );
+        }
+
+        try {
+            this.matchKeyword('FOR');
+            endOffset = this.lastConsumedEnd();
+        } catch (e) {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_UNPIVOT_FOR',
+                e instanceof Error ? e.message : String(e),
+                endOffset,
+                endOffset
+            );
+        }
+
+        try {
+            const id =
+                this.parseMultipartIdentifier();
+
+            if (id.type === 'Identifier') {
+                forColumn = id;
+                endOffset = id.end;
+            } else {
+                throw new Error(
+                    'Expected unpivot FOR column'
+                );
+            }
+        } catch (e) {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_UNPIVOT_COLUMN',
+                e instanceof Error ? e.message : String(e),
+                endOffset,
+                endOffset
+            );
+        }
+
+        try {
+            this.matchKeyword('IN');
+            endOffset = this.lastConsumedEnd();
+            this.match(TokenType.OpenParen);
+            endOffset = this.lastConsumedEnd();
+
+            inColumns = this.parseList(() => {
+                const id =
+                    this.parseMultipartIdentifier();
+
+                if (id.type === 'Identifier') {
+                    return id;
+                }
+
+                throw new Error(
+                    'Expected unpivot IN column'
+                );
+            });
+
+            if (inColumns.length > 0) {
+                endOffset =
+                    inColumns[
+                        inColumns.length - 1
+                    ].end;
+            }
+
+            const inClose =
+                this.match(TokenType.CloseParen);
+            endOffset =
+                inClose.offset + inClose.value.length;
+        } catch (e) {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_UNPIVOT_IN',
+                e instanceof Error ? e.message : String(e),
+                endOffset,
+                endOffset
+            );
+        }
+
+        try {
+            const closeParen =
+                this.match(TokenType.CloseParen);
+            endOffset =
+                closeParen.offset + closeParen.value.length;
+        } catch (e) {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_UNPIVOT_CLOSE_PAREN',
+                e instanceof Error ? e.message : String(e),
+                endOffset,
+                endOffset
+            );
+        }
+
+        return {
+            type: 'UnpivotClause',
+            valueColumn,
+            forColumn,
+            inColumns,
+            ...(sourceAlias ? { sourceAlias } : {}),
+            start: unpivotToken.offset,
             end: endOffset,
             ...(incomplete ? { incomplete: true } : {}),
             ...(errors.length ? { errors } : {})
@@ -2762,17 +3131,108 @@ export class Parser {
         let incomplete = false;
         const errors: string[] = [];
         let output: OutputClauseNode | undefined;
+        let endOffset =
+            startToken.offset + startToken.value.length;
+
+        // Optional TOP clause
+        if (this.peekKeyword('TOP')) {
+            const topToken = this.consume();
+            endOffset =
+                topToken.offset + topToken.value.length;
+
+            const hasParens =
+                this.peek()?.type === TokenType.OpenParen;
+
+            if (hasParens) {
+                const openParen = this.consume();
+                endOffset =
+                    openParen.offset + openParen.value.length;
+            }
+
+            try {
+                const next = this.peek();
+
+                if (
+                    !next ||
+                    next.type === TokenType.Semicolon ||
+                    (
+                        next.type === TokenType.Keyword &&
+                        RESYNC_KEYWORDS.has(next.value)
+                    )
+                ) {
+                    incomplete = true;
+
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_DELETE_TOP',
+                        'Expected TOP value',
+                        endOffset,
+                        endOffset
+                    );
+                } else if (hasParens && next.type === TokenType.CloseParen) {
+                    incomplete = true;
+
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_DELETE_TOP',
+                        'Expected TOP value',
+                        endOffset,
+                        endOffset
+                    );
+                } else if (hasParens) {
+                    const quantity =
+                        this.parseExpression();
+
+                    endOffset = quantity.end;
+                } else {
+                    const quantityToken =
+                        this.consume();
+
+                    endOffset =
+                        quantityToken.offset +
+                        quantityToken.value.length;
+                }
+            } catch (e) {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_DELETE_TOP',
+                    e instanceof Error ? e.message : String(e),
+                    endOffset,
+                    endOffset
+                );
+            }
+
+            if (hasParens) {
+                if (this.peek()?.type === TokenType.CloseParen) {
+                    const closeParen = this.consume();
+                    endOffset =
+                        closeParen.offset + closeParen.value.length;
+                } else {
+                    incomplete = true;
+
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_DELETE_TOP_CLOSE_PAREN',
+                        'Expected ) after TOP expression',
+                        endOffset,
+                        endOffset
+                    );
+                }
+            }
+        }
 
         // Optional first FROM
         // DELETE FROM T ...
         if (this.peekKeyword('FROM')) {
-            this.consume();
+            const fromToken = this.consume();
+            endOffset =
+                fromToken.offset + fromToken.value.length;
         }
 
         // 1. Target
         let target: Expression | null = null;
-        let endOffset =
-            startToken.offset + startToken.value.length;
 
         try {
             const next = this.peek();
@@ -4539,6 +4999,38 @@ export class Parser {
         const startOffset =
             this.peek()?.offset ?? 0;
 
+        const parseColumnAlias = (): string => {
+            const nextToken =
+                this.peek();
+
+            if (!nextToken) {
+                throw new Error(
+                    'Expected column alias'
+                );
+            }
+
+            if (nextToken.type === TokenType.String) {
+                const aliasToken =
+                    this.consume();
+
+                return aliasToken.value.slice(1, -1);
+            }
+
+            const aliasExpr =
+                this.parseMultipartIdentifier();
+
+            if (
+                aliasExpr.type ===
+                'Identifier'
+            ) {
+                return aliasExpr.name;
+            }
+
+            throw new Error(
+                'Wildcards cannot be used as column aliases'
+            );
+        };
+
         // -------------------------------------------------
         // Expression parse with recovery
         // -------------------------------------------------
@@ -4581,23 +5073,8 @@ export class Parser {
                 // AS alias
                 if (nextVal === 'AS') {
                     this.consume();
-
-                    const aliasExpr =
-                        this.parseMultipartIdentifier();
-
-                    if (
-                        aliasExpr.type ===
-                        'Identifier'
-                    ) {
-                        alias =
-                            aliasExpr.name;
-                    }
-
-                    else {
-                        throw new Error(
-                            'Wildcards cannot be used as column aliases'
-                        );
-                    }
+                    alias =
+                        parseColumnAlias();
                 }
 
                 // implicit alias
@@ -4612,28 +5089,17 @@ export class Parser {
                         TokenType.Identifier ||
 
                         nextToken.type ===
+                        TokenType.String ||
+
+                        nextToken.type ===
                         TokenType.Keyword
                     ) &&
                     !STOP_KEYWORDS.includes(
                         nextVal!
                     )
                 ) {
-                    const aliasExpr =
-                        this.parseMultipartIdentifier();
-
-                    if (
-                        aliasExpr.type ===
-                        'Identifier'
-                    ) {
-                        alias =
-                            aliasExpr.name;
-                    }
-
-                    else {
-                        throw new Error(
-                            'Wildcards cannot be used as column aliases'
-                        );
-                    }
+                    alias =
+                        parseColumnAlias();
                 }
             }
         }
@@ -5943,6 +6409,24 @@ export class Parser {
         );
     }
 
+    private isCteColumnListBoundary(token?: Token): boolean {
+        if (!token) {
+            return true;
+        }
+
+        if (
+            token.type === TokenType.Semicolon ||
+            token.type === TokenType.CloseParen
+        ) {
+            return true;
+        }
+
+        return (
+            token.type === TokenType.Keyword &&
+            token.value === 'AS'
+        );
+    }
+
     private isTableDefinitionRecoveryBoundary(token?: Token): boolean {
         if (!token) {
             return true;
@@ -6279,7 +6763,24 @@ export class Parser {
             // Optional column list: WITH MyCTE (Col1, Col2)
             if (this.peek()?.type === TokenType.OpenParen) {
                 this.consume();
-                columns = this.parseList(() => this.consume().value);
+                columns = this.parseList(() => {
+                    const columnExpr =
+                        this.parseMultipartIdentifier();
+
+                    if (
+                        columnExpr.type === 'Identifier' &&
+                        columnExpr.name
+                    ) {
+                        return columnExpr.name;
+                    }
+
+                    throw new Error(
+                        'Expected identifier in CTE column list'
+                    );
+                }, {
+                    isBoundary:
+                        this.isCteColumnListBoundary.bind(this)
+                });
                 this.match(TokenType.CloseParen);
             }
 
@@ -7346,10 +7847,21 @@ export class Parser {
 
                 if (this.peekKeyword('BY')) {
                     this.consume();
-
-                    this.matchKeyword('SOURCE');
-                    condition = 'NOT MATCHED BY SOURCE';
                     endOffset = this.lastConsumedEnd();
+
+                    if (this.peekKeyword('SOURCE')) {
+                        this.consume();
+                        condition = 'NOT MATCHED BY SOURCE';
+                        endOffset = this.lastConsumedEnd();
+                    } else if (this.peekKeyword('TARGET')) {
+                        this.consume();
+                        condition = 'NOT MATCHED BY TARGET';
+                        endOffset = this.lastConsumedEnd();
+                    } else {
+                        throw new Error(
+                            'Expected SOURCE or TARGET after BY in MERGE clause'
+                        );
+                    }
                 }
             }
             else {

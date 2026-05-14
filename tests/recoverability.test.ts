@@ -584,6 +584,14 @@ describe('Recoverability - Part 1B - Structural Recovery', () => {
             );
             expect((stmt as any).body.type).toBe('ErrorStatement');
         });
+
+        test('broken CTE column list recovers to AS body and following query', () => {
+            const stmt = first('WITH X (+) AS (SELECT 1) SELECT * FROM X') as any;
+
+            expect(stmt.type).toBe('WithStatement');
+            expect(stmt.ctes[0].columns).toEqual([]);
+            expect(stmt.body.type).toBe('SelectStatement');
+        });
     });
 
     describe('Nested structural continuation', () => {
@@ -939,6 +947,16 @@ describe('Recoverability - Part 3 - Continuation / Resync', () => {
         test.each(cases)('%s', sql => {
             const ast = expectContinues(sql);
             expect(ast.body[1].type).not.toBe('ErrorStatement');
+        });
+
+        test('broken WHERE with nested INSERT is split into two statements', () => {
+            const ast = parse(`
+                SELECT ID FROM Table1 WHERE INSERT INTO Table2 VALUES (1, 2, 3);
+            `);
+
+            expect(ast.body.length).toBeGreaterThanOrEqual(2);
+            expect(ast.body[0].type).toBe('SelectStatement');
+            expect(ast.body[1].type).toBe('InsertStatement');
         });
     });
 

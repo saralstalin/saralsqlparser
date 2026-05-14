@@ -36,6 +36,7 @@ export enum DiagnosticCode {
     UnusedVariable = 'VAR002',
     UnusedParameter = 'VAR003',
     VariableUsedBeforeSet = 'VAR004',
+    UnknownColumn = 'COL001',
 
     UpdateWithoutWhere = 'DML001',
     DeleteWithoutWhere = 'DML002',
@@ -44,6 +45,7 @@ export enum DiagnosticCode {
 
     SelectStar = 'SEL001',
     SelectStarInView = 'SEL002',
+    SelfComparison = 'LOG001',
 
     DuplicateVariable = 'DUP001',
     DuplicateCte = 'DUP002',
@@ -53,9 +55,11 @@ export enum DiagnosticCode {
 
 export class DiagnosticEngine {
     private diagnostics: Diagnostic[] = [];
+    private rootScope: Scope | null = null;
 
     run(program: Program, scopeResult: ScopeBuilderResult): Diagnostic[] {
         this.diagnostics = [];
+        this.rootScope = scopeResult.root;
 
         this.checkUndeclaredVariables(scopeResult);
         this.checkUnusedSymbols(scopeResult);
@@ -300,6 +304,8 @@ export class DiagnosticEngine {
                     });
                 }
             }
+
+            this.visitExpression(col.expression, insideView);
         }
 
         // FROM / JOIN recursion
@@ -448,6 +454,7 @@ export class DiagnosticEngine {
                 break;
 
             case 'BinaryExpression':
+                this.checkBinaryExpression(expr);
                 this.visitExpression(expr.left, insideView);
                 this.visitExpression(expr.right, insideView);
                 break;
@@ -508,8 +515,11 @@ export class DiagnosticEngine {
                 break;
 
             case 'Literal':
-            case 'Identifier':
             case 'Variable':
+                break;
+
+            case 'Identifier':
+                this.checkQualifiedIdentifierColumn(expr);
                 break;
         }
     }
@@ -566,6 +576,118 @@ export class DiagnosticEngine {
         }
 
         return false;
+    }
+
+    private checkBinaryExpression(expr: Extract<Expression, { type: 'BinaryExpression' }>): void {
+        this.checkSelfComparison(expr);
+    }
+
+    private checkSelfComparison(expr: Extract<Expression, { type: 'BinaryExpression' }>): void {
+        if (!expr.right) {
+            return;
+        }
+
+        if (!['=', '<>', '!=', '<', '>', '<=', '>='].includes(expr.operator)) {
+            return;
+        }
+
+        const leftRef = this.getComparableReferenceName(expr.left);
+        const rightRef = this.getComparableReferenceName(expr.right);
+
+        if (!leftRef || !rightRef) {
+            return;
+        }
+
+        if (leftRef.toLowerCase() !== rightRef.toLowerCase()) {
+            return;
+        }
+
+        this.emit({
+            code: DiagnosticCode.SelfComparison,
+            message: `Condition compares '${leftRef}' to itself`,
+            severity: 'warning',
+            start: expr.start,
+            end: expr.end,
+        });
+    }
+
+    private getComparableReferenceName(expr: Expression): string | null {
+        switch (expr.type) {
+            case 'Identifier':
+                return expr.name;
+            case 'Variable':
+                return expr.name;
+            default:
+                return null;
+        }
+    }
+
+    private checkQualifiedIdentifierColumn(expr: Extract<Expression, { type: 'Identifier' }>): void {
+        if (expr.parts.length < 2 || !this.rootScope) {
+            return;
+        }
+
+        const qualifier = expr.parts[0];
+        const columnName = expr.parts[expr.parts.length - 1];
+        const columns = this.getKnownColumnsForQualifier(qualifier, expr.start);
+
+        if (!columns?.length) {
+            return;
+        }
+
+        const normalizedTarget = this.normalizeColumnName(columnName);
+        const exists = columns.some(col =>
+            this.normalizeColumnName(col) === normalizedTarget
+        );
+
+        if (exists) {
+            return;
+        }
+
+        this.emit({
+            code: DiagnosticCode.UnknownColumn,
+            message: `Unknown column '${columnName}' on '${qualifier}'`,
+            severity: 'warning',
+            start: expr.start,
+            end: expr.end,
+        });
+    }
+
+    private getKnownColumnsForQualifier(name: string, offset: number): string[] | null {
+        if (!this.rootScope) {
+            return null;
+        }
+
+        const scope = this.rootScope.findInnermost(offset);
+        const symbol = scope.resolve(name);
+
+        if (!symbol) {
+            return null;
+        }
+
+        if (symbol.columns && symbol.columns.length > 0) {
+            return symbol.columns;
+        }
+
+        if (
+            symbol.kind === SymbolKind.Alias &&
+            symbol.metadata?.tableName &&
+            typeof symbol.metadata.tableName === 'string'
+        ) {
+            const tableSymbol = scope.resolve(symbol.metadata.tableName);
+            if (tableSymbol?.columns && tableSymbol.columns.length > 0) {
+                return tableSymbol.columns;
+            }
+        }
+
+        return null;
+    }
+
+    private normalizeColumnName(name: string): string {
+        return name
+            .trim()
+            .replace(/^\[(.*)\]$/, '$1')
+            .toLowerCase();
     }
 
     private walkScopes(

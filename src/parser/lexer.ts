@@ -57,6 +57,7 @@ export class Lexer {
         // ── Joins ─────────────────────────────────────────────────────────────────
         'JOIN', 'INNER', 'LEFT', 'RIGHT', 'FULL', 'OUTER',
         'CROSS', 'APPLY',
+        'PIVOT', 'UNPIVOT',
 
         // ── Logical operators ─────────────────────────────────────────────────────
         'AND', 'OR', 'NOT',

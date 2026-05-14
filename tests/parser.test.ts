@@ -960,6 +960,21 @@ WHEN NOT MATCHED BY SOURCE THEN INSERT (Name) SELECT S.Name;`;
             expect(stmt.whenClauses[0].action.selectQuery).toBeDefined();
         });
 
+        test('should parse MERGE NOT MATCHED BY TARGET with INSERT action', () => {
+            const sql = `MERGE dbo.Target AS T
+USING dbo.Source AS S
+ON T.Id = S.Id
+WHEN NOT MATCHED BY TARGET THEN INSERT (Name) VALUES (S.Name);`;
+            const ast = parse(sql);
+            const stmt = ast.body[0] as any;
+
+            expect(stmt.type).toBe('MergeStatement');
+            expect(stmt.whenClauses[0].condition).toBe('NOT MATCHED BY TARGET');
+            expect(stmt.whenClauses[0].action.type).toBe('MergeInsertAction');
+            expect(stmt.whenClauses[0].action.columns).toEqual(['Name']);
+            expect(stmt.whenClauses[0].action.values).toHaveLength(1);
+        });
+
         test('should parse MERGE with OUTPUT clause', () => {
             const sql = `MERGE dbo.Target AS T
 USING dbo.Source AS S
@@ -1130,6 +1145,37 @@ OUTPUT inserted.Id, deleted.Id INTO Audit(InsertedId, DeletedId);`;
             expect(stmt.output!.columns[0].column.sourceName).toBe('Id');
         });
 
+        test('should parse DELETE TOP alias OUTPUT FROM join shape without issues', () => {
+            const sql = `
+                DELETE TOP (20000) targetRow
+                OUTPUT deleted.SKU
+                     , deleted.LocationCode
+                     , deleted.CurrentValue
+                     , NULL NewValue
+                     , NULL NewDate
+                     , deleted.PreviousValue
+                     , NULL NewPreviousValue
+                     , 'Cleanup' UpdatedBy INTO #AuditHistory (SKU, LocationCode, CurrentValue, NewValue, NewDate, PreviousValue, NewPreviousValue, UpdatedBy)
+                FROM dbo.TargetTable targetRow
+                    JOIN #SelectedLocations selectedLocation ON selectedLocation.LocationCode = targetRow.LocationCode
+                    LEFT JOIN dbo.LocationReplica replica WITH (NOLOCK) ON replica.ReplicaLocationCode = targetRow.LocationCode
+                    LEFT JOIN dbo.SourceTable sourceRow WITH(NOLOCK) ON sourceRow.SKU = targetRow.SKU
+                                                                    AND sourceRow.LocationCode = ISNULL(replica.PrimaryLocationCode, targetRow.LocationCode)
+                WHERE sourceRow.SKU IS NULL
+            `;
+
+            const result = new Parser(new Lexer(sql)).parse();
+            const stmt = result.ast.body[0] as DeleteNode;
+
+            expect(result.issues).toHaveLength(0);
+            expect(stmt.type).toBe('DeleteStatement');
+            expect((stmt.target as IdentifierNode).name).toBe('targetRow');
+            expect(stmt.output).toBeDefined();
+            expect(stmt.from).toHaveLength(1);
+            expect(stmt.from?.[0].joins).toHaveLength(3);
+            expect(stmt.where).toBeDefined();
+        });
+
         test('should parse OUTPUT wildcard', () => {
             const sql = `
             INSERT INTO Users(Name)
@@ -1147,6 +1193,42 @@ OUTPUT inserted.Id, deleted.Id INTO Audit(InsertedId, DeletedId);`;
             expect(col.sourceTable).toBe('INSERTED');
             expect(col.column.wildcard).toBe(true);
             expect(col.column.sourceName).toBe('*');
+        });
+
+        test('should parse SELECT columns with string literal aliases', () => {
+            const sql = `
+                SELECT @UploadedFileName AS 'UploadedFileName',
+                       @InternalFileName AS 'InternalFileName'
+            `;
+
+            const result = new Parser(new Lexer(sql)).parse();
+            const stmt = result.ast.body[0] as SelectNode;
+
+            expect(result.issues).toHaveLength(0);
+            expect(stmt.type).toBe('SelectStatement');
+            expect(stmt.columns).toHaveLength(2);
+            expect(stmt.columns[0].alias).toBe('UploadedFileName');
+            expect(stmt.columns[1].alias).toBe('InternalFileName');
+        });
+
+        test('should parse SELECT columns with implicit string literal aliases', () => {
+            const sql = `
+                SELECT CASE category.RegionCode WHEN 1 THEN 'Primary' ELSE 'Secondary' END 'Source Label',
+                       item.LastModifiedAt 'Modified Date'
+                FROM dbo.Items item
+                JOIN dbo.Category category ON category.Id = item.CategoryId
+            `;
+
+            const result = new Parser(new Lexer(sql)).parse();
+            const stmt = result.ast.body[0] as SelectNode;
+
+            expect(result.issues).toHaveLength(0);
+            expect(stmt.type).toBe('SelectStatement');
+            expect(stmt.columns).toHaveLength(2);
+            expect(stmt.columns[0].alias).toBe('Source Label');
+            expect(stmt.columns[1].alias).toBe('Modified Date');
+            expect(stmt.from).toHaveLength(1);
+            expect(stmt.from?.[0].joins).toHaveLength(1);
         });
 
         test('should parse OUTPUT INTO table', () => {

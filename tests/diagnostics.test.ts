@@ -190,6 +190,52 @@ describe('VAR003 — unused parameter', () => {
         `, DiagnosticCode.UnusedParameter);
         expect(d.length).toBe(0);
     });
+
+    test('does NOT fire for TVP used in INSERT SELECT FROM inside procedure body', () => {
+        const d = only(`
+            CREATE PROCEDURE dbo.ImportItems
+                @Items dbo.ItemType READONLY
+            AS
+            BEGIN
+                INSERT INTO dbo.Target (Id, Name)
+                SELECT i.Id, i.Name
+                FROM @Items i
+                WHERE i.Id > 0;
+            END
+        `, DiagnosticCode.UnusedParameter);
+        expect(d.length).toBe(0);
+    });
+
+    test('does NOT fire for parameters used inside TRY CATCH procedure body with TVPs', () => {
+        const d = only(`
+            CREATE PROCEDURE [dbo].[ProcessItems]
+                @InputItems [dbo].[ItemTableType] READONLY,
+                @OutputItems [dbo].[ItemTableType] READONLY,
+                @UserName VARCHAR(50),
+                @AuditMessage VARCHAR(50) = NULL
+            AS
+            BEGIN
+                BEGIN TRY
+                    SET @UserName = TRIM(@UserName);
+
+                    INSERT INTO #Tmp (Attribute)
+                    SELECT TRIM(src.Attribute)
+                    FROM @InputItems src;
+
+                    INSERT INTO #Tmp (Attribute)
+                    SELECT TRIM(dst.Attribute)
+                    FROM @OutputItems dst;
+
+                    SELECT @AuditMessage;
+                END TRY
+                BEGIN CATCH
+                    SELECT ERROR_MESSAGE() AS Remarks;
+                END CATCH
+            END
+        `, DiagnosticCode.UnusedParameter);
+
+        expect(d.length).toBe(0);
+    });
 });
 
 // ─── DML001: UPDATE without WHERE ────────────────────────────────────────────
@@ -430,6 +476,101 @@ describe('DML004 â€” UPDATE target WITH (NOLOCK)', () => {
             `UPDATE u SET Status = 1 FROM Users u JOIN Audit a WITH (NOLOCK) ON u.Id = a.UserId WHERE u.Id = 1`,
             DiagnosticCode.UpdateTargetNoLock
         );
+        expect(d.length).toBe(0);
+    });
+});
+
+describe('COL001 â€” unknown column', () => {
+    test('fires for unknown column on declared table variable alias', () => {
+        const d = only(`
+            DECLARE @Items TABLE (Id INT, Name VARCHAR(50));
+            SELECT item.MissingColumn
+            FROM @Items item;
+        `, DiagnosticCode.UnknownColumn);
+
+        expect(d.length).toBe(1);
+        expect(d[0].severity).toBe('warning');
+        expect(d[0].message).toContain('MissingColumn');
+    });
+
+    test('fires for unknown column on PIVOT alias with known output columns', () => {
+        const d = only(`
+            SELECT pvt.UnknownBucket
+            FROM (
+                SELECT ProductId, RegionName, Amount
+                FROM dbo.Sales
+            ) src
+            PIVOT (
+                SUM(Amount)
+                FOR RegionName IN ([North], [South])
+            ) pvt;
+        `, DiagnosticCode.UnknownColumn);
+
+        expect(d.length).toBe(1);
+        expect(d[0].message).toContain('UnknownBucket');
+    });
+
+    test('fires for unknown column on UNPIVOT alias with known output columns', () => {
+        const d = only(`
+            SELECT u.DoesNotExist
+            FROM (
+                SELECT ProductId, Color, Size
+                FROM dbo.Products
+            ) src
+            UNPIVOT (
+                AttributeValue FOR AttributeName IN ([Color], [Size])
+            ) u;
+        `, DiagnosticCode.UnknownColumn);
+
+        expect(d.length).toBe(1);
+        expect(d[0].message).toContain('DoesNotExist');
+    });
+
+    test('does NOT fire for TVP alias when shape is not known in-file', () => {
+        const d = only(`
+            CREATE PROCEDURE dbo.ImportItems
+                @Items dbo.ItemType READONLY
+            AS
+            BEGIN
+                SELECT item.MaybeMissing
+                FROM @Items item;
+            END
+        `, DiagnosticCode.UnknownColumn);
+
+        expect(d.length).toBe(0);
+    });
+});
+
+describe('LOG001 â€” self comparison', () => {
+    test('fires for identifier compared to itself', () => {
+        const d = only(`
+            SELECT *
+            FROM dbo.Users
+            WHERE Id = Id;
+        `, DiagnosticCode.SelfComparison);
+
+        expect(d.length).toBe(1);
+        expect(d[0].severity).toBe('warning');
+    });
+
+    test('fires for variable compared to itself', () => {
+        const d = only(`
+            DECLARE @Id INT = 1;
+            SELECT *
+            FROM dbo.Users
+            WHERE @Id = @Id;
+        `, DiagnosticCode.SelfComparison);
+
+        expect(d.length).toBe(1);
+    });
+
+    test('does NOT fire when the two sides are different', () => {
+        const d = only(`
+            SELECT *
+            FROM dbo.Users
+            WHERE UserId = RoleId;
+        `, DiagnosticCode.SelfComparison);
+
         expect(d.length).toBe(0);
     });
 });
