@@ -203,6 +203,42 @@ describe('VAR002 — unused variable', () => {
 
         expect(d.length).toBe(0);
     });
+
+    test('does NOT fire when variable is passed as EXEC output argument', () => {
+        const d = only(
+            `
+            DECLARE @Result INT;
+            EXEC dbo.uspGetValue @Result OUTPUT;
+            `,
+            DiagnosticCode.UnusedVariable
+        );
+
+        expect(d.length).toBe(0);
+    });
+
+    test('does NOT fire when variable is passed as EXEC input argument', () => {
+        const d = only(
+            `
+            DECLARE @InputValue INT = 42;
+            EXEC dbo.uspUseValue @InputValue;
+            `,
+            DiagnosticCode.UnusedVariable
+        );
+
+        expect(d.length).toBe(0);
+    });
+
+    test('does NOT fire when variable is passed as named EXEC input argument', () => {
+        const d = only(
+            `
+            DECLARE @InputValue INT = 42;
+            EXEC dbo.uspUseValue @Value = @InputValue;
+            `,
+            DiagnosticCode.UnusedVariable
+        );
+
+        expect(d.length).toBe(0);
+    });
 });
 
 // ─── VAR003: Unused parameter ────────────────────────────────────────────────
@@ -625,6 +661,100 @@ describe('LOG001 â€” self comparison', () => {
         `, DiagnosticCode.SelfComparison);
 
         expect(d.length).toBe(0);
+    });
+});
+
+describe('DDL001 â€” missing comma before table-level constraint', () => {
+    test('fires when PRIMARY KEY follows the last column without a comma', () => {
+        const d = only(
+            `
+            CREATE TABLE dbo.Items(
+                Id INT,
+                Name VARCHAR(50) NULL
+                PRIMARY KEY CLUSTERED (Id ASC)
+            )
+            `,
+            DiagnosticCode.MissingCommaBeforeTableConstraint
+        );
+
+        expect(d.length).toBe(1);
+        expect(d[0].severity).toBe('warning');
+    });
+
+    test('does NOT fire when table-level constraint is comma-separated', () => {
+        const d = only(
+            `
+            CREATE TABLE dbo.Items(
+                Id INT,
+                Name VARCHAR(50) NULL,
+                PRIMARY KEY CLUSTERED (Id ASC)
+            )
+            `,
+            DiagnosticCode.MissingCommaBeforeTableConstraint
+        );
+
+        expect(d.length).toBe(0);
+    });
+});
+
+describe('CUR001 â€” cursor usage', () => {
+    test('fires on cursor declaration', () => {
+        const d = only(
+            `
+            DECLARE item_cursor CURSOR FOR
+            SELECT Id FROM dbo.Items
+            `,
+            DiagnosticCode.CursorUsage
+        );
+
+        expect(d.length).toBe(1);
+        expect(d[0].severity).toBe('warning');
+    });
+
+    test('does not emit duplicate warnings for cursor lifecycle statements', () => {
+        const d = only(
+            `
+            DECLARE item_cursor CURSOR FOR
+            SELECT Id FROM dbo.Items;
+            OPEN item_cursor;
+            FETCH NEXT FROM item_cursor INTO @ItemId;
+            CLOSE item_cursor;
+            DEALLOCATE item_cursor;
+            `,
+            DiagnosticCode.CursorUsage
+        );
+
+        expect(d.length).toBe(1);
+    });
+});
+
+describe('JOIN001 â€” join hint usage', () => {
+    test('fires on HASH JOIN hint', () => {
+        const d = only(
+            `
+            SELECT *
+            FROM dbo.Items itemRow
+            HASH JOIN dbo.Categories categoryRow ON categoryRow.Id = itemRow.CategoryId
+            `,
+            DiagnosticCode.JoinHintUsage
+        );
+
+        expect(d.length).toBe(1);
+        expect(d[0].severity).toBe('warning');
+    });
+
+    test('fires once per hinted join', () => {
+        const d = only(
+            `
+            SELECT *
+            FROM dbo.Items itemRow
+            INNER LOOP JOIN dbo.Categories categoryRow ON categoryRow.Id = itemRow.CategoryId
+            LEFT MERGE JOIN dbo.Regions regionRow ON regionRow.Id = categoryRow.RegionId
+            `,
+            DiagnosticCode.JoinHintUsage
+        );
+
+        expect(d.length).toBe(2);
     });
 });
 

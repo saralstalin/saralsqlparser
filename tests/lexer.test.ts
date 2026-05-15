@@ -106,6 +106,35 @@ describe('T-SQL Lexer - Tests', () => {
         expect(t.value).toBe('MAX');
     });
 
+    test('CAST family: Should lex as Keywords', () => {
+        const lexer = new Lexer('Cast(@Value AS INT) TRY_CAST(@Value AS INT) CONVERT(INT, @Value)');
+        const t1 = lexer.nextToken();
+        lexer.nextToken(); // (
+        lexer.nextToken(); // @Value
+        const t4 = lexer.nextToken(); // AS
+        lexer.nextToken(); // INT
+        lexer.nextToken(); // )
+        const t7 = lexer.nextToken(); // TRY_CAST
+        const t8 = lexer.nextToken(); // (
+        lexer.nextToken(); // @Value
+        const t10 = lexer.nextToken(); // AS
+        lexer.nextToken(); // INT
+        lexer.nextToken(); // )
+        const t13 = lexer.nextToken(); // CONVERT
+
+        expect(t1.type).toBe(TokenType.Keyword);
+        expect(t1.value).toBe('CAST');
+        expect(t4.type).toBe(TokenType.Keyword);
+        expect(t4.value).toBe('AS');
+        expect(t7.type).toBe(TokenType.Keyword);
+        expect(t7.value).toBe('TRY_CAST');
+        expect(t8.type).toBe(TokenType.OpenParen);
+        expect(t10.type).toBe(TokenType.Keyword);
+        expect(t10.value).toBe('AS');
+        expect(t13.type).toBe(TokenType.Keyword);
+        expect(t13.value).toBe('CONVERT');
+    });
+
     test('Numbers: Should handle scientific notation', () => {
         const lexer = new Lexer('1e10 2.5E-3');
         const t1 = lexer.nextToken();

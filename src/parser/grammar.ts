@@ -12,7 +12,10 @@ export const JoinKeywords = {
     FULL: 'FULL',
     CROSS: 'CROSS',
     OUTER: 'OUTER',
-    APPLY: 'APPLY'
+    APPLY: 'APPLY',
+    HASH: 'HASH',
+    MERGE: 'MERGE',
+    LOOP: 'LOOP'
 } as const;
 
 export type JoinKeyword =
@@ -47,6 +50,9 @@ export const STRUCTURAL_KEYWORDS = new Set([
     'RIGHT',
     'FULL',
     'CROSS',
+    'HASH',
+    'MERGE',
+    'LOOP',
     'JOIN',
 
     'WHERE',

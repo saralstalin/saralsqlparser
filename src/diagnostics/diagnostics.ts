@@ -38,10 +38,14 @@ export enum DiagnosticCode {
     VariableUsedBeforeSet = 'VAR004',
     UnknownColumn = 'COL001',
 
+    MissingCommaBeforeTableConstraint = 'DDL001',
+
     UpdateWithoutWhere = 'DML001',
     DeleteWithoutWhere = 'DML002',
     InsertWithoutColumnList = 'DML003',
     UpdateTargetNoLock = 'DML004',
+    JoinHintUsage = 'JOIN001',
+    CursorUsage = 'CUR001',
 
     SelectStar = 'SEL001',
     SelectStarInView = 'SEL002',
@@ -170,6 +174,16 @@ export class DiagnosticEngine {
 
             case 'BlockStatement':
                 this.checkBlock(stmt);
+                break;
+
+            case 'DeclareCursorStatement':
+                this.emit({
+                    code: DiagnosticCode.CursorUsage,
+                    message: `Cursor usage can be slow and hard to maintain; prefer set-based logic when possible`,
+                    severity: 'warning',
+                    start: stmt.start,
+                    end: stmt.end,
+                });
                 break;
 
             case 'SetOperator':
@@ -320,6 +334,16 @@ export class DiagnosticEngine {
                 }
 
                 for (const join of ref.joins) {
+                    if (join.joinHint) {
+                        this.emit({
+                            code: DiagnosticCode.JoinHintUsage,
+                            message: `${join.joinHint} JOIN hint can reduce optimizer flexibility; review whether it is really needed`,
+                            severity: 'warning',
+                            start: join.start,
+                            end: join.end,
+                        });
+                    }
+
                     const jt = join.table;
 
                     if (jt?.type === 'SubqueryExpression') {
@@ -384,6 +408,20 @@ export class DiagnosticEngine {
 
     private checkCreate(stmt: CreateNode): void {
         const isView = stmt.objectType === 'VIEW';
+
+        if (stmt.objectType === 'TABLE' && stmt.constraints?.length) {
+            for (const constraint of stmt.constraints) {
+                if (constraint.missingLeadingComma) {
+                    this.emit({
+                        code: DiagnosticCode.MissingCommaBeforeTableConstraint,
+                        message: `Table-level constraint is missing a preceding comma`,
+                        severity: 'warning',
+                        start: constraint.start,
+                        end: constraint.end,
+                    });
+                }
+            }
+        }
 
         if (!stmt.body) return;
 

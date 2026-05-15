@@ -82,6 +82,19 @@ describe('T-SQL Parser - CAST / TRY_CAST / CONVERT', () => {
         expectSql(expr.expression, `'123'`);
     });
 
+    test('should parse mixed-case Cast', () => {
+        const stmt = parseOne<any>(`
+            SELECT Cast(@RowNum AS VARCHAR(10))
+        `);
+
+        const expr = stmt.columns[0].expression;
+
+        expect(expr.type).toBe('CastExpression');
+        expect(expr.kind).toBe('CAST');
+        expect(expr.dataType).toBe('VARCHAR(10)');
+        expectSql(expr.expression, '@RowNum');
+    });
+
     test('should parse TRY_CAST', () => {
         const stmt = parseOne<any>(`
             SELECT TRY_CAST(@Value AS INT)

@@ -132,6 +132,23 @@ Low-level lexer / parser APIs are also exposed for advanced scenarios.
 
 ---
 
+# Diagnostics Example
+
+```sql
+UPDATE userRow
+SET Status = 1
+FROM dbo.Users userRow WITH (NOLOCK)
+WHERE userRow.Id = userRow.Id;
+```
+
+Typical diagnostics for this shape:
+
+* `DML004` — `UPDATE` target table must not use `WITH (NOLOCK)`
+* `LOG001` — self-comparison like `userRow.Id = userRow.Id`
+
+
+---
+
 # Supported Today
 
 ## Query grammar
@@ -153,7 +170,14 @@ Supported:
 * HAVING
 * ORDER BY
 * OFFSET / FETCH
-* window functions (core OVER support)
+* window functions
+* window frame clauses
+* PIVOT
+* UNPIVOT
+* OPENJSON with `WITH (...)`
+* `FOR JSON` / `FOR XML`
+* `OPTION (...)`
+* `STRING_AGG ... WITHIN GROUP (...)`
 
 ---
 
@@ -174,9 +198,16 @@ Supported:
 * WHILE
 * BREAK
 * CONTINUE
+* GOTO / labels
+* WAITFOR TIME / DELAY
+* cursor statements
 * variable assignment
 * stored procedure parameters
 * READONLY table-valued parameters
+* temp tables
+* table variables
+* transaction statements
+* output parameters in `EXEC`
 
 ---
 
@@ -195,6 +226,8 @@ Supported:
 * boolean logic
 * IN / BETWEEN / LIKE
 * NULL handling
+* `IIF`
+* old-style string literal aliases in projections
 
 ---
 
@@ -224,8 +257,11 @@ Supports:
 * named constraints
 * unnamed constraints
 * composite keys
+* computed columns
+* computed columns with optional `PERSISTED`
 * REFERENCES parsing
 * clustered / nonclustered indexes
+* clustered primary key constraints
 * INCLUDE columns
 * filtered indexes (`WHERE`)
 * index options (`WITH (...)`)
@@ -241,13 +277,16 @@ Supported:
 * parameter scope
 * alias scope
 * temp table scope
+* table variable scope
 * CTE scope
+* PIVOT / UNPIVOT output-column scope
 * lineage extraction
 * declaration extraction
 * dependency extraction
 * document symbols
 * completions
 * diagnostics
+* parser + diagnostics issue stream for recoverable SQL
 
 ---
 
@@ -282,8 +321,15 @@ This is critical for editor scenarios.
 SaralSQL is capable of parsing a large subset of production T-SQL, including:
 
 * procedural stored procedures
+* enterprise-style validation / ETL procedures
 * real-world DDL
 * constraints and indexes
+* cursor-based procedures
+* procedural flow with `GOTO`, labels, and `WAITFOR`
+* recursive CTEs
+* temp-table-heavy workflows
+* TVP-driven `INSERT ... SELECT ... FROM` patterns
+* report-style queries with legacy alias forms
 * partial / broken SQL inside editors
 * semantic scope + lineage extraction
 
@@ -301,9 +347,6 @@ Current gaps include:
 
 Not fully implemented / partial:
 
-* WAITFOR
-* cursors
-* GOTO / labels
 * transaction grammar edge cases
 * dynamic EXEC edge-case parsing
 
@@ -313,8 +356,6 @@ Not fully implemented / partial:
 
 Partial / planned:
 
-* computed columns
-* persisted computed columns
 * partition grammar
 * advanced index options
 * filegroup / storage edge cases
@@ -326,11 +367,11 @@ Partial / planned:
 
 Partial:
 
-* full window frame grammar
-* PIVOT / UNPIVOT edge cases
-* OPENQUERY / OPENJSON family
+* OPENQUERY / OPENROWSET family
+* remaining PIVOT / UNPIVOT edge cases
+* JSON edge cases beyond current `OPENJSON` support
 * XML grammar
-* JSON grammar edge cases
+* some ordered / specialized aggregate edge cases
 
 ---
 
@@ -367,6 +408,21 @@ There will still be:
 * edge-case recovery bugs
 * uncommon SQL Server syntax not yet modeled
 
+That said, the parser is already hardened around a number of real production shapes, including:
+
+* nested `TRY / CATCH`
+* TVPs and table variables
+* cursor lifecycle statements
+* `WAITFOR TIME` / `WAITFOR DELAY`
+* `GOTO` and labels
+* `DELETE TOP (...) ... OUTPUT`
+* `MERGE` variants
+* `STRING_AGG ... WITHIN GROUP`
+* `OPENJSON ... WITH (...)`
+* legacy string-literal aliases
+* `BEGIN ;WITH ...` CTE handoff inside blocks
+* computed columns with optional `PERSISTED`
+
 Bug reports with SQL samples are extremely valuable.
 
 ---
@@ -402,11 +458,7 @@ Avoid duplicate logic
 
 ## Near term
 
-* WAITFOR
-* cursor grammar
 * transaction grammar completion
-* full window frame grammar
-* computed columns
 * richer diagnostics
 * auto-fix scaffolding
 

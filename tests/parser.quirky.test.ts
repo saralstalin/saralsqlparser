@@ -1,4 +1,5 @@
 import { parseResult } from './parser.helpers';
+import { BlockNode } from '../src/ast/types';
 
 type QuirkyCase = {
     name: string;
@@ -30,6 +31,11 @@ describe('T-SQL quirky syntax in multi-statement scripts', () => {
             name: 'leading semicolon before CTE',
             statement: ';WITH X AS (SELECT 1 AS Id) SELECT Id FROM X;',
             expectedType: 'WithStatement'
+        },
+        {
+            name: 'leading semicolon before CTE inside block',
+            statement: 'BEGIN ;WITH X AS (SELECT 1 AS Id) SELECT Id FROM X; END',
+            expectedType: 'BlockStatement'
         },
         {
             name: 'DELETE alias target with FROM join',
@@ -74,5 +80,11 @@ describe('T-SQL quirky syntax in multi-statement scripts', () => {
         expect(body[0].type).not.toBe('ErrorStatement');
         expect(body[1].type).not.toBe('ErrorStatement');
         expect(body[body.length - 1].type).not.toBe('ErrorStatement');
+
+        if (expectedType === 'BlockStatement') {
+            const block = body[1] as BlockNode;
+            expect(block.type).toBe('BlockStatement');
+            expect(block.body[0].type).toBe('WithStatement');
+        }
     });
 });

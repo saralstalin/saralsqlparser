@@ -57,6 +57,7 @@ export class Lexer {
         // ── Joins ─────────────────────────────────────────────────────────────────
         'JOIN', 'INNER', 'LEFT', 'RIGHT', 'FULL', 'OUTER',
         'CROSS', 'APPLY',
+        'HASH', 'LOOP',
         'PIVOT', 'UNPIVOT',
 
         // ── Logical operators ─────────────────────────────────────────────────────
@@ -65,13 +66,14 @@ export class Lexer {
         // ── Predicates ────────────────────────────────────────────────────────────
         'IN', 'BETWEEN', 'LIKE', 'EXISTS',
         'IS', 'NULL',
+        'CAST', 'TRY_CAST', 'CONVERT',
 
         // ── CASE expression ───────────────────────────────────────────────────────
         'CASE', 'WHEN', 'THEN', 'ELSE', 'END',
 
         // ── Window functions ──────────────────────────────────────────────────────
         // OVER (PARTITION BY ... ORDER BY ... ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
-        'OVER', 'PARTITION',
+        'OVER', 'PARTITION', 'WITHIN',
         'UNBOUNDED', 'PRECEDING', 'FOLLOWING', 'CURRENT', 'RANGE', 'ROW',
         // ROWS already listed under Pagination — serves double duty here
 
@@ -103,9 +105,17 @@ export class Lexer {
         'CONSTRAINT', 'DEFAULT', 'CHECK',
         'PRIMARY', 'KEY', 'FOREIGN', 'REFERENCES',
         'IDENTITY',                          // IDENTITY(1,1) in CREATE TABLE
+        'PERSISTED',
 
         // ── Variables and declarations ────────────────────────────────────────────
         'DECLARE',
+        'CURSOR',
+        'LOCAL', 'GLOBAL',
+        'FORWARD_ONLY', 'SCROLL',
+        'STATIC', 'KEYSET', 'DYNAMIC', 'FAST_FORWARD', 'INSENSITIVE',
+        'READ_ONLY', 'SCROLL_LOCKS', 'OPTIMISTIC',
+        'OPEN', 'CLOSE', 'DEALLOCATE',
+        'PRIOR', 'LAST', 'ABSOLUTE', 'RELATIVE',
 
         // ── Control flow ─────────────────────────────────────────────────────────
         'IF', 'ELSE',
@@ -113,6 +123,8 @@ export class Lexer {
         'WHILE', 'BREAK', 'CONTINUE',
         'RETURN',
         'GOTO',                              // rare but valid T-SQL
+        'WAITFOR',
+        'DELAY',
 
         // ── Error handling ────────────────────────────────────────────────────────
         'TRY', 'CATCH',

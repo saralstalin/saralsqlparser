@@ -18,6 +18,7 @@ import {
     RaiseErrorNode,
     ThrowNode,
     WhileNode,
+    ExecuteNode,
     QueryStatement,
     TableReference,
     JoinNode,
@@ -201,6 +202,10 @@ export class ScopeBuilder {
                 this.visitWhile(stmt);
                 break;
 
+            case 'ExecuteStatement':
+                this.visitExecute(stmt);
+                break;
+
             default:
                 break;
         }
@@ -285,6 +290,28 @@ export class ScopeBuilder {
 
         if (stmt.body) {
             this.visitStatement(stmt.body);
+        }
+    }
+
+    private visitExecute(stmt: ExecuteNode): void {
+        if (stmt.target) {
+            this.visitExpression(stmt.target);
+        }
+
+        for (const arg of stmt.args) {
+            if (!arg.value) {
+                continue;
+            }
+
+            this.visitExpression(arg.value);
+
+            if (arg.isOutput && arg.value.type === 'Variable') {
+                this.recordReference(
+                    arg.value.name,
+                    arg.value,
+                    'write'
+                );
+            }
         }
     }
 

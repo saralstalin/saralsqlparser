@@ -475,6 +475,27 @@ describe('T-SQL Parser', () => {
         expect(stmt.from?.[0].joins[0].type).toBe('CROSS APPLY');
     });
 
+    test('should handle HASH JOIN hint', () => {
+        const sql = `SELECT * FROM dbo.Items i HASH JOIN dbo.Categories c ON c.Id = i.CategoryId`;
+        const stmt = parse(sql).body[0] as SelectNode;
+        expect(stmt.from?.[0].joins[0].type).toBe('INNER JOIN');
+        expect(stmt.from?.[0].joins[0].joinHint).toBe('HASH');
+    });
+
+    test('should handle MERGE JOIN hint with LEFT JOIN', () => {
+        const sql = `SELECT * FROM dbo.Items i LEFT MERGE JOIN dbo.Categories c ON c.Id = i.CategoryId`;
+        const stmt = parse(sql).body[0] as SelectNode;
+        expect(stmt.from?.[0].joins[0].type).toBe('LEFT OUTER JOIN');
+        expect(stmt.from?.[0].joins[0].joinHint).toBe('MERGE');
+    });
+
+    test('should handle LOOP JOIN hint with INNER JOIN', () => {
+        const sql = `SELECT * FROM dbo.Items i INNER LOOP JOIN dbo.Categories c ON c.Id = i.CategoryId`;
+        const stmt = parse(sql).body[0] as SelectNode;
+        expect(stmt.from?.[0].joins[0].type).toBe('INNER JOIN');
+        expect(stmt.from?.[0].joins[0].joinHint).toBe('LOOP');
+    });
+
     // 33. Derived Tables (Subquery in FROM)
     test('should handle subquery in FROM', () => {
         const sql = `SELECT * FROM (SELECT 1 as x) d`;

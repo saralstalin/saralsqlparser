@@ -58,12 +58,15 @@ import {
     ForClause,
     ForJsonOption,
     ForXmlOption,
+    OptionClause,
+    QueryHint,
     OpenJsonColumnDefinition,
 
     // Table / relational
     TableReference,
     JoinNode,
     JoinType,
+    JoinHint,
     ColumnNode,
     OrderByNode,
     MergeMatchType,
@@ -85,6 +88,14 @@ import {
 
     ContinueNode,
     BreakNode,
+    GotoNode,
+    LabelNode,
+    WaitForNode,
+    DeclareCursorNode,
+    OpenCursorNode,
+    FetchCursorNode,
+    CloseCursorNode,
+    DeallocateCursorNode,
     TryCatchNode,
     ThrowNode,
 
@@ -426,6 +437,52 @@ export class Parser {
         };
     }
 
+    private parseWithinGroupClause(): OrderByNode[] {
+        this.matchKeyword('WITHIN');
+        this.matchKeyword('GROUP');
+        this.match(TokenType.OpenParen);
+        this.matchKeyword('ORDER');
+        this.matchKeyword('BY');
+
+        const orderBy =
+            this.parseList(() => {
+                const expr =
+                    this.parseExpression();
+
+                let direction: 'ASC' | 'DESC' = 'ASC';
+                let itemEnd = expr.end;
+
+                if (this.peekKeyword('DESC')) {
+                    const dirToken = this.consume();
+                    direction = 'DESC';
+                    itemEnd =
+                        dirToken.offset +
+                        dirToken.value.length;
+                } else if (this.peekKeyword('ASC')) {
+                    const dirToken = this.consume();
+                    direction = 'ASC';
+                    itemEnd =
+                        dirToken.offset +
+                        dirToken.value.length;
+                }
+
+                return {
+                    expression: expr,
+                    direction,
+                    start: expr.start,
+                    end: itemEnd
+                } as OrderByNode;
+            }, {
+                isBoundary: (token?: Token) =>
+                    !token ||
+                    token.type === TokenType.CloseParen
+            });
+
+        this.match(TokenType.CloseParen);
+
+        return orderBy;
+    }
+
     private parseOpenJsonWithClause(): OpenJsonColumnDefinition[] {
         this.matchKeyword('WITH');
         this.match(TokenType.OpenParen);
@@ -686,6 +743,319 @@ export class Parser {
         }
     }
 
+    private stringifyTokens(tokens: Token[]): string {
+        let text = '';
+
+        for (let i = 0; i < tokens.length; i++) {
+            const token = tokens[i];
+            const prev = tokens[i - 1];
+
+            const needsSpace =
+                i > 0 &&
+                token.type !== TokenType.CloseParen &&
+                token.type !== TokenType.Comma &&
+                token.type !== TokenType.Dot &&
+                prev?.type !== TokenType.OpenParen &&
+                prev?.type !== TokenType.Dot;
+
+            if (needsSpace) {
+                text += ' ';
+            }
+
+            text += token.value;
+        }
+
+        return text;
+    }
+
+    private parseOptionClause(): OptionClause {
+        const optionToken = this.matchKeyword('OPTION');
+        const errors: string[] = [];
+        let incomplete = false;
+        let endOffset =
+            optionToken.offset + optionToken.value.length;
+        const hints: QueryHint[] = [];
+
+        if (this.peek()?.type !== TokenType.OpenParen) {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_OPTION_OPEN',
+                'Expected ( after OPTION',
+                endOffset,
+                endOffset
+            );
+
+            return {
+                type: 'OptionClause',
+                hints,
+                start: optionToken.offset,
+                end: endOffset,
+                ...(incomplete ? { incomplete: true } : {}),
+                ...(errors.length ? { errors } : {})
+            };
+        }
+
+        this.consume();
+        endOffset = this.lastConsumedEnd();
+
+        while (this.peek()) {
+            if (this.peek()?.type === TokenType.CloseParen) {
+                this.consume();
+                endOffset = this.lastConsumedEnd();
+                break;
+            }
+
+            const hintTokens: Token[] = [];
+            let depth = 0;
+
+            while (this.peek()) {
+                const token = this.peek()!;
+
+                if (
+                    depth === 0 &&
+                    (
+                        token.type === TokenType.Comma ||
+                        token.type === TokenType.CloseParen
+                    )
+                ) {
+                    break;
+                }
+
+                if (token.type === TokenType.OpenParen) {
+                    depth++;
+                } else if (token.type === TokenType.CloseParen) {
+                    depth--;
+                }
+
+                hintTokens.push(this.consume());
+                endOffset = this.lastConsumedEnd();
+            }
+
+            if (hintTokens.length === 0) {
+                incomplete = true;
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_OPTION_EMPTY_HINT',
+                    'Expected OPTION hint',
+                    endOffset,
+                    endOffset
+                );
+            } else {
+                hints.push(
+                    this.validateOptionHint(
+                        hintTokens,
+                        errors
+                    )
+                );
+            }
+
+            if (this.peek()?.type === TokenType.Comma) {
+                this.consume();
+                endOffset = this.lastConsumedEnd();
+                continue;
+            }
+        }
+
+        if (this.tokens[this.pos - 1]?.type !== TokenType.CloseParen) {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_OPTION_CLOSE',
+                'Expected ) after OPTION hints',
+                endOffset,
+                endOffset
+            );
+        }
+
+        return {
+            type: 'OptionClause',
+            hints,
+            start: optionToken.offset,
+            end: endOffset,
+            ...(incomplete ? { incomplete: true } : {}),
+            ...(errors.length ? { errors } : {})
+        };
+    }
+
+    private validateOptionHint(
+        tokens: Token[],
+        errors: string[]
+    ): QueryHint {
+        const raw =
+            this.stringifyTokens(tokens);
+        const parts =
+            tokens.map(t => t.value.toUpperCase());
+
+        const expectNumericValue = (
+            kind: 'MAXDOP' | 'FAST' | 'MAXRECURSION'
+        ): QueryHint => {
+            const valueToken = tokens[1];
+            const value =
+                valueToken ? Number(valueToken.value) : Number.NaN;
+
+            if (
+                tokens.length !== 2 ||
+                !valueToken ||
+                valueToken.type !== TokenType.Number ||
+                Number.isNaN(value)
+            ) {
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_OPTION_HINT',
+                    `Expected numeric value for OPTION ${kind}`,
+                    tokens[0].offset,
+                    tokens[tokens.length - 1].offset + tokens[tokens.length - 1].value.length
+                );
+
+                return { kind: 'UNKNOWN', raw };
+            }
+
+            return { kind, raw, value };
+        };
+
+        if (parts.length === 1 && parts[0] === 'RECOMPILE') {
+            return { kind: 'RECOMPILE', raw };
+        }
+
+        if (parts.length === 2 && parts[0] === 'HASH' && parts[1] === 'JOIN') {
+            return { kind: 'HASH_JOIN', raw };
+        }
+
+        if (parts.length === 2 && parts[0] === 'MERGE' && parts[1] === 'JOIN') {
+            return { kind: 'MERGE_JOIN', raw };
+        }
+
+        if (parts.length === 2 && parts[0] === 'LOOP' && parts[1] === 'JOIN') {
+            return { kind: 'LOOP_JOIN', raw };
+        }
+
+        if (parts.length === 2 && parts[0] === 'HASH' && parts[1] === 'GROUP') {
+            return { kind: 'HASH_GROUP', raw };
+        }
+
+        if (parts.length === 2 && parts[0] === 'ORDER' && parts[1] === 'GROUP') {
+            return { kind: 'ORDER_GROUP', raw };
+        }
+
+        if (parts.length === 2 && parts[0] === 'MERGE' && parts[1] === 'UNION') {
+            return { kind: 'MERGE_UNION', raw };
+        }
+
+        if (parts.length === 2 && parts[0] === 'CONCAT' && parts[1] === 'UNION') {
+            return { kind: 'CONCAT_UNION', raw };
+        }
+
+        if (parts.length === 2 && parts[0] === 'FORCE' && parts[1] === 'ORDER') {
+            return { kind: 'FORCE_ORDER', raw };
+        }
+
+        if (parts.length === 2 && parts[0] === 'KEEP' && parts[1] === 'PLAN') {
+            return { kind: 'KEEP_PLAN', raw };
+        }
+
+        if (parts.length === 1 && parts[0] === 'KEEPFIXED_PLAN') {
+            return { kind: 'KEEPFIXED_PLAN', raw };
+        }
+
+        if (parts.length === 2 && parts[0] === 'ROBUST' && parts[1] === 'PLAN') {
+            return { kind: 'ROBUST_PLAN', raw };
+        }
+
+        if (parts[0] === 'MAXDOP') {
+            return expectNumericValue('MAXDOP');
+        }
+
+        if (parts[0] === 'FAST') {
+            return expectNumericValue('FAST');
+        }
+
+        if (parts[0] === 'MAXRECURSION') {
+            return expectNumericValue('MAXRECURSION');
+        }
+
+        if (parts[0] === 'PARAMETERIZATION') {
+            if (
+                parts.length === 2 &&
+                (parts[1] === 'SIMPLE' || parts[1] === 'FORCED')
+            ) {
+                return {
+                    kind: 'PARAMETERIZATION',
+                    raw,
+                    value: parts[1] as 'SIMPLE' | 'FORCED'
+                };
+            }
+
+            this.addRecoverableError(
+                errors,
+                'PARSE_OPTION_HINT',
+                'Expected SIMPLE or FORCED after OPTION PARAMETERIZATION',
+                tokens[0].offset,
+                tokens[tokens.length - 1].offset + tokens[tokens.length - 1].value.length
+            );
+
+            return { kind: 'UNKNOWN', raw };
+        }
+
+        if (parts[0] === 'OPTIMIZE' && parts[1] === 'FOR') {
+            if (
+                tokens.length >= 4 &&
+                tokens[2].type === TokenType.OpenParen &&
+                tokens[tokens.length - 1].type === TokenType.CloseParen
+            ) {
+                return {
+                    kind: 'OPTIMIZE_FOR',
+                    raw,
+                    value: raw.substring(raw.indexOf('(') + 1, raw.lastIndexOf(')'))
+                };
+            }
+
+            this.addRecoverableError(
+                errors,
+                'PARSE_OPTION_HINT',
+                'Expected parenthesized arguments after OPTION OPTIMIZE FOR',
+                tokens[0].offset,
+                tokens[tokens.length - 1].offset + tokens[tokens.length - 1].value.length
+            );
+
+            return { kind: 'UNKNOWN', raw };
+        }
+
+        if (parts[0] === 'USE' && parts[1] === 'HINT') {
+            if (
+                tokens.length >= 4 &&
+                tokens[2].type === TokenType.OpenParen &&
+                tokens[tokens.length - 1].type === TokenType.CloseParen
+            ) {
+                return {
+                    kind: 'USE_HINT',
+                    raw,
+                    value: raw.substring(raw.indexOf('(') + 1, raw.lastIndexOf(')'))
+                };
+            }
+
+            this.addRecoverableError(
+                errors,
+                'PARSE_OPTION_HINT',
+                'Expected parenthesized arguments after OPTION USE HINT',
+                tokens[0].offset,
+                tokens[tokens.length - 1].offset + tokens[tokens.length - 1].value.length
+            );
+
+            return { kind: 'UNKNOWN', raw };
+        }
+
+        this.addRecoverableError(
+            errors,
+            'PARSE_OPTION_HINT',
+            `Unsupported OPTION hint: ${raw}`,
+            tokens[0].offset,
+            tokens[tokens.length - 1].offset + tokens[tokens.length - 1].value.length
+        );
+
+        return { kind: 'UNKNOWN', raw };
+    }
+
     private parseSetOperation(
         left: QueryStatement,
         minPrecedence: number = 1
@@ -788,6 +1158,9 @@ export class Parser {
         const startOffset = token.offset;
 
         try {
+            if (this.isLabelStatementStart()) {
+                stmt = this.parseLabel();
+            } else {
             const val = token.value;
 
             switch (val) {
@@ -795,7 +1168,11 @@ export class Parser {
                 case 'INSERT': stmt = this.parseInsert(); break;
                 case 'UPDATE': stmt = this.parseUpdate(); break;
                 case 'DELETE': stmt = this.parseDelete(); break;
-                case 'DECLARE': stmt = this.parseDeclare(); break;
+                case 'DECLARE':
+                    stmt = this.isCursorDeclarationStart()
+                        ? this.parseDeclareCursor()
+                        : this.parseDeclare();
+                    break;
                 case 'MERGE': stmt = this.parseMerge(); break;
                 case 'SET': stmt = this.parseSet(); break;
                 case 'CREATE': stmt = this.parseCreate(false); break;
@@ -821,6 +1198,12 @@ export class Parser {
                 case 'THROW': stmt = this.parseThrow(); break;
                 case 'BREAK': stmt = this.parseBreak(); break;
                 case 'CONTINUE': stmt = this.parseContinue(); break;
+                case 'GOTO': stmt = this.parseGoto(); break;
+                case 'WAITFOR': stmt = this.parseWaitFor(); break;
+                case 'OPEN': stmt = this.parseOpenCursor(); break;
+                case 'FETCH': stmt = this.parseFetchCursor(); break;
+                case 'CLOSE': stmt = this.parseCloseCursor(); break;
+                case 'DEALLOCATE': stmt = this.parseDeallocateCursor(); break;
                 case 'BEGIN':
                     if (this.peek(1)?.value === 'TRY') {
                         stmt = this.parseTryCatch();
@@ -860,6 +1243,7 @@ export class Parser {
                     }
                     throw new Error(`Unexpected token: ${token.value}`);
             }
+            }
 
         } catch (e) {
             const errorMsg =
@@ -897,6 +1281,46 @@ export class Parser {
         }
 
         return stmt;
+    }
+
+    private isLabelStatementStart(): boolean {
+        const token = this.peek();
+        const next = this.peek(1);
+
+        if (!token || !next) {
+            return false;
+        }
+
+        const validName =
+            token.type === TokenType.Identifier ||
+            token.type === TokenType.Keyword;
+
+        return (
+            validName &&
+            next.type === TokenType.Operator &&
+            next.value === ':'
+        );
+    }
+
+    private isCursorDeclarationStart(): boolean {
+        if (!this.peekKeyword('DECLARE')) {
+            return false;
+        }
+
+        const nameToken = this.peek(1);
+        const cursorToken = this.peek(2);
+
+        const validName =
+            nameToken &&
+            (
+                nameToken.type === TokenType.Identifier ||
+                nameToken.type === TokenType.Keyword
+            );
+
+        return !!(
+            validName &&
+            cursorToken?.value === 'CURSOR'
+        );
     }
 
     private addRecoverableError(
@@ -1569,6 +1993,24 @@ export class Parser {
             }
         }
 
+        let optionClause: OptionClause | null = null;
+
+        if (this.peekKeyword('OPTION')) {
+            try {
+                optionClause = this.parseOptionClause();
+                endOffset = optionClause.end;
+            } catch (e) {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_SELECT_OPTION',
+                    e instanceof Error ? e.message : String(e),
+                    endOffset
+                );
+            }
+        }
+
         return {
             type: 'SelectStatement',
             distinct,
@@ -1583,6 +2025,7 @@ export class Parser {
             ...(offset ? { offset } : {}),
             ...(fetch ? { fetch } : {}),
             ...(forClause ? { forClause } : {}),
+            ...(optionClause ? { optionClause } : {}),
             start: startToken.offset,
             end: endOffset,
             ...(incomplete ? { incomplete: true } : {}),
@@ -2097,6 +2540,24 @@ export class Parser {
             }
         }
 
+        let optionClause: OptionClause | null = null;
+
+        if (this.peekKeyword('OPTION')) {
+            try {
+                optionClause = this.parseOptionClause();
+                endOffset = optionClause.end;
+            } catch (e) {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_UPDATE_OPTION',
+                    e instanceof Error ? e.message : String(e),
+                    endOffset
+                );
+            }
+        }
+
         return {
             type: 'UpdateStatement',
             target: targetNode,
@@ -2104,6 +2565,7 @@ export class Parser {
             output,
             from,
             where,
+            ...(optionClause ? { optionClause } : {}),
             start: startToken.offset,
             end: endOffset,
             ...(incomplete ? { incomplete: true } : {}),
@@ -2820,6 +3282,7 @@ export class Parser {
         // safe defaults
         let type: JoinType = JoinTypes.INNER;
         let rawType = startToken.value.toUpperCase();
+        let joinHint: JoinHint | undefined;
         let endOffset = startToken.offset + startToken.value.length;
 
         // 1. Determine canonical Join Type
@@ -2829,6 +3292,23 @@ export class Parser {
 
         try {
             switch (first) {
+                case JoinKeywords.HASH:
+                case JoinKeywords.MERGE:
+                case JoinKeywords.LOOP:
+                    joinHint = first as JoinHint;
+                    rawType = `${first} JOIN`;
+
+                    if (this.peekKeyword(JoinKeywords.JOIN)) {
+                        const joinToken = this.consume();
+                        endOffset = joinToken.offset + joinToken.value.length;
+                    } else {
+                        incomplete = true;
+                        errors.push(`Expected JOIN after ${first}`);
+                    }
+
+                    type = JoinTypes.INNER;
+                    break;
+
                 case JoinKeywords.JOIN:
                     rawType = JoinKeywords.JOIN;
                     type = JoinTypes.INNER;
@@ -2836,6 +3316,16 @@ export class Parser {
 
                 case JoinKeywords.INNER:
                     rawType = 'INNER JOIN';
+
+                    if (
+                        this.peekKeyword(JoinKeywords.HASH) ||
+                        this.peekKeyword(JoinKeywords.MERGE) ||
+                        this.peekKeyword(JoinKeywords.LOOP)
+                    ) {
+                        joinHint = this.consume().value as JoinHint;
+                        endOffset = this.lastConsumedEnd();
+                        rawType = `INNER ${joinHint} JOIN`;
+                    }
 
                     if (this.peekKeyword(JoinKeywords.JOIN)) {
                         const joinToken = this.consume();
@@ -2855,6 +3345,16 @@ export class Parser {
                         rawType = 'LEFT OUTER JOIN';
                     } else {
                         rawType = 'LEFT JOIN';
+                    }
+
+                    if (
+                        this.peekKeyword(JoinKeywords.HASH) ||
+                        this.peekKeyword(JoinKeywords.MERGE) ||
+                        this.peekKeyword(JoinKeywords.LOOP)
+                    ) {
+                        joinHint = this.consume().value as JoinHint;
+                        endOffset = this.lastConsumedEnd();
+                        rawType = rawType.replace(' JOIN', ` ${joinHint} JOIN`);
                     }
 
                     if (this.peekKeyword(JoinKeywords.JOIN)) {
@@ -2877,6 +3377,16 @@ export class Parser {
                         rawType = 'RIGHT JOIN';
                     }
 
+                    if (
+                        this.peekKeyword(JoinKeywords.HASH) ||
+                        this.peekKeyword(JoinKeywords.MERGE) ||
+                        this.peekKeyword(JoinKeywords.LOOP)
+                    ) {
+                        joinHint = this.consume().value as JoinHint;
+                        endOffset = this.lastConsumedEnd();
+                        rawType = rawType.replace(' JOIN', ` ${joinHint} JOIN`);
+                    }
+
                     if (this.peekKeyword(JoinKeywords.JOIN)) {
                         const joinToken = this.consume();
                         endOffset = joinToken.offset + joinToken.value.length;
@@ -2895,6 +3405,16 @@ export class Parser {
                         rawType = 'FULL OUTER JOIN';
                     } else {
                         rawType = 'FULL JOIN';
+                    }
+
+                    if (
+                        this.peekKeyword(JoinKeywords.HASH) ||
+                        this.peekKeyword(JoinKeywords.MERGE) ||
+                        this.peekKeyword(JoinKeywords.LOOP)
+                    ) {
+                        joinHint = this.consume().value as JoinHint;
+                        endOffset = this.lastConsumedEnd();
+                        rawType = rawType.replace(' JOIN', ` ${joinHint} JOIN`);
                     }
 
                     if (this.peekKeyword(JoinKeywords.JOIN)) {
@@ -3114,6 +3634,7 @@ export class Parser {
         return {
             type,
             rawType,
+            ...(joinHint ? { joinHint } : {}),
             table: tableTarget,
             alias,
             hints,
@@ -3398,12 +3919,31 @@ export class Parser {
             }
         }
 
+        let optionClause: OptionClause | null = null;
+
+        if (this.peekKeyword('OPTION')) {
+            try {
+                optionClause = this.parseOptionClause();
+                endOffset = optionClause.end;
+            } catch (e) {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_DELETE_OPTION',
+                    e instanceof Error ? e.message : String(e),
+                    endOffset
+                );
+            }
+        }
+
         return {
             type: 'DeleteStatement',
             target,
             output,
             from,
             where,
+            ...(optionClause ? { optionClause } : {}),
             start: startToken.offset,
             end: endOffset,
             ...(incomplete ? { incomplete: true } : {}),
@@ -4130,6 +4670,7 @@ export class Parser {
         const constraints: ConstraintNode[] = [];
 
         let incomplete = false;
+        let nextTableConstraintMissingComma = false;
 
         while (this.peek()) {
             const token = this.peek()!;
@@ -4165,6 +4706,11 @@ export class Parser {
                     const constraint =
                         this.parseConstraint();
 
+                    if (nextTableConstraintMissingComma) {
+                        constraint.missingLeadingComma = true;
+                        nextTableConstraintMissingComma = false;
+                    }
+
                     constraints.push(constraint);
 
                     if (
@@ -4191,6 +4737,26 @@ export class Parser {
                 }
 
                 const name = nameExpr.name;
+
+                if (this.peekKeyword('AS')) {
+                    const computed =
+                        this.parseComputedColumnTail();
+
+                    columns.push({
+                        name,
+                        ...computed,
+                        start: startToken.offset,
+                        end: this.lastConsumedEnd()
+                    });
+
+                    if (
+                        this.peek()?.type === TokenType.Comma
+                    ) {
+                        this.consume();
+                    }
+
+                    continue;
+                }
 
                 // datatype
                 let dataType = '';
@@ -4287,6 +4853,11 @@ export class Parser {
                         nextVal === 'REFERENCES' ||
                         nextVal === 'IDENTITY'
                     ) {
+                        if (this.looksLikeTableConstraintAfterColumn()) {
+                            nextTableConstraintMissingComma = true;
+                            break;
+                        }
+
                         const constraint =
                             this.parseConstraint(name);
 
@@ -4984,6 +5555,7 @@ export class Parser {
 
             'PIVOT',
             'UNPIVOT',
+            'WITHIN',
 
             'WHEN',
             'THEN',
@@ -5270,6 +5842,25 @@ export class Parser {
                 PRECEDENCE_MAP[val] ??
                 Precedence.LOWEST;
 
+            if (
+                val === 'WITHIN' &&
+                left.type === 'FunctionCall'
+            ) {
+                const withinGroup =
+                    this.parseWithinGroupClause();
+
+                left = {
+                    ...left,
+                    withinGroup,
+                    end:
+                        withinGroup.length > 0
+                            ? withinGroup[withinGroup.length - 1].end
+                            : this.lastConsumedEnd()
+                };
+
+                continue;
+            }
+
             // RULE #4:
             // Pratt precedence termination
             if (nextPrecedence <= precedence) {
@@ -5535,6 +6126,8 @@ export class Parser {
 
         const value =
             token.value;
+        const upperValue =
+            value.toUpperCase();
 
         const start =
             token.offset;
@@ -5733,7 +6326,7 @@ export class Parser {
                 // ---------------------------------------------
 
                 // NULL literal
-                if (value === 'NULL') {
+                if (upperValue === 'NULL') {
 
                     return {
                         type: 'Literal',
@@ -5745,20 +6338,20 @@ export class Parser {
                 }
 
                 // CASE expression
-                if (value === 'CASE') {
+                if (upperValue === 'CASE') {
                     return this.parseCaseExpression();
                 }
 
                 // EXISTS (...)
-                if (value === 'EXISTS') {
+                if (upperValue === 'EXISTS') {
                     return this.parseExists(token);
                 }
 
                 // CAST / TRY_CAST / CONVERT
                 if (
-                    value === 'CAST' ||
-                    value === 'TRY_CAST' ||
-                    value === 'CONVERT'
+                    upperValue === 'CAST' ||
+                    upperValue === 'TRY_CAST' ||
+                    upperValue === 'CONVERT'
                 ) {
 
                     this.pos--;
@@ -5767,7 +6360,7 @@ export class Parser {
                 }
 
                 // NOT / NOT EXISTS
-                if (value === 'NOT') {
+                if (upperValue === 'NOT') {
 
                     // NOT EXISTS (...)
                     if (
@@ -6749,6 +7342,7 @@ export class Parser {
             !this.peekKeyword('END')
         ) {
             try {
+                const beforePos = this.pos;
                 const stmt = this.parseStatement();
 
                 if (stmt) {
@@ -6756,6 +7350,10 @@ export class Parser {
                     endOffset = stmt.end;
                 }
                 else {
+                    if (this.pos > beforePos) {
+                        continue;
+                    }
+
                     if (
                         this.peekKeyword('END') ||
                         this.peekKeyword('ELSE') ||
@@ -7904,6 +8502,24 @@ export class Parser {
             }
         }
 
+        let optionClause: OptionClause | null = null;
+
+        if (this.peekKeyword('OPTION')) {
+            try {
+                optionClause = this.parseOptionClause();
+                endOffset = optionClause.end;
+            } catch (e) {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_MERGE_OPTION',
+                    e instanceof Error ? e.message : String(e),
+                    endOffset
+                );
+            }
+        }
+
         return {
             type: 'MergeStatement',
             top,
@@ -7913,6 +8529,7 @@ export class Parser {
             on,
             whenClauses,
             output,
+            ...(optionClause ? { optionClause } : {}),
             start: startToken.offset,
             end: endOffset,
             ...(incomplete ? { incomplete: true } : {}),
@@ -8491,10 +9108,17 @@ export class Parser {
                     this.consume(); // =
 
                     let value: Expression | null = null;
+                    let isOutput = false;
 
                     if (this.peek()) {
                         value = this.parseExpression();
                         endOffset = value.end;
+
+                        while (this.peekKeyword('OUTPUT') || this.peekKeyword('OUT')) {
+                            isOutput = true;
+                            this.consume();
+                            endOffset = this.lastConsumedEnd();
+                        }
                     } else {
                         incomplete = true;
 
@@ -8509,7 +9133,8 @@ export class Parser {
 
                     args.push({
                         name,
-                        value
+                        value,
+                        ...(isOutput ? { isOutput: true } : {})
                     });
 
                     continue;
@@ -8518,12 +9143,18 @@ export class Parser {
                 // positional:
                 // EXEC proc 1, 'abc'
                 const value = this.parseExpression();
+                let isOutput = false;
+
+                while (this.peekKeyword('OUTPUT') || this.peekKeyword('OUT')) {
+                    isOutput = true;
+                    this.consume();
+                    endOffset = this.lastConsumedEnd();
+                }
 
                 args.push({
-                    value
+                    value,
+                    ...(isOutput ? { isOutput: true } : {})
                 });
-
-                endOffset = value.end;
             }
         } catch (e) {
             incomplete = true;
@@ -8569,7 +9200,7 @@ export class Parser {
         const keyword = this.consume();
 
         const kind =
-            keyword.value as
+            keyword.value.toUpperCase() as
             | 'CAST'
             | 'TRY_CAST'
             | 'CONVERT';
@@ -8822,6 +9453,137 @@ export class Parser {
         return result;
     }
 
+    private parseConstraintColumnListSafe(): string[] {
+        const result: string[] = [];
+
+        while (this.peek()) {
+            const token = this.peek()!;
+
+            const isResync =
+                token.type === TokenType.Keyword &&
+                RESYNC_KEYWORDS.has(token.value);
+
+            if (
+                token.type === TokenType.CloseParen ||
+                token.type === TokenType.Semicolon ||
+                isResync
+            ) {
+                break;
+            }
+
+            if (token.type === TokenType.Comma) {
+                this.consume();
+                continue;
+            }
+
+            const id = this.parseMultipartIdentifier();
+
+            if (id.type !== 'Identifier') {
+                break;
+            }
+
+            result.push(id.name);
+
+            if (this.peekKeyword('ASC') || this.peekKeyword('DESC')) {
+                this.consume();
+            }
+        }
+
+        return result;
+    }
+
+    private looksLikeTableConstraintAfterColumn(): boolean {
+        const t0 = this.peek()?.value;
+        const t1 = this.peek(1)?.value;
+        const t2 = this.peek(2)?.value;
+        const t3 = this.peek(3)?.value;
+
+        if (
+            t0 === 'PRIMARY' &&
+            t1 === 'KEY' &&
+            (
+                t2 === 'CLUSTERED' ||
+                t2 === 'NONCLUSTERED' ||
+                t2 === '('
+            )
+        ) {
+            return true;
+        }
+
+        if (
+            t0 === 'UNIQUE' &&
+            (
+                t1 === 'CLUSTERED' ||
+                t1 === 'NONCLUSTERED' ||
+                t1 === '('
+            )
+        ) {
+            return true;
+        }
+
+        if (
+            t0 === 'FOREIGN' &&
+            t1 === 'KEY' &&
+            t2 === '('
+        ) {
+            return true;
+        }
+
+        if (
+            t0 === 'CONSTRAINT' &&
+            (
+                (t2 === 'PRIMARY' && t3 === 'KEY') ||
+                t2 === 'UNIQUE' ||
+                (t2 === 'FOREIGN' && t3 === 'KEY')
+            )
+        ) {
+            return true;
+        }
+
+        return false;
+    }
+
+    private parseComputedColumnTail(): {
+        dataType: string;
+        computedExpression?: Expression | null;
+        persisted?: boolean;
+    } {
+        this.matchKeyword('AS');
+
+        let computedExpression: Expression | null = null;
+
+        if (this.peek()?.type === TokenType.OpenParen) {
+            this.consume();
+            computedExpression = this.parseExpression(
+                Precedence.LOWEST
+            );
+
+            if (this.peek()?.type === TokenType.CloseParen) {
+                this.consume();
+            } else {
+                throw new Error(
+                    'Expected ) after computed column expression'
+                );
+            }
+        } else {
+            computedExpression = this.parseExpression(
+                Precedence.LOWEST,
+                new Set(['PERSISTED'])
+            );
+        }
+
+        const persisted = this.peekKeyword('PERSISTED');
+        if (persisted) {
+            this.consume();
+        }
+
+        return {
+            dataType: '',
+            computedExpression,
+            ...(persisted ? { persisted: true } : {})
+        };
+    }
+
     private parseConstraint(
         implicitColumn?: string
     ): ConstraintNode {
@@ -8898,6 +9660,13 @@ export class Parser {
 
                 kind = 'PRIMARY KEY';
 
+                if (
+                    this.peek()?.value === 'CLUSTERED' ||
+                    this.peek()?.value === 'NONCLUSTERED'
+                ) {
+                    this.consume();
+                }
+
                 if (implicitColumn) {
                     columns = [implicitColumn];
                 } else if (
@@ -8906,7 +9675,7 @@ export class Parser {
                     this.consume();
 
                     columns =
-                        this.parseIdentifierListSafe();
+                        this.parseConstraintColumnListSafe();
 
                     if (
                         this.peek()?.type ===
@@ -9033,6 +9802,13 @@ export class Parser {
 
                 kind = 'UNIQUE';
 
+                if (
+                    this.peek()?.value === 'CLUSTERED' ||
+                    this.peek()?.value === 'NONCLUSTERED'
+                ) {
+                    this.consume();
+                }
+
                 if (implicitColumn) {
                     columns = [implicitColumn];
                 } else if (
@@ -9041,7 +9817,7 @@ export class Parser {
                     this.consume();
 
                     columns =
-                        this.parseIdentifierListSafe();
+                        this.parseConstraintColumnListSafe();
 
                     if (
                         this.peek()?.type ===
@@ -9968,6 +10744,436 @@ export class Parser {
         };
     }
 
+    private parseGoto(): GotoNode {
+        const token = this.matchKeyword('GOTO');
+        let incomplete = false;
+        const errors: string[] = [];
+        let label: string | null = null;
+        let endOffset = token.offset + token.value.length;
+
+        const next = this.peek();
+
+        if (
+            next &&
+            (
+                next.type === TokenType.Identifier ||
+                next.type === TokenType.Keyword
+            )
+        ) {
+            label = this.consume().value;
+            endOffset = this.lastConsumedEnd();
+        } else {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_GOTO_LABEL',
+                'Expected label after GOTO',
+                endOffset,
+                endOffset
+            );
+        }
+
+        return {
+            type: 'GotoStatement',
+            label,
+            start: token.offset,
+            end: endOffset,
+            ...(incomplete ? { incomplete: true } : {}),
+            ...(errors.length ? { errors } : {})
+        };
+    }
+
+    private parseLabel(): LabelNode {
+        const nameToken = this.consume();
+        const colonToken = this.consume();
+
+        return {
+            type: 'LabelStatement',
+            name: nameToken.value,
+            start: nameToken.offset,
+            end: colonToken.offset + colonToken.value.length
+        };
+    }
+
+    private parseWaitFor(): WaitForNode {
+        const startToken = this.matchKeyword('WAITFOR');
+        let incomplete = false;
+        const errors: string[] = [];
+        let kind: 'TIME' | 'DELAY' | null = null;
+        let value: Expression | null = null;
+        let endOffset = startToken.offset + startToken.value.length;
+
+        if (this.peekKeyword('TIME')) {
+            this.consume();
+            kind = 'TIME';
+            endOffset = this.lastConsumedEnd();
+        } else if (this.peekKeyword('DELAY')) {
+            this.consume();
+            kind = 'DELAY';
+            endOffset = this.lastConsumedEnd();
+        } else {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_WAITFOR_KIND',
+                'Expected TIME or DELAY after WAITFOR',
+                endOffset,
+                endOffset
+            );
+        }
+
+        if (kind) {
+            try {
+                if (
+                    this.peek() &&
+                    this.peek()?.type !== TokenType.Semicolon &&
+                    !(
+                        this.peek()?.type === TokenType.Keyword &&
+                        RESYNC_KEYWORDS.has(this.peek()!.value)
+                    )
+                ) {
+                    value = this.parseExpression();
+                    endOffset = value.end;
+                } else {
+                    incomplete = true;
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_WAITFOR_VALUE',
+                        `Expected ${kind} value after WAITFOR ${kind}`,
+                        endOffset,
+                        endOffset
+                    );
+                }
+            } catch (e) {
+                incomplete = true;
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_WAITFOR_VALUE',
+                    e instanceof Error ? e.message : String(e),
+                    endOffset,
+                    endOffset
+                );
+            }
+        }
+
+        return {
+            type: 'WaitForStatement',
+            kind,
+            value,
+            start: startToken.offset,
+            end: endOffset,
+            ...(incomplete ? { incomplete: true } : {}),
+            ...(errors.length ? { errors } : {})
+        };
+    }
+
+    private parseDeclareCursor(): DeclareCursorNode {
+        const startToken = this.matchKeyword('DECLARE');
+        let incomplete = false;
+        const errors: string[] = [];
+        let name: string | null = null;
+        let query: QueryStatement | null = null;
+        const options: string[] = [];
+        let endOffset = startToken.offset + startToken.value.length;
+
+        const nameToken = this.peek();
+        if (
+            nameToken &&
+            (
+                nameToken.type === TokenType.Identifier ||
+                nameToken.type === TokenType.Keyword
+            )
+        ) {
+            name = this.consume().value;
+            endOffset = this.lastConsumedEnd();
+        } else {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_CURSOR_NAME',
+                'Expected cursor name after DECLARE',
+                endOffset,
+                endOffset
+            );
+        }
+
+        if (this.peekKeyword('CURSOR')) {
+            this.consume();
+            endOffset = this.lastConsumedEnd();
+        } else {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_CURSOR_KEYWORD',
+                'Expected CURSOR keyword in cursor declaration',
+                endOffset,
+                endOffset
+            );
+        }
+
+        while (this.peek()) {
+            const value = this.peek()!.value;
+            if (value === 'FOR') {
+                break;
+            }
+            if (
+                this.peek()?.type === TokenType.Semicolon ||
+                (
+                    this.peek()?.type === TokenType.Keyword &&
+                    RESYNC_KEYWORDS.has(this.peek()!.value)
+                )
+            ) {
+                break;
+            }
+
+            options.push(this.consume().value);
+            endOffset = this.lastConsumedEnd();
+        }
+
+        if (this.peekKeyword('FOR')) {
+            this.consume();
+            endOffset = this.lastConsumedEnd();
+            try {
+                query = this.parseQueryExpression();
+                endOffset = query.end;
+            } catch (e) {
+                incomplete = true;
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_CURSOR_QUERY',
+                    e instanceof Error ? e.message : String(e),
+                    endOffset,
+                    endOffset
+                );
+            }
+        } else {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_CURSOR_FOR',
+                'Expected FOR query in cursor declaration',
+                endOffset,
+                endOffset
+            );
+        }
+
+        return {
+            type: 'DeclareCursorStatement',
+            name,
+            ...(options.length ? { options } : {}),
+            query,
+            start: startToken.offset,
+            end: endOffset,
+            ...(incomplete ? { incomplete: true } : {}),
+            ...(errors.length ? { errors } : {})
+        };
+    }
+
+    private parseOpenCursor(): OpenCursorNode {
+        const startToken = this.matchKeyword('OPEN');
+        let incomplete = false;
+        const errors: string[] = [];
+        let name: string | null = null;
+        let endOffset = startToken.offset + startToken.value.length;
+
+        if (
+            this.peek() &&
+            (
+                this.peek()!.type === TokenType.Identifier ||
+                this.peek()!.type === TokenType.Keyword
+            )
+        ) {
+            name = this.consume().value;
+            endOffset = this.lastConsumedEnd();
+        } else {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_CURSOR_OPEN_NAME',
+                'Expected cursor name after OPEN',
+                endOffset,
+                endOffset
+            );
+        }
+
+        return {
+            type: 'OpenCursorStatement',
+            name,
+            start: startToken.offset,
+            end: endOffset,
+            ...(incomplete ? { incomplete: true } : {}),
+            ...(errors.length ? { errors } : {})
+        };
+    }
+
+    private parseFetchCursor(): FetchCursorNode {
+        const startToken = this.matchKeyword('FETCH');
+        let incomplete = false;
+        const errors: string[] = [];
+        let direction: string | undefined;
+        let offset: Expression | null | undefined;
+        let name: string | null = null;
+        let into: string[] | undefined;
+        let endOffset = startToken.offset + startToken.value.length;
+
+        const directionToken = this.peek();
+        if (
+            directionToken &&
+            ['NEXT', 'PRIOR', 'FIRST', 'LAST', 'ABSOLUTE', 'RELATIVE'].includes(directionToken.value)
+        ) {
+            direction = this.consume().value;
+            endOffset = this.lastConsumedEnd();
+
+            if (direction === 'ABSOLUTE' || direction === 'RELATIVE') {
+                try {
+                    offset = this.parseExpression();
+                    endOffset = offset.end;
+                } catch (e) {
+                    incomplete = true;
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_CURSOR_FETCH_OFFSET',
+                        e instanceof Error ? e.message : String(e),
+                        endOffset,
+                        endOffset
+                    );
+                }
+            }
+        }
+
+        if (this.peekKeyword('FROM')) {
+            this.consume();
+            endOffset = this.lastConsumedEnd();
+        }
+
+        if (
+            this.peek() &&
+            (
+                this.peek()!.type === TokenType.Identifier ||
+                this.peek()!.type === TokenType.Keyword
+            )
+        ) {
+            name = this.consume().value;
+            endOffset = this.lastConsumedEnd();
+        } else {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_CURSOR_FETCH_NAME',
+                'Expected cursor name after FETCH',
+                endOffset,
+                endOffset
+            );
+        }
+
+        if (this.peekKeyword('INTO')) {
+            this.consume();
+            endOffset = this.lastConsumedEnd();
+            into = this.parseList(() => {
+                const token = this.peek();
+                if (!token || token.type !== TokenType.Variable) {
+                    throw new Error('Expected variable in FETCH INTO list');
+                }
+                return this.consume().value;
+            }, {
+                isBoundary: (token?: Token) =>
+                    !token ||
+                    token.type === TokenType.Semicolon ||
+                    (
+                        token.type === TokenType.Keyword &&
+                        RESYNC_KEYWORDS.has(token.value)
+                    )
+            });
+            endOffset = this.lastConsumedEnd();
+        }
+
+        return {
+            type: 'FetchCursorStatement',
+            ...(direction ? { direction } : {}),
+            ...(offset !== undefined ? { offset } : {}),
+            name,
+            ...(into ? { into } : {}),
+            start: startToken.offset,
+            end: endOffset,
+            ...(incomplete ? { incomplete: true } : {}),
+            ...(errors.length ? { errors } : {})
+        };
+    }
+
+    private parseCloseCursor(): CloseCursorNode {
+        const startToken = this.matchKeyword('CLOSE');
+        let incomplete = false;
+        const errors: string[] = [];
+        let name: string | null = null;
+        let endOffset = startToken.offset + startToken.value.length;
+
+        if (
+            this.peek() &&
+            (
+                this.peek()!.type === TokenType.Identifier ||
+                this.peek()!.type === TokenType.Keyword
+            )
+        ) {
+            name = this.consume().value;
+            endOffset = this.lastConsumedEnd();
+        } else {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_CURSOR_CLOSE_NAME',
+                'Expected cursor name after CLOSE',
+                endOffset,
+                endOffset
+            );
+        }
+
+        return {
+            type: 'CloseCursorStatement',
+            name,
+            start: startToken.offset,
+            end: endOffset,
+            ...(incomplete ? { incomplete: true } : {}),
+            ...(errors.length ? { errors } : {})
+        };
+    }
+
+    private parseDeallocateCursor(): DeallocateCursorNode {
+        const startToken = this.matchKeyword('DEALLOCATE');
+        let incomplete = false;
+        const errors: string[] = [];
+        let name: string | null = null;
+        let endOffset = startToken.offset + startToken.value.length;
+
+        if (
+            this.peek() &&
+            (
+                this.peek()!.type === TokenType.Identifier ||
+                this.peek()!.type === TokenType.Keyword
+            )
+        ) {
+            name = this.consume().value;
+            endOffset = this.lastConsumedEnd();
+        } else {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_CURSOR_DEALLOCATE_NAME',
+                'Expected cursor name after DEALLOCATE',
+                endOffset,
+                endOffset
+            );
+        }
+
+        return {
+            type: 'DeallocateCursorStatement',
+            name,
+            start: startToken.offset,
+            end: endOffset,
+            ...(incomplete ? { incomplete: true } : {}),
+            ...(errors.length ? { errors } : {})
+        };
+    }
+
     private parseTransaction(): TransactionNode {
         const startToken =
             this.consume(); // BEGIN / COMMIT / ROLLBACK / SAVE
@@ -10212,6 +11418,15 @@ export class Parser {
         }
 
         const name = nameExpr.name;
+
+        if (this.peekKeyword('AS')) {
+            return {
+                name,
+                ...this.parseComputedColumnTail(),
+                start: startToken.offset,
+                end: this.lastConsumedEnd()
+            };
+        }
 
         // 1. Data Type
         let dataType = '';

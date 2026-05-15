@@ -173,6 +173,46 @@ describe('T-SQL Parser - Constraints', () => {
                 .toEqual(['CountryId']);
         });
 
+        test('PRIMARY KEY CLUSTERED with ordered columns', () => {
+            const stmt = parseOne<any>(`
+                CREATE TABLE dbo.Country(
+                    CountryId INT,
+                    PRIMARY KEY CLUSTERED (CountryId ASC)
+                )
+            `);
+
+            const k =
+                stmt.constraints[0];
+
+            expect(k.kind)
+                .toBe('PRIMARY KEY');
+
+            expect(k.columns)
+                .toEqual(['CountryId']);
+        });
+
+        test('recovers table-level PRIMARY KEY without comma after last column', () => {
+            const stmt = parseOne<any>(`
+                CREATE TABLE dbo.Country(
+                    CountryId INT,
+                    Code VARCHAR(20) NULL
+                    PRIMARY KEY CLUSTERED (CountryId ASC)
+                )
+            `);
+
+            expect(
+                stmt.columns.map((c: any) => c.name)
+            ).toEqual(['CountryId', 'Code']);
+
+            expect(
+                stmt.constraints[0].kind
+            ).toBe('PRIMARY KEY');
+
+            expect(
+                stmt.constraints[0].columns
+            ).toEqual(['CountryId']);
+        });
+
         test('UNIQUE', () => {
             const stmt = parseOne<any>(`
                 CREATE TABLE dbo.Country(
@@ -269,6 +309,45 @@ describe('T-SQL Parser - Constraints', () => {
             expect(
                 v.constraints[0].kind
             ).toBe('UNIQUE');
+        });
+
+        test('computed column', () => {
+            const stmt = parseOne<any>(`
+                CREATE TABLE dbo.Items(
+                    FirstName VARCHAR(50),
+                    LastName VARCHAR(50),
+                    FullName AS (FirstName + ' ' + LastName)
+                )
+            `);
+
+            const c = stmt.columns[2];
+
+            expect(c.name).toBe('FullName');
+            expect(c.dataType).toBe('');
+            expectSql(
+                c.computedExpression,
+                "FirstName + ' ' + LastName"
+            );
+            expect(c.persisted).toBeUndefined();
+        });
+
+        test('persisted computed column', () => {
+            const stmt = parseOne<any>(`
+                CREATE TABLE dbo.Items(
+                    Qty INT,
+                    Price DECIMAL(10,2),
+                    Total AS (Qty * Price) PERSISTED
+                )
+            `);
+
+            const c = stmt.columns[2];
+
+            expect(c.name).toBe('Total');
+            expectSql(
+                c.computedExpression,
+                'Qty * Price'
+            );
+            expect(c.persisted).toBe(true);
         });
     });
 

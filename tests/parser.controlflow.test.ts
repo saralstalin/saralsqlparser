@@ -123,6 +123,160 @@ describe('T-SQL Parser - RETURN', () => {
         expect(result.ast.body).toHaveLength(1);
     });
 
+    test('should parse GOTO statement', () => {
+        const stmt = parseOne<any>(`GOTO ExitLabel`);
+
+        expect(stmt.type).toBe('GotoStatement');
+        expect(stmt.label).toBe('ExitLabel');
+    });
+
+    test('should parse label statement', () => {
+        const stmt = parseOne<any>(`ExitLabel:`);
+
+        expect(stmt.type).toBe('LabelStatement');
+        expect(stmt.name).toBe('ExitLabel');
+    });
+
+    test('should parse GOTO and label inside procedure block', () => {
+        const result = parseResult(`
+            CREATE PROCEDURE dbo.SkipWork
+            AS
+            BEGIN
+                IF @ShouldSkip = 1
+                    GOTO ExitLabel;
+
+                SELECT 1 AS WorkValue;
+
+                ExitLabel:
+                RETURN 0;
+            END
+        `);
+
+        expect(result.issues).toHaveLength(0);
+
+        const create = result.ast.body[0] as any;
+        const block = create.body[0];
+
+        expect(block.type).toBe('BlockStatement');
+        expect(block.body[0].type).toBe('IfStatement');
+        expect(block.body[0].thenBranch.type).toBe('GotoStatement');
+        expect(block.body.some((s: any) => s.type === 'LabelStatement')).toBe(true);
+    });
+
+    test('should parse label followed by statement on same line', () => {
+        const ast = parseAst(`
+            BEGIN
+                RetryLabel: SELECT 1 AS AttemptValue;
+            END
+        `);
+
+        const block = ast.body[0] as any;
+        expect(block.body[0].type).toBe('LabelStatement');
+        expect(block.body[1].type).toBe('SelectStatement');
+    });
+
+    test('should parse WAITFOR TIME', () => {
+        const stmt = parseOne<any>(`WAITFOR TIME '22:30:00'`);
+
+        expect(stmt.type).toBe('WaitForStatement');
+        expect(stmt.kind).toBe('TIME');
+        expectSql(stmt.value, `'22:30:00'`);
+    });
+
+    test('should parse WAITFOR DELAY', () => {
+        const stmt = parseOne<any>(`WAITFOR DELAY '00:00:05'`);
+
+        expect(stmt.type).toBe('WaitForStatement');
+        expect(stmt.kind).toBe('DELAY');
+        expectSql(stmt.value, `'00:00:05'`);
+    });
+
+    test('should parse WAITFOR inside procedure block', () => {
+        const result = parseResult(`
+            CREATE PROCEDURE dbo.PauseWork
+            AS
+            BEGIN
+                WAITFOR DELAY '00:00:01';
+                WAITFOR TIME '23:59:59';
+            END
+        `);
+
+        expect(result.issues).toHaveLength(0);
+
+        const create = result.ast.body[0] as any;
+        const block = create.body[0];
+
+        expect(block.type).toBe('BlockStatement');
+        expect(block.body[0].type).toBe('WaitForStatement');
+        expect(block.body[0].kind).toBe('DELAY');
+        expect(block.body[1].type).toBe('WaitForStatement');
+        expect(block.body[1].kind).toBe('TIME');
+    });
+
+    test('should recover missing WAITFOR mode', () => {
+        const stmt = parseOne<any>(`WAITFOR '00:00:05'`);
+
+        expect(stmt.type).toBe('WaitForStatement');
+        expect(stmt.incomplete).toBe(true);
+    });
+
+    test('should recover missing WAITFOR value', () => {
+        const stmt = parseOne<any>(`WAITFOR DELAY`);
+
+        expect(stmt.type).toBe('WaitForStatement');
+        expect(stmt.incomplete).toBe(true);
+    });
+
+    test('should parse DECLARE CURSOR FOR SELECT', () => {
+        const stmt = parseOne<any>(`
+            DECLARE item_cursor CURSOR LOCAL FAST_FORWARD
+            FOR
+            SELECT Id, Name FROM dbo.Items
+        `);
+
+        expect(stmt.type).toBe('DeclareCursorStatement');
+        expect(stmt.name).toBe('item_cursor');
+        expect(stmt.options).toEqual(['LOCAL', 'FAST_FORWARD']);
+        expect(stmt.query.type).toBe('SelectStatement');
+    });
+
+    test('should parse cursor lifecycle statements', () => {
+        const result = parseResult(`
+            CREATE PROCEDURE dbo.ProcessItems
+            AS
+            BEGIN
+                DECLARE item_cursor CURSOR FOR
+                SELECT Id FROM dbo.Items;
+                OPEN item_cursor;
+                FETCH NEXT FROM item_cursor INTO @ItemId;
+                CLOSE item_cursor;
+                DEALLOCATE item_cursor;
+            END
+        `);
+
+        expect(result.issues).toHaveLength(0);
+
+        const create = result.ast.body[0] as any;
+        const block = create.body[0];
+
+        expect(block.body[0].type).toBe('DeclareCursorStatement');
+        expect(block.body[1].type).toBe('OpenCursorStatement');
+        expect(block.body[2].type).toBe('FetchCursorStatement');
+        expect(block.body[2].direction).toBe('NEXT');
+        expect(block.body[2].name).toBe('item_cursor');
+        expect(block.body[2].into).toEqual(['@ItemId']);
+        expect(block.body[3].type).toBe('CloseCursorStatement');
+        expect(block.body[4].type).toBe('DeallocateCursorStatement');
+    });
+
+    test('should parse FETCH ABSOLUTE cursor statement', () => {
+        const stmt = parseOne<any>(`FETCH ABSOLUTE 5 FROM item_cursor INTO @ItemId`);
+
+        expect(stmt.type).toBe('FetchCursorStatement');
+        expect(stmt.direction).toBe('ABSOLUTE');
+        expectSql(stmt.offset, '5');
+    });
+
     test('should parse keyword function call in SET inside conditional block', () => {
         const result = parseResult(`
             CREATE PROCEDURE dbo.NormalizeRuleId

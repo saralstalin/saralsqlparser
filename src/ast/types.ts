@@ -94,6 +94,7 @@ export interface FunctionCallNode extends NodeLocation, Recoverable {
     type: 'FunctionCall';
     name: string;
     args: Expression[];
+    withinGroup?: OrderByNode[];
     openJsonWith?: OpenJsonColumnDefinition[];
 }
 
@@ -216,6 +217,14 @@ export type Statement = (
     ThrowNode | 
     BreakNode | 
     ContinueNode |
+    GotoNode |
+    LabelNode |
+    WaitForNode |
+    DeclareCursorNode |
+    OpenCursorNode |
+    FetchCursorNode |
+    CloseCursorNode |
+    DeallocateCursorNode |
     CreateIndexNode |
     TransactionNode |
     AlterTableNode |
@@ -241,6 +250,7 @@ export interface SelectNode extends NodeLocation, Recoverable {
     offset?: Expression | null;
     fetch?: Expression | null;
     forClause?: ForClause | null;
+    optionClause?: OptionClause | null;
 }
 
 // ===============================
@@ -282,6 +292,7 @@ export interface UpdateNode extends NodeLocation, Recoverable {
     output?: OutputClauseNode;
     from: TableReference[] | null;
     where: Expression | null;
+    optionClause?: OptionClause | null;
 }
 
 export interface DeleteNode extends NodeLocation, Recoverable {
@@ -290,6 +301,7 @@ export interface DeleteNode extends NodeLocation, Recoverable {
     output?: OutputClauseNode;
     from: TableReference[] | null;
     where: Expression | null;
+    optionClause?: OptionClause | null;
 }
 
 // ===============================
@@ -340,6 +352,7 @@ export interface MergeNode extends NodeLocation, Recoverable {
     on: Expression | null;
     whenClauses: MergeWhenClause[];
     output?: OutputClauseNode;
+    optionClause?: OptionClause | null;
 }
 
 // ===============================
@@ -390,6 +403,8 @@ export interface BlockNode extends NodeLocation, Recoverable {
 export interface ColumnDefinition extends NodeLocation {
     name: string;
     dataType: string;
+    computedExpression?: Expression | null;
+    persisted?: boolean;
     constraints?: ConstraintNode[];
 }
 
@@ -485,9 +500,12 @@ export type JoinType =
     | 'CROSS APPLY'
     | 'OUTER APPLY';
 
+export type JoinHint = 'HASH' | 'MERGE' | 'LOOP';
+
 export interface JoinNode extends NodeLocation, Recoverable {
     type: JoinType;
     rawType: string;
+    joinHint?: JoinHint;
     table: Expression | null;
     on: Expression | null;
     hints?: string[];
@@ -541,6 +559,7 @@ export interface RaiseErrorNode extends NodeLocation, Recoverable {
 export type ExecArgument = {
     name?: string;
     value: Expression | null;
+    isOutput?: boolean;
 };
 
 export interface ExecuteNode extends NodeLocation, Recoverable {
@@ -577,6 +596,7 @@ export interface ConstraintNode extends NodeLocation, Recoverable {
 
     seed?: number;
     increment?: number;
+    missingLeadingComma?: boolean;
 }
 
 export interface WhileNode extends NodeLocation, Recoverable {
@@ -648,6 +668,52 @@ export interface ContinueNode extends NodeLocation {
     type: 'ContinueStatement';
 }
 
+export interface GotoNode extends NodeLocation, Recoverable {
+    type: 'GotoStatement';
+    label: string | null;
+}
+
+export interface LabelNode extends NodeLocation {
+    type: 'LabelStatement';
+    name: string;
+}
+
+export interface WaitForNode extends NodeLocation, Recoverable {
+    type: 'WaitForStatement';
+    kind: 'TIME' | 'DELAY' | null;
+    value: Expression | null;
+}
+
+export interface DeclareCursorNode extends NodeLocation, Recoverable {
+    type: 'DeclareCursorStatement';
+    name: string | null;
+    options?: string[];
+    query: QueryStatement | null;
+}
+
+export interface OpenCursorNode extends NodeLocation, Recoverable {
+    type: 'OpenCursorStatement';
+    name: string | null;
+}
+
+export interface FetchCursorNode extends NodeLocation, Recoverable {
+    type: 'FetchCursorStatement';
+    direction?: string;
+    offset?: Expression | null;
+    name: string | null;
+    into?: string[];
+}
+
+export interface CloseCursorNode extends NodeLocation, Recoverable {
+    type: 'CloseCursorStatement';
+    name: string | null;
+}
+
+export interface DeallocateCursorNode extends NodeLocation, Recoverable {
+    type: 'DeallocateCursorStatement';
+    name: string | null;
+}
+
 export type ForJsonDirective =
     | 'AUTO'
     | 'PATH';
@@ -685,6 +751,32 @@ export type ForClause =
         argument?: string;
         options?: ForXmlOption[];
     };
+
+export type QueryHint =
+    | { kind: 'RECOMPILE'; raw: string }
+    | { kind: 'HASH_JOIN'; raw: string }
+    | { kind: 'MERGE_JOIN'; raw: string }
+    | { kind: 'LOOP_JOIN'; raw: string }
+    | { kind: 'HASH_GROUP'; raw: string }
+    | { kind: 'ORDER_GROUP'; raw: string }
+    | { kind: 'MERGE_UNION'; raw: string }
+    | { kind: 'CONCAT_UNION'; raw: string }
+    | { kind: 'FORCE_ORDER'; raw: string }
+    | { kind: 'KEEP_PLAN'; raw: string }
+    | { kind: 'KEEPFIXED_PLAN'; raw: string }
+    | { kind: 'ROBUST_PLAN'; raw: string }
+    | { kind: 'MAXDOP'; raw: string; value: number }
+    | { kind: 'FAST'; raw: string; value: number }
+    | { kind: 'MAXRECURSION'; raw: string; value: number }
+    | { kind: 'PARAMETERIZATION'; raw: string; value: 'SIMPLE' | 'FORCED' }
+    | { kind: 'OPTIMIZE_FOR'; raw: string; value: string }
+    | { kind: 'USE_HINT'; raw: string; value: string }
+    | { kind: 'UNKNOWN'; raw: string };
+
+export interface OptionClause extends NodeLocation, Recoverable {
+    type: 'OptionClause';
+    hints: QueryHint[];
+}
 
 // ===============================
 // TRANSACTIONS

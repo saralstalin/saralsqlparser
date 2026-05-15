@@ -151,6 +151,16 @@ describe('T-SQL Parser - EXEC / EXECUTE', () => {
         expect(stmt.args[0].value.type).toBe('FunctionCall');
     });
 
+    test('should parse EXEC output variable arg', () => {
+        const stmt = parseOne<any>(`
+            EXEC dbo.uspGet @Result OUTPUT
+        `);
+
+        expect(stmt.args).toHaveLength(1);
+        expectSql(stmt.args[0].value, '@Result');
+        expect(stmt.args[0].isOutput).toBe(true);
+    });
+
     test('should parse sp_executesql', () => {
         const stmt = parseOne<any>(`
             EXEC sp_executesql @sql, @params
