@@ -45,6 +45,10 @@ WHERE Id = @Id;
 `);
 ```
 
+> [!IMPORTANT]
+> **Robustness Guarantee**
+> The `analyze()` pipeline is designed to be fault-tolerant and crash-resilient. Malformed or incomplete SQL should not take down the analysis pipeline. When the input is broken, SaralSQL records syntax and token problems in `issues` and `diagnostics` while preserving as much partial AST, scope, and semantic output as possible for the valid parts of the document.
+
 Use the lower-level APIs only when you need custom control over lexing, parsing, scope building, lineage, or diagnostics.
 
 ```ts
@@ -386,6 +390,13 @@ Enrich in layers
 Reuse semantic graph
 Avoid duplicate logic
 ```
+
+Layer responsibilities:
+
+- `Lexer` + `Parser`: produce the base AST and record recoverable structural issues when recovery boundaries are hit
+- `ScopeBuilder`: assigns symbols such as variables, parameters, aliases, CTEs, temp tables, and table variables to execution scopes
+- `LineageBuilder` + `ColumnAnalyzer`: trace column flow across projections and mutations to map upstream-to-downstream relationships
+- `DiagnosticEngine`: evaluates the parsed and enriched semantic graph for safety, maintainability, and anti-pattern checks
 
 ## Roadmap
 
