@@ -110,6 +110,9 @@ export class DiagnosticEngine {
                 const readRefs = symbol.references.filter(
                     r => r.kind === 'read'
                 );
+                const writeRefs = symbol.references.filter(
+                    r => r.kind === 'write'
+                );
 
                 if (readRefs.length > 0) continue;
 
@@ -124,6 +127,13 @@ export class DiagnosticEngine {
                 }
 
                 if (symbol.kind === SymbolKind.Parameter) {
+                    const isOutputParameter =
+                        symbol.metadata?.isOutput === true;
+
+                    if (isOutputParameter && writeRefs.length > 0) {
+                        continue;
+                    }
+
                     this.emit({
                         code: DiagnosticCode.UnusedParameter,
                         message: `Parameter '${symbol.name}' is declared but never used`,
@@ -475,6 +485,13 @@ export class DiagnosticEngine {
                 break;
             case 'SubqueryExpression':
                 this.visitQuery(expr.query, insideView);
+                break;
+            case 'ValuesTableExpression':
+                for (const row of expr.rows) {
+                    for (const value of row) {
+                        this.visitExpression(value, insideView);
+                    }
+                }
                 break;
 
             case 'InExpression':

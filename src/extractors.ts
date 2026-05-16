@@ -569,6 +569,14 @@ function collectReferencesFromExpression(
             collectReferencesFromQuery(expr.query, references);
             return;
 
+        case 'ValuesTableExpression':
+            for (const row of expr.rows) {
+                for (const value of row) {
+                    collectReferencesFromExpression(value, references);
+                }
+            }
+            return;
+
         case 'OverExpression':
             collectReferencesFromExpression(expr.expression, references);
             for (const partition of expr.window.partitionBy ?? []) {

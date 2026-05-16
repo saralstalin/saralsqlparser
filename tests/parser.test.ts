@@ -71,6 +71,8 @@ function toSql(expr: any): string {
         case 'SubqueryExpression':
             // Standardize all subqueries to this string to satisfy 'toContain' tests
             return 'SelectStatement';
+        case 'ValuesTableExpression':
+            return 'ValuesTable';
         case 'ExistsExpression':
             return `EXISTS (${toSql(expr.query)})`;
 
@@ -93,6 +95,10 @@ function getTableName(expr: any): string {
 
     if (expr.type === 'SubqueryExpression') {
         return 'SUBQUERY';
+    }
+
+    if (expr.type === 'ValuesTableExpression') {
+        return 'VALUES';
     }
 
     return '';
@@ -364,6 +370,14 @@ describe('T-SQL Parser', () => {
         expect(node.from?.[0].joins.length).toBe(1);
     });
 
+    test('should handle UPDATE TOP variable', () => {
+        const sql = `UPDATE TOP (@n) dbo.Items SET IsActive = 1 WHERE IsActive = 0`;
+        const node = parse(sql).body[0] as UpdateNode;
+        expect(node.top?.type).toBe('TopClause');
+        expect(node.top?.quantity?.type).toBe('Variable');
+        expect((node.top?.quantity as any).name).toBe('@n');
+    });
+
     // 25. DELETE Standard
     test('should handle standard DELETE', () => {
         const sql = `DELETE FROM Users WHERE ID = 1`;
@@ -375,6 +389,14 @@ describe('T-SQL Parser', () => {
         const sql = `DELETE u FROM Users u JOIN T2 ON u.id = T2.id`;
         const node = parse(sql).body[0] as DeleteNode;
         expect(getTableName(node.target)).toBe('u');
+    });
+
+    test('should handle DELETE TOP variable', () => {
+        const sql = `DELETE TOP (@n) FROM dbo.Items WHERE IsActive = 0`;
+        const node = parse(sql).body[0] as DeleteNode;
+        expect(node.top?.type).toBe('TopClause');
+        expect(node.top?.quantity?.type).toBe('Variable');
+        expect((node.top?.quantity as any).name).toBe('@n');
     });
 
     // 27. DECLARE variables
@@ -501,6 +523,33 @@ describe('T-SQL Parser', () => {
         const sql = `SELECT * FROM (SELECT 1 as x) d`;
         const stmt = parse(sql).body[0] as SelectNode;
         expect(toSql(stmt.from?.[0].table)).toContain('SelectStatement');
+    });
+
+    test('should handle VALUES derived table in FROM with alias columns', () => {
+        const sql = `CREATE PROCEDURE dbo.GetStatus @OrderNumber VARCHAR(100)
+AS
+BEGIN
+    SELECT Status, StatusDate
+    FROM (
+        VALUES
+            ('Ordered', DATEADD(DAY, -1, GETDATE())),
+            ('Shipped', NULL)
+    ) AS StatusRows (Status, StatusDate);
+END`;
+
+        const result = new Parser(new Lexer(sql)).parse();
+
+        expect(result.issues).toEqual([]);
+
+        const stmt = result.ast.body[0] as CreateNode;
+        const statements = stmt.body as BlockNode[];
+        const body = statements[0] as BlockNode;
+        const select = body.body[0] as SelectNode;
+        const tableSource = select.from?.[0];
+
+        expect(tableSource?.table?.type).toBe('ValuesTableExpression');
+        expect(tableSource?.alias).toBe('StatusRows');
+        expect(tableSource?.aliasColumns).toEqual(['Status', 'StatusDate']);
     });
 
     // 34. CASE Statements
@@ -1038,6 +1087,33 @@ OUTPUT inserted.Id, deleted.Id INTO Audit(InsertedId, DeletedId);`;
             expect(stmt.output.columns.length).toBe(2);
             expect(stmt.output.intoTable.name).toBe('Audit');
             expect(stmt.output.intoColumns).toEqual(['InsertedId', 'DeletedId']);
+        });
+
+        test('should parse MERGE INTO with derived USING source and OUTPUT INTO table variable', () => {
+            const sql = `MERGE INTO dbo.Target AS tgt
+USING
+(
+    SELECT DISTINCT pendingRow.KeyValue, pendingRow.DisplayValue
+    FROM @PendingRows pendingRow
+) AS srcRows
+ON 1 = 0
+WHEN NOT MATCHED THEN
+    INSERT (KeyValue, DisplayValue)
+    VALUES (srcRows.KeyValue, srcRows.DisplayValue)
+OUTPUT srcRows.KeyValue, srcRows.DisplayValue, INSERTED.TargetId
+INTO @NewRows (KeyValue, DisplayValue, TargetId);`;
+            const result = new Parser(new Lexer(sql)).parse();
+            const stmt = result.ast.body[0] as any;
+
+            expect(result.issues).toEqual([]);
+            expect(stmt.type).toBe('MergeStatement');
+            expect(stmt.targetAlias).toBe('tgt');
+            expect(stmt.using?.table?.type).toBe('SubqueryExpression');
+            expect(stmt.using?.alias).toBe('srcRows');
+            expect(stmt.whenClauses[0].action.type).toBe('MergeInsertAction');
+            expect(stmt.output).toBeDefined();
+            expect(stmt.output.intoTable.name).toBe('@NewRows');
+            expect(stmt.output.intoColumns).toEqual(['KeyValue', 'DisplayValue', 'TargetId']);
         });
     });
 

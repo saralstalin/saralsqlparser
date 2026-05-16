@@ -57,7 +57,8 @@ export type Expression =
     | MemberExpression
     | WildcardExpression
     | CastExpression
-    | ExistsExpression;
+    | ExistsExpression
+    | ValuesTableExpression;
 
 export interface BinaryExpression extends NodeLocation, Recoverable {
     type: 'BinaryExpression';
@@ -157,6 +158,11 @@ export interface GroupingExpression extends NodeLocation, Recoverable {
 export interface SubqueryExpression extends NodeLocation {
     type: 'SubqueryExpression';
     query: QueryStatement;
+}
+
+export interface ValuesTableExpression extends NodeLocation, Recoverable {
+    type: 'ValuesTableExpression';
+    rows: Expression[][];
 }
 
 export interface MemberExpression extends NodeLocation {
@@ -287,6 +293,7 @@ export interface UpdateAssignment extends NodeLocation {
 
 export interface UpdateNode extends NodeLocation, Recoverable {
     type: 'UpdateStatement';
+    top?: TopClause | null;
     target: Expression | null;
     assignments: UpdateAssignment[] | null;
     output?: OutputClauseNode;
@@ -297,6 +304,7 @@ export interface UpdateNode extends NodeLocation, Recoverable {
 
 export interface DeleteNode extends NodeLocation, Recoverable {
     type: 'DeleteStatement';
+    top?: TopClause | null;
     target: Expression | null;
     output?: OutputClauseNode;
     from: TableReference[] | null;
@@ -484,6 +492,7 @@ export interface TableReference extends NodeLocation, Recoverable {
     type: 'TableReference';
     table: Expression | null;
     alias?: string;
+    aliasColumns?: string[];
     schema?: string;
     hints?: string[];
     pivot?: PivotClause | null;

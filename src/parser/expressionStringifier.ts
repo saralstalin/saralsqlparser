@@ -27,6 +27,9 @@ export function stringifyExpression(expr: Expression | null): string {
         case 'SubqueryExpression':
             return 'derived_table';
 
+        case 'ValuesTableExpression':
+            return 'values_table';
+
         case 'BinaryExpression': {
             const left = stringifyExpression(expr.left);
             const right = stringifyExpression(expr.right);

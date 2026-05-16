@@ -46,6 +46,7 @@ import {
     UnpivotClause,
     GroupingExpression,
     SubqueryExpression,
+    ValuesTableExpression,
     OverExpression,
     MemberExpression,
     WildcardExpression,
@@ -591,10 +592,15 @@ export class Parser {
         if (
             next?.type === TokenType.OpenParen &&
             (
+                nextNext?.value === 'VALUES' ||
                 nextNext?.value === 'SELECT' ||
                 nextNext?.value === 'WITH'
             )
         ) {
+            if (nextNext?.value === 'VALUES') {
+                return this.parseValuesTableExpression();
+            }
+
             const openParen = this.consume();
 
             const query =
@@ -626,6 +632,62 @@ export class Parser {
         }
 
         return source;
+    }
+
+    private parseValuesTableExpression(): ValuesTableExpression {
+        const openParen = this.match(TokenType.OpenParen);
+        this.matchKeyword('VALUES');
+
+        const rows: Expression[][] = [];
+        const errors: string[] = [];
+        let incomplete = false;
+        let endOffset = openParen.offset + openParen.value.length;
+
+        while (this.peek()) {
+            try {
+                this.match(TokenType.OpenParen);
+
+                const row =
+                    this.parseList(() => this.parseExpression(Precedence.LOWEST));
+
+                rows.push(row);
+
+                const closeRow = this.match(TokenType.CloseParen);
+                endOffset = closeRow.offset + closeRow.value.length;
+            } catch (e) {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_VALUES_ROW',
+                    e instanceof Error ? e.message : String(e),
+                    this.peek()?.offset ?? endOffset,
+                    this.peek()?.offset ?? endOffset
+                );
+
+                break;
+            }
+
+            if (this.peek()?.type === TokenType.Comma) {
+                this.consume();
+                endOffset = this.lastConsumedEnd();
+                continue;
+            }
+
+            break;
+        }
+
+        const closeParen = this.match(TokenType.CloseParen);
+        endOffset = closeParen.offset + closeParen.value.length;
+
+        return {
+            type: 'ValuesTableExpression',
+            rows,
+            start: openParen.offset,
+            end: endOffset,
+            ...(incomplete ? { incomplete: true } : {}),
+            ...(errors.length ? { errors } : {})
+        };
     }
 
     private parseParenthesizedTokenText(): string {
@@ -2325,6 +2387,20 @@ export class Parser {
         let endOffset =
             startToken.offset + startToken.value.length;
         let output: OutputClauseNode | undefined;
+        let top: TopClause | null = null;
+
+        if (this.peekKeyword('TOP')) {
+            const topResult =
+                this.parseDmlTopClause(
+                    errors,
+                    'UPDATE'
+                );
+
+            top = topResult.top;
+            endOffset = topResult.endOffset;
+            incomplete =
+                incomplete || topResult.incomplete;
+        }
 
         // 1. Target
         let targetNode: Expression | null = null;
@@ -2560,6 +2636,7 @@ export class Parser {
 
         return {
             type: 'UpdateStatement',
+            ...(top ? { top } : {}),
             target: targetNode,
             assignments,
             output,
@@ -2672,6 +2749,7 @@ export class Parser {
 
         let source: Expression | null = null;
         let alias: string | null = null;
+        let aliasColumns: string[] | undefined;
         let hints: string[] | undefined;
         let pivot: PivotClause | null = null;
         let unpivot: UnpivotClause | null = null;
@@ -2740,6 +2818,40 @@ export class Parser {
         // ------------------------------------------------------------
         try {
             alias = parseOptionalAlias();
+        } catch {
+            incomplete = true;
+        }
+
+        try {
+            if (
+                alias &&
+                (
+                    source?.type === 'SubqueryExpression' ||
+                    source?.type === 'ValuesTableExpression'
+                ) &&
+                this.peek()?.type === TokenType.OpenParen
+            ) {
+                this.consume();
+
+                aliasColumns = this.parseList(() => {
+                    const columnExpr =
+                        this.parseMultipartIdentifier();
+
+                    if (
+                        columnExpr.type === 'Identifier' &&
+                        columnExpr.name
+                    ) {
+                        return columnExpr.name;
+                    }
+
+                    throw new Error(
+                        'Expected identifier in derived table column list'
+                    );
+                });
+
+                const closeParen = this.match(TokenType.CloseParen);
+                endOffset = closeParen.offset + closeParen.value.length;
+            }
         } catch {
             incomplete = true;
         }
@@ -2882,6 +2994,7 @@ export class Parser {
             type: 'TableReference',
             table: source,
             alias: alias || undefined,
+            ...(aliasColumns?.length ? { aliasColumns } : {}),
             hints,
             ...(pivot ? { pivot } : {}),
             ...(unpivot ? { unpivot } : {}),
@@ -3646,102 +3759,163 @@ export class Parser {
         };
     }
 
+    private parseDmlTopClause(
+        errors: string[],
+        codePrefix: 'UPDATE' | 'DELETE'
+    ): {
+        top: TopClause | null;
+        endOffset: number;
+        incomplete: boolean;
+    } {
+        let incomplete = false;
+        let top: TopClause | null = null;
+        let endOffset =
+            this.peek()?.offset ?? this.lastConsumedEnd();
+
+        if (!this.peekKeyword('TOP')) {
+            return { top, endOffset, incomplete };
+        }
+
+        const topToken = this.consume();
+        const topStart = topToken.offset;
+        endOffset = topToken.offset + topToken.value.length;
+
+        const hasParens =
+            this.peek()?.type === TokenType.OpenParen;
+
+        let quantity: Expression | null = null;
+        let topEnd = endOffset;
+
+        if (hasParens) {
+            const openParen = this.consume();
+            endOffset =
+                openParen.offset + openParen.value.length;
+        }
+
+        try {
+            const next = this.peek();
+
+            if (
+                !next ||
+                next.type === TokenType.Semicolon ||
+                (
+                    next.type === TokenType.Keyword &&
+                    RESYNC_KEYWORDS.has(next.value)
+                )
+            ) {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    `PARSE_${codePrefix}_TOP`,
+                    'Expected TOP value',
+                    endOffset,
+                    endOffset
+                );
+            } else if (hasParens && next.type === TokenType.CloseParen) {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    `PARSE_${codePrefix}_TOP`,
+                    'Expected TOP value',
+                    endOffset,
+                    endOffset
+                );
+            } else if (hasParens) {
+                quantity = this.parseExpression();
+                endOffset = quantity.end;
+                topEnd = endOffset;
+            } else {
+                const quantityToken = this.consume();
+                endOffset =
+                    quantityToken.offset +
+                    quantityToken.value.length;
+
+                const numVal = Number(quantityToken.value);
+
+                quantity = {
+                    type: 'Literal',
+                    value:
+                        Number.isNaN(numVal)
+                            ? quantityToken.value
+                            : numVal,
+                    variant:
+                        Number.isNaN(numVal)
+                            ? 'string'
+                            : 'number',
+                    start: quantityToken.offset,
+                    end:
+                        quantityToken.offset +
+                        quantityToken.value.length,
+                };
+                topEnd = quantity.end;
+            }
+        } catch (e) {
+            incomplete = true;
+
+            this.addRecoverableError(
+                errors,
+                `PARSE_${codePrefix}_TOP`,
+                e instanceof Error ? e.message : String(e),
+                endOffset,
+                endOffset
+            );
+        }
+
+        if (hasParens) {
+            if (this.peek()?.type === TokenType.CloseParen) {
+                const closeParen = this.consume();
+                endOffset =
+                    closeParen.offset + closeParen.value.length;
+                topEnd = endOffset;
+            } else {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    `PARSE_${codePrefix}_TOP_CLOSE_PAREN`,
+                    'Expected ) after TOP expression',
+                    endOffset,
+                    endOffset
+                );
+            }
+        }
+
+        top = {
+            type: 'TopClause',
+            quantity,
+            percent: false,
+            withTies: false,
+            start: topStart,
+            end: topEnd,
+        };
+
+        return { top, endOffset, incomplete };
+    }
+
     private parseDelete(): DeleteNode {
         const startToken = this.matchKeyword('DELETE');
 
         let incomplete = false;
         const errors: string[] = [];
         let output: OutputClauseNode | undefined;
+        let top: TopClause | null = null;
         let endOffset =
             startToken.offset + startToken.value.length;
 
         // Optional TOP clause
         if (this.peekKeyword('TOP')) {
-            const topToken = this.consume();
-            endOffset =
-                topToken.offset + topToken.value.length;
-
-            const hasParens =
-                this.peek()?.type === TokenType.OpenParen;
-
-            if (hasParens) {
-                const openParen = this.consume();
-                endOffset =
-                    openParen.offset + openParen.value.length;
-            }
-
-            try {
-                const next = this.peek();
-
-                if (
-                    !next ||
-                    next.type === TokenType.Semicolon ||
-                    (
-                        next.type === TokenType.Keyword &&
-                        RESYNC_KEYWORDS.has(next.value)
-                    )
-                ) {
-                    incomplete = true;
-
-                    this.addRecoverableError(
-                        errors,
-                        'PARSE_DELETE_TOP',
-                        'Expected TOP value',
-                        endOffset,
-                        endOffset
-                    );
-                } else if (hasParens && next.type === TokenType.CloseParen) {
-                    incomplete = true;
-
-                    this.addRecoverableError(
-                        errors,
-                        'PARSE_DELETE_TOP',
-                        'Expected TOP value',
-                        endOffset,
-                        endOffset
-                    );
-                } else if (hasParens) {
-                    const quantity =
-                        this.parseExpression();
-
-                    endOffset = quantity.end;
-                } else {
-                    const quantityToken =
-                        this.consume();
-
-                    endOffset =
-                        quantityToken.offset +
-                        quantityToken.value.length;
-                }
-            } catch (e) {
-                incomplete = true;
-
-                this.addRecoverableError(
+            const topResult =
+                this.parseDmlTopClause(
                     errors,
-                    'PARSE_DELETE_TOP',
-                    e instanceof Error ? e.message : String(e),
-                    endOffset,
-                    endOffset
+                    'DELETE'
                 );
-            }
 
-            if (hasParens) {
-                if (this.peek()?.type === TokenType.CloseParen) {
-                    const closeParen = this.consume();
-                    endOffset =
-                        closeParen.offset + closeParen.value.length;
-                } else {
-                    incomplete = true;
-
-                    this.addRecoverableError(
-                        errors,
-                        'PARSE_DELETE_TOP_CLOSE_PAREN',
-                        'Expected ) after TOP expression',
-                        endOffset,
-                        endOffset
-                    );
-                }
-            }
+            top = topResult.top;
+            endOffset = topResult.endOffset;
+            incomplete =
+                incomplete || topResult.incomplete;
         }
 
         // Optional first FROM
@@ -3939,6 +4113,7 @@ export class Parser {
 
         return {
             type: 'DeleteStatement',
+            ...(top ? { top } : {}),
             target,
             output,
             from,
@@ -8358,9 +8533,14 @@ export class Parser {
 
         // ------------------------------------------------------------
         // TARGET
-        // MERGE dbo.Table WITH (...) AS t
+        // MERGE [INTO] dbo.Table WITH (...) AS t
         // ------------------------------------------------------------
         try {
+            if (this.peekKeyword('INTO')) {
+                this.consume();
+                endOffset = this.lastConsumedEnd();
+            }
+
             target = this.parseMultipartIdentifier();
             endOffset = target.end;
 

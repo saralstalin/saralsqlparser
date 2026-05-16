@@ -669,6 +669,13 @@ export class LineageBuilder {
                     this.resolveExpression(x)
                 );
 
+            case 'ValuesTableExpression':
+                return expr.rows.flatMap(row =>
+                    row.flatMap(value =>
+                        this.resolveExpression(value)
+                    )
+                );
+
             case 'CaseExpression':
                 return [
                     ...(expr.input

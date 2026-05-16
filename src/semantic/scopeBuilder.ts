@@ -343,6 +343,10 @@ export class ScopeBuilder {
     }
 
     private visitUpdate(stmt: UpdateNode): void {
+        if (stmt.top?.quantity) {
+            this.visitExpression(stmt.top.quantity);
+        }
+
         if (stmt.target) {
             this.visitExpression(stmt.target);
         }
@@ -375,6 +379,10 @@ export class ScopeBuilder {
     }
 
     private visitDelete(stmt: DeleteNode): void {
+        if (stmt.top?.quantity) {
+            this.visitExpression(stmt.top.quantity);
+        }
+
         if (stmt.target) {
             this.visitExpression(stmt.target);
         }
@@ -401,6 +409,10 @@ export class ScopeBuilder {
     }
 
     private visitMerge(stmt: MergeNode): void {
+        if (stmt.top?.quantity) {
+            this.visitExpression(stmt.top.quantity);
+        }
+
         this.pushScope(stmt.start, stmt.end, 'merge');
 
         if (stmt.output) {
@@ -517,6 +529,10 @@ export class ScopeBuilder {
                         dataType: param.dataType,
                         location: param,
                         references: [],
+                        metadata: {
+                            isOutput: !!param.isOutput,
+                            isReadOnly: !!param.isReadOnly,
+                        },
                     });
                 }
 
@@ -605,6 +621,10 @@ export class ScopeBuilder {
 
     private visitSelect(stmt: SelectNode): void {
         this.pushScope(stmt.start, stmt.end, 'select');
+
+        if (stmt.top?.quantity) {
+            this.visitExpression(stmt.top.quantity);
+        }
 
         if (stmt.from) {
             for (const table of stmt.from) {
@@ -828,6 +848,14 @@ export class ScopeBuilder {
                 this.visitSubquery(expr);
                 break;
 
+            case 'ValuesTableExpression':
+                for (const row of expr.rows) {
+                    for (const value of row) {
+                        this.visitExpression(value);
+                    }
+                }
+                break;
+
             default:
                 break;
         }
@@ -899,6 +927,10 @@ export class ScopeBuilder {
     }
 
     private getTableReferenceAliasColumns(ref: TableReference): string[] | undefined {
+        if (ref.aliasColumns?.length) {
+            return ref.aliasColumns;
+        }
+
         if (ref.pivot) {
             return this.getPivotOutputColumns(ref);
         }
@@ -1036,6 +1068,13 @@ export class ScopeBuilder {
 
             case 'CastExpression':
                 return this.getExpressionIdentifierNames(expr.expression);
+
+            case 'ValuesTableExpression':
+                return expr.rows.flatMap(row =>
+                    row.flatMap(value =>
+                        this.getExpressionIdentifierNames(value)
+                    )
+                );
 
             default:
                 return [];

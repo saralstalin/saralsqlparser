@@ -239,6 +239,44 @@ describe('VAR002 — unused variable', () => {
 
         expect(d.length).toBe(0);
     });
+
+    test('does NOT fire when variable is used in SELECT TOP quantity', () => {
+        const d = only(
+            `
+            DECLARE @TakeCount INT = 10;
+            SELECT TOP (@TakeCount) Id FROM dbo.Items;
+            `,
+            DiagnosticCode.UnusedVariable
+        );
+
+        expect(d.length).toBe(0);
+    });
+
+    test('does NOT fire when variable is used in DELETE TOP quantity', () => {
+        const d = only(
+            `
+            DECLARE @TakeCount INT = 10;
+            DELETE TOP (@TakeCount) FROM dbo.Items WHERE IsActive = 0;
+            `,
+            DiagnosticCode.UnusedVariable
+        );
+
+        expect(d.length).toBe(0);
+    });
+
+    test('does NOT fire when variable is used in UPDATE TOP quantity', () => {
+        const d = only(
+            `
+            DECLARE @TakeCount INT = 10;
+            UPDATE TOP (@TakeCount) dbo.Items
+            SET IsActive = 1
+            WHERE IsActive = 0;
+            `,
+            DiagnosticCode.UnusedVariable
+        );
+
+        expect(d.length).toBe(0);
+    });
 });
 
 // ─── VAR003: Unused parameter ────────────────────────────────────────────────
@@ -261,6 +299,41 @@ describe('VAR003 — unused parameter', () => {
             CREATE PROCEDURE dbo.Proc1 @Id INT
             AS BEGIN
                 SELECT Name FROM Users WHERE Id = @Id;
+            END
+        `, DiagnosticCode.UnusedParameter);
+        expect(d.length).toBe(0);
+    });
+
+    test('does NOT fire when parameter is used in SELECT TOP quantity', () => {
+        const d = only(`
+            CREATE PROCEDURE dbo.TakeItems @TakeCount INT
+            AS
+            BEGIN
+                SELECT TOP (@TakeCount) Id FROM dbo.Items;
+            END
+        `, DiagnosticCode.UnusedParameter);
+        expect(d.length).toBe(0);
+    });
+
+    test('does NOT fire when parameter is used in DELETE TOP quantity', () => {
+        const d = only(`
+            CREATE PROCEDURE dbo.DeleteItems @TakeCount INT
+            AS
+            BEGIN
+                DELETE TOP (@TakeCount) FROM dbo.Items WHERE IsActive = 0;
+            END
+        `, DiagnosticCode.UnusedParameter);
+        expect(d.length).toBe(0);
+    });
+
+    test('does NOT fire when parameter is used in UPDATE TOP quantity', () => {
+        const d = only(`
+            CREATE PROCEDURE dbo.UpdateItems @TakeCount INT
+            AS
+            BEGIN
+                UPDATE TOP (@TakeCount) dbo.Items
+                SET IsActive = 1
+                WHERE IsActive = 0;
             END
         `, DiagnosticCode.UnusedParameter);
         expect(d.length).toBe(0);
@@ -306,6 +379,29 @@ describe('VAR003 — unused parameter', () => {
                 BEGIN CATCH
                     SELECT ERROR_MESSAGE() AS Remarks;
                 END CATCH
+            END
+        `, DiagnosticCode.UnusedParameter);
+
+        expect(d.length).toBe(0);
+    });
+
+    test('does NOT fire for output parameters assigned inside procedure body', () => {
+        const d = only(`
+            CREATE PROCEDURE dbo.GetDetails
+                @ItemId VARCHAR(50),
+                @RequestPayload NVARCHAR(MAX) OUTPUT,
+                @ResponsePayload NVARCHAR(MAX) OUTPUT
+            AS
+            BEGIN
+                IF EXISTS (SELECT 1 FROM dbo.NotificationLog WHERE ItemId = @ItemId)
+                BEGIN
+                    SET @RequestPayload = (SELECT TOP 1 RequestPayload FROM dbo.NotificationLog WHERE ItemId = @ItemId);
+                    SET @ResponsePayload = (SELECT TOP 1 ResponsePayload FROM dbo.NotificationLog WHERE ItemId = @ItemId);
+
+                    SELECT ItemId
+                    FROM dbo.NotificationLog
+                    WHERE ItemId = @ItemId;
+                END
             END
         `, DiagnosticCode.UnusedParameter);
 

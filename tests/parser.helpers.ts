@@ -156,6 +156,9 @@ export function toSql(expr: any): string {
         case 'SubqueryExpression':
             return 'SelectStatement';
 
+        case 'ValuesTableExpression':
+            return 'ValuesTable';
+
         default:
             return expr.type
                 ? `[Unhandled Node: ${expr.type}]`
@@ -176,6 +179,10 @@ export function getTableName(expr: any): string {
 
     if (expr.type === 'SubqueryExpression') {
         return 'SUBQUERY';
+    }
+
+    if (expr.type === 'ValuesTableExpression') {
+        return 'VALUES';
     }
 
     return '';

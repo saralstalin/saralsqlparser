@@ -82,6 +82,14 @@ export class ColumnAnalyzer {
                 }
                 return;
 
+            case 'ValuesTableExpression':
+                for (const row of expr.rows) {
+                    for (const value of row) {
+                        this.collectIdentifiers(value, cb);
+                    }
+                }
+                return;
+
             case 'CaseExpression':
                 if (expr.input) {
                     this.collectIdentifiers(expr.input, cb);
