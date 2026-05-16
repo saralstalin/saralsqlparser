@@ -1,92 +1,51 @@
 # @saralsql/tsql-parser
 
-High-fidelity parser and semantic analysis engine for **Microsoft SQL Server T-SQL**.
+High-fidelity parser and semantic analysis engine for Microsoft SQL Server T-SQL.
 
-SaralSQL is built specifically for **real-world T-SQL**, with an editor-first architecture that favors:
+## Purpose
 
-* correctness for SQL Server grammar
-* fault-tolerant parsing
-* semantic enrichment
-* static analysis
-* lineage
-* LSP/editor integrations
+SaralSQL is a T-SQL parser for editor and analysis tooling. It is built for real SQL Server workflows such as stored procedures, mixed DDL and DML batches, temp tables, table variables, and incomplete SQL being edited live. On top of parsing, it provides the semantic layers needed for diagnostics, lineage, symbols, and related developer tooling features.
 
-This package is designed as a **single-document parsing and analysis engine**. Workspace-wide schema catalogs, metadata stores, and cross-project symbol indexing belong in the host LSP/server layer.
+It is optimized for:
 
----
+- SQL Server grammar fidelity
+- fault-tolerant parsing
+- semantic enrichment on top of a single parse
 
-# Why This Exists
+## Non-goals
 
-Most SQL parsers are:
+SaralSQL is a single-document analysis engine.
 
-* generic across many dialects
-* weak on procedural SQL
-* brittle on incomplete SQL
-* not designed for editor workflows
+It does not currently provide:
 
-SaralSQL is purpose-built for **T-SQL authoring scenarios**, including:
+- workspace-wide schema catalogs
+- cross-file symbol resolution
+- metadata-backed wildcard expansion
+- full database-aware type validation
 
-* stored procedures
-* ad hoc query files
-* mixed DDL + DML batches
-* temp tables
-* table variables
-* variables + parameters
-* CTE-heavy SQL
-* procedural blocks
-* error handling blocks
-* index-heavy schema definitions
-* broken / partially typed SQL inside editors
+Those belong in the host LSP or analysis service.
 
-It is intended as the foundation for:
-
-* language servers
-* editor integrations
-* diagnostics
-* autocomplete
-* symbol navigation
-* refactoring
-* dependency analysis
-* lineage
-* performance diagnostics
-* standards enforcement
-* auto-fixes / rewrites
-
----
-
-# Installation
+## Installation
 
 ```bash
 npm install @saralsql/tsql-parser
 ```
 
----
+## Primary API
 
-# Quick Start
+Use `analyze(sql)` if you want the full parser + semantic pipeline in one call.
 
 ```ts
-import {
-  analyze
-} from '@saralsql/tsql-parser';
+import { analyze } from '@saralsql/tsql-parser';
 
-const sql = `
+const result = analyze(`
 SELECT Id, Name
 FROM Users
 WHERE Id = @Id;
-`;
-
-const result = analyze(sql);
-
-console.log(result.ast);
-console.log(result.diagnostics);
-console.log(result.scope.root);
-console.log(result.lineage.edges);
-console.log(result.columns.resolutions);
+`);
 ```
 
----
-
-# Exported APIs
+Use the lower-level APIs only when you need custom control over lexing, parsing, scope building, lineage, or diagnostics.
 
 ```ts
 import {
@@ -106,33 +65,79 @@ import {
 } from '@saralsql/tsql-parser';
 ```
 
-If you want the full parser + semantic pipeline in one call, use:
-
-```ts
-analyze(sql)
-```
-
-Use the lower-level APIs only when you need custom control over individual stages such as lexing, parsing, scope building, lineage, or diagnostics.
-
----
-
-# Analyze Result
+## Analyze Result
 
 `analyze(sql)` returns:
 
-| Field                 | Description                |
-| --------------------- | -------------------------- |
-| `ast`                 | Parsed AST                 |
-| `issues`              | Raw parser issues          |
-| `scope`               | Scope graph                |
-| `semanticDiagnostics` | Semantic diagnostics       |
-| `diagnostics`         | Combined diagnostics       |
-| `lineage`             | Column lineage             |
-| `columns`             | Column resolution analysis |
+| Field | Description |
+| --- | --- |
+| `ast` | Parsed AST |
+| `issues` | Recoverable parser issues |
+| `scope` | Scope graph |
+| `semanticDiagnostics` | Semantic diagnostics |
+| `diagnostics` | Combined diagnostics |
+| `lineage` | Column lineage |
+| `columns` | Column resolution analysis |
 
----
+### AST Shape (abridged, representative)
 
-# Diagnostics Example
+SQL:
+
+```sql
+SELECT o.Id, o.Amount
+FROM dbo.Orders o
+WHERE o.Status = 'Paid'
+```
+
+AST excerpt:
+
+```ts
+{
+  type: 'SelectStatement',
+  distinct: false,
+  top: null,
+  columns: [
+    {
+      type: 'Column',
+      expression: { type: 'Identifier', name: 'o.Id', parts: ['o', 'Id'] },
+      sourceName: 'Id',
+      outputName: 'Id',
+      wildcard: false
+    },
+    {
+      type: 'Column',
+      expression: { type: 'Identifier', name: 'o.Amount', parts: ['o', 'Amount'] },
+      sourceName: 'Amount',
+      outputName: 'Amount',
+      wildcard: false
+    }
+  ],
+  into: null,
+  from: [
+    {
+      type: 'TableReference',
+      table: { type: 'Identifier', name: 'dbo.Orders', parts: ['dbo', 'Orders'] },
+      alias: 'o',
+      joins: []
+    }
+  ],
+  where: {
+    type: 'BinaryExpression',
+    left: { type: 'Identifier', name: 'o.Status', parts: ['o', 'Status'] },
+    operator: '=',
+    right: { type: 'Literal', value: 'Paid', variant: 'string' }
+  },
+  groupBy: null,
+  having: null,
+  orderBy: null
+}
+```
+
+## Behavioral Examples
+
+### Diagnostics
+
+SQL:
 
 ```sql
 UPDATE u
@@ -141,16 +146,16 @@ FROM Users u WITH(NOLOCK)
 WHERE u.Id = u.Id
 ```
 
-Diagnostics produced for this exact SQL:
+Diagnostics:
 
 ```text
 DML004 error   UPDATE target table must not use WITH (NOLOCK)
 LOG001 warning Condition compares 'u.Id' to itself
 ```
 
----
+### Column Lineage
 
-# Lineage Example
+SQL:
 
 ```sql
 INSERT INTO dbo.InvoiceSummary (CustomerId, InvoiceMonth, TotalAmount)
@@ -160,7 +165,7 @@ SELECT i.CustomerId,
 FROM dbo.Invoices i;
 ```
 
-Lineage edges produced for this exact SQL:
+Lineage edges:
 
 ```text
 dbo.Invoices.CustomerId -> dbo.InvoiceSummary.CustomerId
@@ -169,158 +174,123 @@ dbo.Invoices.Subtotal -> dbo.InvoiceSummary.TotalAmount
 dbo.Invoices.TaxAmount -> dbo.InvoiceSummary.TotalAmount
 ```
 
----
+## Supported Surface
 
-# Supported Today
-
-## Query grammar
+### Query grammar
 
 Supported:
 
-* SELECT
-* INSERT
-* UPDATE
-* DELETE
-* MERGE
-* JOINs
-* APPLY
-* subqueries
-* scalar subqueries
-* CTEs
-* UNION / INTERSECT / EXCEPT
-* GROUP BY
-* HAVING
-* ORDER BY
-* OFFSET / FETCH
-* window functions
-* window frame clauses
-* PIVOT
-* UNPIVOT
-* OPENJSON with `WITH (...)`
-* `FOR JSON` / `FOR XML`
-* `OPTION (...)`
-* `STRING_AGG ... WITHIN GROUP (...)`
-* `COUNT(DISTINCT ...)` and `SUM(DISTINCT ...)`
+- `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `MERGE`
+- joins and `APPLY`
+- subqueries and scalar subqueries
+- CTEs
+- `UNION`, `INTERSECT`, `EXCEPT`
+- `GROUP BY`, `HAVING`, `ORDER BY`
+- `OFFSET / FETCH`
+- window functions and frame clauses
+- `PIVOT`, `UNPIVOT`
+- `OPENJSON ... WITH (...)`
+- `FOR JSON`, `FOR XML`
+- `OPTION (...)`
+- `STRING_AGG ... WITHIN GROUP (...)`
+- aggregate `DISTINCT` forms such as `COUNT(DISTINCT ...)` and `SUM(DISTINCT ...)`
 
----
-
-## Procedural T-SQL
+### Procedural T-SQL
 
 Supported:
 
-* DECLARE
-* SET
-* PRINT
-* RETURN
-* RAISERROR
-* THROW
-* EXEC / EXECUTE
-* IF / ELSE
-* BEGIN / END
-* BEGIN TRY / END TRY / BEGIN CATCH / END CATCH
-* WHILE
-* BREAK
-* CONTINUE
-* GOTO / labels
-* WAITFOR TIME / DELAY
-* cursor statements
-* variable assignment
-* stored procedure parameters
-* READONLY table-valued parameters
-* temp tables
-* table variables
-* transaction statements
-* output parameters in `EXEC`
+- `DECLARE`, `SET`, `PRINT`, `RETURN`
+- `RAISERROR`, `THROW`
+- `EXEC / EXECUTE`
+- `IF / ELSE`
+- `BEGIN / END`
+- `BEGIN TRY / END TRY / BEGIN CATCH / END CATCH`
+- `WHILE`, `BREAK`, `CONTINUE`
+- `GOTO` and labels
+- `WAITFOR TIME / DELAY`
+- cursor statements
+- transaction statements
+- stored procedure parameters
+- readonly TVPs
+- temp tables and table variables
 
----
-
-## Expression support
+### Expressions
 
 Supported:
 
-* scalar expressions
-* CASE
-* EXISTS
-* function calls
-* CAST
-* TRY_CAST
-* CONVERT
-* arithmetic
-* boolean logic
-* IN / BETWEEN / LIKE
-* NULL handling
-* `IIF`
-* old-style string literal aliases in projections
+- arithmetic and boolean logic
+- `CASE`
+- `EXISTS`
+- `IN`, `BETWEEN`, `LIKE`
+- `CAST`, `TRY_CAST`, `CONVERT`
+- function calls
+- `IIF`
+- null handling
+- old-style string literal aliases in projections
 
----
-
-## DDL
+### DDL and maintenance scripts
 
 Supported:
 
-* CREATE TABLE
-* ALTER TABLE (partial)
-* CREATE PROCEDURE
-* CREATE FUNCTION (partial)
-* CREATE TRIGGER
-* CREATE INDEX
-* ALTER INDEX
-* UPDATE STATISTICS
-* constraints:
+- `CREATE TABLE`
+- `ALTER TABLE` (partial)
+- `CREATE PROCEDURE`
+- `CREATE FUNCTION` (partial)
+- `CREATE VIEW`
+- `CREATE TYPE ... AS TABLE`
+- `CREATE TRIGGER`
+- `CREATE INDEX`
+- `ALTER INDEX`
+- `UPDATE STATISTICS`
+- `DROP TABLE / VIEW / PROCEDURE / FUNCTION / INDEX`
 
-  * PRIMARY KEY
-  * FOREIGN KEY
-  * UNIQUE
-  * CHECK
-  * DEFAULT
-  * NULL / NOT NULL
-  * IDENTITY
+Also supported:
 
-Supports:
+- computed columns
+- computed columns with optional `PERSISTED`
+- primary key, foreign key, unique, check, default, null/not-null, identity constraints
+- clustered and nonclustered index forms
+- include columns
+- filtered indexes
+- index `WITH (...)` options
+- tolerant create preambles such as:
+  - `WITH EXECUTE AS ...`
+  - `WITH SCHEMABINDING`
+  - `WITH ENCRYPTION`
+  - function `RETURNS ...`
 
-* inline constraints
-* named constraints
-* unnamed constraints
-* composite keys
-* computed columns
-* computed columns with optional `PERSISTED`
-* REFERENCES parsing
-* clustered / nonclustered indexes
-* clustered primary key constraints
-* INCLUDE columns
-* filtered indexes (`WHERE`)
-* index options (`WITH (...)`)
-* storage targets (`ON [PRIMARY]`)
-* tolerated create preambles such as `WITH EXECUTE AS ...`, `WITH SCHEMABINDING`, `WITH ENCRYPTION`, and function `RETURNS ...`
-
----
-
-## Semantic layers
+## Semantic Layers
 
 Supported:
 
-* variable scope
-* parameter scope
-* alias scope
-* temp table scope
-* table variable scope
-* CTE scope
-* PIVOT / UNPIVOT output-column scope
-* lineage extraction
-* declaration extraction
-* dependency extraction
-* document symbols
-* completions
-* diagnostics
-* parser + diagnostics issue stream for recoverable SQL
+- variable scope
+- parameter scope
+- alias scope
+- temp table scope
+- table variable scope
+- CTE scope
+- `PIVOT` / `UNPIVOT` output-column scope
+- declaration extraction
+- dependency extraction
+- document symbols
+- completions
+- diagnostics
+- lineage extraction
 
----
+## Current Diagnostics
 
-# Fault-Tolerant Parsing
+Focuses on high-signal, actionable issues suitable for editors and code review:
 
-SaralSQL is intentionally **recoverable**.
+- Variables & Parameters: undeclared variables, unused variables, unused parameters
+- DML Safety: `SELECT *`, self-comparisons such as `u.Id = u.Id`, `UPDATE` / `DELETE` without filters, `UPDATE` target with `WITH (NOLOCK)`
+- DDL: unbracketed keyword-like identifiers, missing commas before table constraints
+- Hints & Options: guidance on table hints and `OPTION(...)` usage
 
-Broken SQL still returns usable AST.
+Diagnostics are intentionally selective. The goal is to stay useful in enterprise SQL without overwhelming the user with low-value warnings.
+
+## Fault Tolerance
+
+SaralSQL is designed to return useful output for incomplete SQL.
 
 Example:
 
@@ -330,148 +300,58 @@ FROM Users
 WHERE
 ```
 
-Returns:
+Expected behavior:
 
-* partial AST
-* recoverable parser issue
-* usable scope
-* usable lineage
-* usable completion context
+- partial AST
+- recoverable parser issue
+- usable completion context
+- usable scope and lineage when possible
 
-This is critical for editor scenarios.
+This is a core design requirement for editor scenarios.
 
----
+## Current Maturity
 
-# Current Maturity
+SaralSQL is hardened around real production-style SQL Server code, including:
 
-SaralSQL is capable of parsing a large subset of production T-SQL, including:
+- stored procedure-heavy codebases
+- validation and ETL procedures
+- temp-table-heavy workflows
+- TVP-driven `INSERT ... SELECT` patterns
+- recursive CTEs
+- cursor lifecycle statements
+- `MERGE` variants
+- `DELETE TOP (...) ... OUTPUT`
+- `OPENJSON ... WITH (...)`
+- `STRING_AGG ... WITHIN GROUP (...)`
+- aggregate `DISTINCT` forms
+- `BEGIN ;WITH ...` handoff inside blocks
+- `SET DATEFIRST` followed by additional statements
+- tolerant procedure/view/function/trigger headers
 
-* procedural stored procedures
-* first enterprise stored procedure codebase pass completed
-* enterprise-style validation / ETL procedures
-* real-world DDL
-* constraints and indexes
-* maintenance scripts with `ALTER INDEX` and `UPDATE STATISTICS`
-* cursor-based procedures
-* procedural flow with `GOTO`, labels, and `WAITFOR`
-* recursive CTEs
-* temp-table-heavy workflows
-* TVP-driven `INSERT ... SELECT ... FROM` patterns
-* report-style queries with legacy alias forms
-* partial / broken SQL inside editors
-* semantic scope + lineage extraction
+Milestone:
 
-The parser is designed around **practical SQL coverage**, not benchmark grammar completeness.
+- first enterprise stored procedure codebase pass completed
 
----
+## Known Limitations
 
-# Current Limitations
+SaralSQL is already useful, but it is not complete SQL Server grammar coverage.
 
-SaralSQL is already useful, but **not yet complete T-SQL grammar coverage**.
+Current known gaps or partial areas include:
 
-Current gaps include:
+- advanced transaction grammar edge cases
+- dynamic `EXEC` edge cases
+- partition grammar
+- advanced index/storage options
+- indexed views
+- `OPENQUERY` / `OPENROWSET` family
+- deeper XML grammar
+- JSON edge cases beyond current `OPENJSON` support
+- metadata-aware validation across files
 
-## Procedural
-
-Not fully implemented / partial:
-
-* transaction grammar edge cases
-* dynamic EXEC edge-case parsing
-
----
-
-## DDL
-
-Partial / planned:
-
-* partition grammar
-* advanced index options
-* filegroup / storage edge cases
-* indexed views
-
----
-
-## Query grammar
-
-Partial:
-
-* OPENQUERY / OPENROWSET family
-* remaining PIVOT / UNPIVOT edge cases
-* JSON edge cases beyond current `OPENJSON` support
-* XML grammar
-* some ordered / specialized aggregate edge cases
-
----
-
-## Metadata-aware analysis
-
-Currently file-local only.
-
-Not yet built:
-
-* schema catalogs
-* cross-file symbol resolution
-* type-aware validation
-* FK-aware navigation
-* wildcard expansion via catalog metadata
-
-These belong partly in host LSP integration.
-
----
-
-# Transparency on Accuracy
-
-This parser is **actively evolving**.
-
-Goals:
-
-1. parse valid T-SQL correctly
-2. recover gracefully on invalid SQL
-3. preserve AST usefulness even when incomplete
-
-There will still be:
-
-* grammar gaps
-* incomplete node shapes
-* edge-case recovery bugs
-* uncommon SQL Server syntax not yet modeled
-
-That said, the parser is already hardened around a number of real production shapes, including:
-
-* nested `TRY / CATCH`
-* TVPs and table variables
-* cursor lifecycle statements
-* `WAITFOR TIME` / `WAITFOR DELAY`
-* `GOTO` and labels
-* `DELETE TOP (...) ... OUTPUT`
-* `MERGE` variants
-* `STRING_AGG ... WITHIN GROUP`
-* `OPENJSON ... WITH (...)`
-* legacy string-literal aliases
-* `BEGIN ;WITH ...` CTE handoff inside blocks
-* `SET DATEFIRST` followed by statement bodies
-* computed columns with optional `PERSISTED`
-* aggregate `DISTINCT` forms like `COUNT(DISTINCT ...)`
-* tolerant `CREATE` preambles and trigger headers
-
-Bug reports with SQL samples are extremely valuable.
-
----
-
-# Architecture
+## Architecture
 
 ```text
-Lexer
-  ↓
-Parser
-  ↓
-ScopeBuilder
-  ↓
-LineageBuilder
-  ↓
-ColumnAnalyzer
-  ↓
-DiagnosticEngine
+Lexer -> Parser -> ScopeBuilder -> LineageBuilder -> ColumnAnalyzer -> DiagnosticEngine
 ```
 
 Design principle:
@@ -483,54 +363,41 @@ Reuse semantic graph
 Avoid duplicate logic
 ```
 
----
+## Roadmap
 
-# Roadmap
+Near term:
 
-## Near term
+- broader corpus validation
+- richer diagnostics
+- auto-fix scaffolding
 
-* transaction grammar completion
-* richer diagnostics
-* auto-fix scaffolding
+Medium term:
 
-## Medium term
+- schema-aware resolution
+- metadata catalogs
+- wildcard expansion
+- FK-aware navigation
+- standards enforcement packs
 
-* schema-aware resolution
-* metadata catalogs
-* wildcard expansion
-* FK-aware navigation
-* missing index analysis
-* duplicate index detection
-* standards enforcement packs
-* deterministic SQL rewrites
+Long term:
 
-## Long term
+- semantic autocomplete
+- rename symbol
+- find references
+- impact analysis
+- safe refactors
+- AI-assisted SQL correction
 
-* semantic autocomplete
-* rename symbol
-* find references
-* impact analysis
-* safe refactors
-* query plan linting
-* AI-assisted SQL correction
-* automated performance remediation
+## Contributing
 
----
+The most useful bug reports include:
 
-# Contributing
+- SQL sample
+- expected behavior
+- current parser or diagnostic output
 
-The best issues include:
-
-* SQL sample
-* expected behavior
-* current AST / diagnostic output
-
-Grammar edge cases are especially helpful.
-
----
-
-# License
+## License
 
 MIT
 
-Built by **Saral Simon Stalin**
+Built by Saral Simon Stalin
