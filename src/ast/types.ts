@@ -95,6 +95,7 @@ export interface FunctionCallNode extends NodeLocation, Recoverable {
     type: 'FunctionCall';
     name: string;
     args: Expression[];
+    distinct?: boolean;
     withinGroup?: OrderByNode[];
     openJsonWith?: OpenJsonColumnDefinition[];
 }
@@ -204,6 +205,7 @@ export type Statement = (
     QueryStatement |
     InsertNode |
     UpdateNode |
+    UpdateStatisticsNode |
     DeleteNode |
     MergeNode |
     DeclareNode |
@@ -234,6 +236,7 @@ export type Statement = (
     CreateIndexNode |
     TransactionNode |
     AlterTableNode |
+    AlterIndexNode |
     TruncateNode
 ) & NodeLocation;
 
@@ -300,6 +303,19 @@ export interface UpdateNode extends NodeLocation, Recoverable {
     from: TableReference[] | null;
     where: Expression | null;
     optionClause?: OptionClause | null;
+}
+
+export interface StatisticsOptionNode extends NodeLocation {
+    type: 'StatisticsOption';
+    name: string;
+    value?: string;
+}
+
+export interface UpdateStatisticsNode extends NodeLocation, Recoverable {
+    type: 'UpdateStatisticsStatement';
+    table: IdentifierNode | null;
+    statistics?: string | null;
+    options?: StatisticsOptionNode[];
 }
 
 export interface DeleteNode extends NodeLocation, Recoverable {
@@ -426,7 +442,7 @@ export interface ParameterDefinition extends NodeLocation {
 
 export interface CreateNode extends NodeLocation, Recoverable {
     type: 'CreateStatement';
-    objectType: 'TABLE' | 'VIEW' | 'PROCEDURE' | 'FUNCTION' | 'TYPE';
+    objectType: 'TABLE' | 'VIEW' | 'PROCEDURE' | 'FUNCTION' | 'TYPE' | 'TRIGGER' | 'SCHEMA' | 'SEQUENCE' | 'SYNONYM';
     orAlter: boolean;
     name: string;
     nameNode: IdentifierNode;
@@ -844,6 +860,36 @@ export interface AlterTableNode extends NodeLocation, Recoverable {
     type: 'AlterTableStatement';
     table: IdentifierNode;
     action: AlterTableAction | null;
+}
+
+export type AlterIndexAction =
+    | {
+        kind: 'REBUILD';
+        partition?: Expression | null;
+        options?: IndexOptionNode[];
+    }
+    | {
+        kind: 'REORGANIZE';
+        partition?: Expression | null;
+    }
+    | {
+        kind: 'DISABLE';
+    }
+    | {
+        kind: 'SET';
+        options?: IndexOptionNode[];
+    }
+    | {
+        kind: 'UNKNOWN';
+        raw: string;
+    };
+
+export interface AlterIndexNode extends NodeLocation, Recoverable {
+    type: 'AlterIndexStatement';
+    indexName: string;
+    indexNameNode: IdentifierNode | null;
+    table: IdentifierNode | null;
+    action: AlterIndexAction | null;
 }
 
 // TRUNCATE

@@ -123,6 +123,41 @@ describe('T-SQL Parser - RETURN', () => {
         expect(result.ast.body).toHaveLength(1);
     });
 
+    test('should terminate SET DATEFIRST before following SELECT without semicolon', () => {
+        const result = parseResult(`
+            SET DATEFIRST 6
+            SELECT @WeeklyBucketStartDate = DATEADD(dd, (8 - DATEPART(dw, @refDateTime)), @refDateTime) + 14
+        `);
+
+        expect(result.issues).toHaveLength(0);
+        expect(result.ast.body).toHaveLength(2);
+        expect(result.ast.body[0].type).toBe('SetStatement');
+        expect(result.ast.body[1].type).toBe('SelectStatement');
+    });
+
+    test('should continue procedure body parsing after leading semicolon statements', () => {
+        const result = parseResult(`
+            CREATE PROCEDURE dbo.HasLooseSemicolon
+            AS
+            ;
+            SELECT 1;
+            PRINT 'done';
+        `);
+
+        expect(result.issues).toHaveLength(0);
+        expect(result.ast.body).toHaveLength(1);
+
+        const create = result.ast.body[0];
+        expect(create.type).toBe('CreateStatement');
+
+        if (create.type !== 'CreateStatement' || !Array.isArray(create.body)) {
+            throw new Error('Expected CreateStatement with statement body');
+        }
+
+        expect(create.body.some(stmt => stmt.type === 'SelectStatement')).toBe(true);
+        expect(create.body.some(stmt => stmt.type === 'PrintStatement')).toBe(true);
+    });
+
     test('should parse GOTO statement', () => {
         const stmt = parseOne<any>(`GOTO ExitLabel`);
 

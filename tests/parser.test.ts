@@ -218,6 +218,100 @@ describe('T-SQL Parser', () => {
         expect(leftConcat.left.operator).toBe('+');
     });
 
+    test('should parse COUNT DISTINCT inside aggregate function arguments', () => {
+        const sql = `SELECT COUNT(DISTINCT h.HolidayDate) AS HolidayCount FROM dbo.Holiday h`;
+        const result = new Parser(new Lexer(sql)).parse();
+        const stmt = result.ast.body[0] as SelectNode;
+        const expr = stmt.columns[0].expression;
+
+        expect(result.issues).toEqual([]);
+        expect(expr.type).toBe('FunctionCall');
+
+        if (expr.type !== 'FunctionCall') {
+            throw new Error('Expected aggregate expression to be a FunctionCall');
+        }
+
+        expect(expr.name.toUpperCase()).toBe('COUNT');
+        expect(expr.distinct).toBe(true);
+        expect(expr.args).toHaveLength(1);
+    });
+
+    test('should parse SUM DISTINCT inside aggregate function arguments', () => {
+        const sql = `SELECT SUM(DISTINCT o.Amount) AS TotalAmount FROM Orders o`;
+        const result = new Parser(new Lexer(sql)).parse();
+
+        expect(result.issues).toEqual([]);
+    });
+
+    test('should parse procedure WITH EXECUTE AS OWNER before AS', () => {
+        const sql = `
+            CREATE PROCEDURE dbo.Foo
+                @p INT
+            WITH EXECUTE AS OWNER
+            AS
+            BEGIN
+                SELECT @p;
+            END
+        `;
+
+        const result = new Parser(new Lexer(sql)).parse();
+
+        expect(result.issues).toEqual([]);
+    });
+
+    test('should parse view WITH SCHEMABINDING before AS', () => {
+        const sql = `
+            CREATE VIEW dbo.ActiveUsers
+            WITH SCHEMABINDING
+            AS
+            SELECT Id
+            FROM dbo.Users
+        `;
+
+        const result = new Parser(new Lexer(sql)).parse();
+
+        expect(result.issues).toEqual([]);
+    });
+
+    test('should parse scalar function RETURNS clause before AS', () => {
+        const sql = `
+            CREATE FUNCTION dbo.GetFlag(@Id INT)
+            RETURNS INT
+            AS
+            BEGIN
+                RETURN @Id;
+            END
+        `;
+
+        const result = new Parser(new Lexer(sql)).parse();
+
+        expect(result.issues).toEqual([]);
+    });
+
+    test('should parse trigger and retain body after header clauses', () => {
+        const sql = `
+            CREATE TRIGGER dbo.trgUsersAudit
+            ON dbo.Users
+            AFTER INSERT
+            AS
+            BEGIN
+                PRINT 'audit';
+            END
+        `;
+
+        const result = new Parser(new Lexer(sql)).parse();
+        const stmt = result.ast.body[0];
+
+        expect(result.issues).toEqual([]);
+        expect(stmt.type).toBe('CreateStatement');
+
+        if (stmt.type !== 'CreateStatement') {
+            throw new Error('Expected CreateStatement');
+        }
+
+        expect(stmt.objectType).toBe('TRIGGER');
+    });
+
     // 10. ALL (Explicit)
     test('should handle SELECT ALL', () => {
         const sql = `SELECT ALL Name FROM Users`;

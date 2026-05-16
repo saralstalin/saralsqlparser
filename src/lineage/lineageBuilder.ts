@@ -12,6 +12,7 @@ import {
     CreateNode,
     IfNode,
     BlockNode,
+    TryCatchNode,
     InsertNode,
     UpdateNode,
     DeleteNode,
@@ -19,6 +20,7 @@ import {
     OutputClauseNode,
     TableReference,
     JoinNode,
+    FrameBoundary,
 } from '../ast/types';
 
 import {
@@ -110,6 +112,10 @@ export class LineageBuilder {
                 this.visitBlock(stmt);
                 break;
 
+            case 'TryCatchStatement':
+                this.visitTryCatch(stmt);
+                break;
+
             case 'InsertStatement':
                 this.visitInsert(stmt);
                 break;
@@ -155,6 +161,11 @@ export class LineageBuilder {
         for (const child of stmt.body) {
             this.visitStatement(child);
         }
+    }
+
+    private visitTryCatch(stmt: TryCatchNode): void {
+        this.visitStatement(stmt.tryBlock);
+        this.visitStatement(stmt.catchBlock);
     }
 
     private visitBranch(branch: Statement | Statement[]): void {
@@ -616,7 +627,11 @@ export class LineageBuilder {
 
         for (const assignment of stmt.assignments ?? []) {
             this.columns.push({
-                name: `${target}.${assignment.column}`,
+                name:
+                    assignment.columnNode &&
+                    assignment.columnNode.parts.length > 1
+                        ? assignment.columnNode.name
+                        : `${target}.${assignment.column}`,
                 expression: assignment.value ?? undefined,
                 inputs: assignment.value
                     ? this.resolveExpression(assignment.value)
@@ -665,9 +680,14 @@ export class LineageBuilder {
                 return this.resolveExpression(expr.expression);
 
             case 'FunctionCall':
-                return expr.args.flatMap(x =>
-                    this.resolveExpression(x)
-                );
+                return [
+                    ...expr.args.flatMap(x =>
+                        this.resolveExpression(x)
+                    ),
+                    ...(expr.withinGroup?.flatMap(order =>
+                        this.resolveExpression(order.expression)
+                    ) ?? [])
+                ];
 
             case 'ValuesTableExpression':
                 return expr.rows.flatMap(row =>
@@ -706,15 +726,66 @@ export class LineageBuilder {
                     ...this.resolveExpression(expr.left),
                     ...(expr.list?.flatMap(x =>
                         this.resolveExpression(x)
-                    ) ?? [])
+                    ) ?? []),
+                    ...(expr.subquery
+                        ? this.resolveQueryInputs(expr.subquery)
+                        : [])
                 ];
 
             case 'OverExpression':
-                return this.resolveExpression(expr.expression);
+                return [
+                    ...this.resolveExpression(expr.expression),
+                    ...(expr.window.partitionBy?.flatMap(partition =>
+                        this.resolveExpression(partition)
+                    ) ?? []),
+                    ...(expr.window.orderBy?.flatMap(order =>
+                        this.resolveExpression(order.expression)
+                    ) ?? []),
+                    ...this.resolveFrameBoundary(expr.window.frame?.from),
+                    ...this.resolveFrameBoundary(expr.window.frame?.to)
+                ];
+
+            case 'CastExpression':
+                return [
+                    ...this.resolveExpression(expr.expression),
+                    ...(expr.style
+                        ? this.resolveExpression(expr.style)
+                        : [])
+                ];
+
+            case 'SubqueryExpression':
+                return this.resolveQueryInputs(expr.query);
+
+            case 'ExistsExpression':
+                return this.resolveQueryInputs(expr.query);
 
             default:
                 return [];
         }
+    }
+
+    private resolveQueryInputs(
+        query: QueryStatement
+    ): LineageNode[] {
+        return this.visitQuery(query, false)
+            .flatMap(column => column.inputs);
+    }
+
+    private resolveFrameBoundary(
+        boundary: FrameBoundary | null | undefined
+    ): LineageNode[] {
+        if (!boundary) {
+            return [];
+        }
+
+        if (
+            boundary.type === 'PRECEDING' ||
+            boundary.type === 'FOLLOWING'
+        ) {
+            return this.resolveExpression(boundary.value);
+        }
+
+        return [];
     }
 
     private resolveIdentifier(

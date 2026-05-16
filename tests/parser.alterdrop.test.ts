@@ -162,6 +162,87 @@ describe('T-SQL Parser - DDL Changes', () => {
         });
     });
 
+    describe('ALTER INDEX', () => {
+        test('REBUILD with WITH options', () => {
+            const stmt = parseOne<any>(
+                'ALTER INDEX IX_Users_Name ON dbo.Users REBUILD WITH (ONLINE = ON, FILLFACTOR = 80)'
+            );
+
+            expect(stmt.type).toBe('AlterIndexStatement');
+            expect(stmt.indexName).toBe('IX_Users_Name');
+            expect(stmt.table.name).toBe('dbo.Users');
+            expect(stmt.action.kind).toBe('REBUILD');
+            expect(stmt.action.options).toHaveLength(2);
+        });
+
+        test('ALL REORGANIZE PARTITION expression', () => {
+            const stmt = parseOne<any>(
+                'ALTER INDEX ALL ON dbo.Users REORGANIZE PARTITION = 3'
+            );
+
+            expect(stmt.type).toBe('AlterIndexStatement');
+            expect(stmt.indexName).toBe('ALL');
+            expect(stmt.action.kind).toBe('REORGANIZE');
+            expect(stmt.action.partition.type).toBe('Literal');
+        });
+
+        test('DISABLE', () => {
+            const stmt = parseOne<any>(
+                'ALTER INDEX IX_Users_Name ON dbo.Users DISABLE'
+            );
+
+            expect(stmt.type).toBe('AlterIndexStatement');
+            expect(stmt.action.kind).toBe('DISABLE');
+        });
+
+        test('SET bare option list', () => {
+            const stmt = parseOne<any>(
+                'ALTER INDEX IX_Users_Name ON dbo.Users SET (ALLOW_PAGE_LOCKS = OFF)'
+            );
+
+            expect(stmt.type).toBe('AlterIndexStatement');
+            expect(stmt.action.kind).toBe('SET');
+            expect(stmt.action.options).toHaveLength(1);
+            expect(stmt.action.options[0].name).toBe('ALLOW_PAGE_LOCKS');
+            expect(stmt.action.options[0].value).toBe('OFF');
+        });
+    });
+
+    describe('UPDATE STATISTICS', () => {
+        test('table and statistics name', () => {
+            const stmt = parseOne<any>(
+                'UPDATE STATISTICS dbo.Users IX_Users_Name'
+            );
+
+            expect(stmt.type).toBe('UpdateStatisticsStatement');
+            expect(stmt.table.name).toBe('dbo.Users');
+            expect(stmt.statistics).toBe('IX_Users_Name');
+        });
+
+        test('table only with WITH options', () => {
+            const stmt = parseOne<any>(
+                'UPDATE STATISTICS dbo.Users WITH FULLSCAN, NORECOMPUTE'
+            );
+
+            expect(stmt.type).toBe('UpdateStatisticsStatement');
+            expect(stmt.table.name).toBe('dbo.Users');
+            expect(stmt.options).toHaveLength(2);
+            expect(stmt.options[0].name).toBe('FULLSCAN');
+            expect(stmt.options[1].name).toBe('NORECOMPUTE');
+        });
+
+        test('statistics list in parentheses', () => {
+            const stmt = parseOne<any>(
+                'UPDATE STATISTICS dbo.Users (IX_A, IX_B) WITH SAMPLE = 25 PERCENT'
+            );
+
+            expect(stmt.type).toBe('UpdateStatisticsStatement');
+            expect(stmt.statistics).toBe('IX_A, IX_B');
+            expect(stmt.options[0].name).toBe('SAMPLE');
+            expect(stmt.options[0].value).toBe('25 PERCENT');
+        });
+    });
+
     // ─────────────────────────────────────────────────────────
     // ALTER TABLE DROP
     // ─────────────────────────────────────────────────────────

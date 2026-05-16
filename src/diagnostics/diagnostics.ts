@@ -49,6 +49,8 @@ export enum DiagnosticCode {
     UpdateTargetNoLock = 'DML004',
     JoinHintUsage = 'JOIN001',
     CursorUsage = 'CUR001',
+    TableHintUsage = 'HINT001',
+    QueryOptionUsage = 'OPT001',
 
     SelectStar = 'SEL001',
     SelectStarInView = 'SEL002',
@@ -278,6 +280,18 @@ export class DiagnosticEngine {
                 end: stmt.start + 6,
             });
         }
+
+        for (const assignment of stmt.assignments ?? []) {
+            this.visitExpression(assignment.value, false);
+        }
+
+        this.visitTableReferences(stmt.from, false);
+
+        if (stmt.where) {
+            this.visitExpression(stmt.where, false);
+        }
+
+        this.checkOptionClause(stmt.optionClause);
     }
 
     private checkDelete(stmt: DeleteNode): void {
@@ -292,6 +306,14 @@ export class DiagnosticEngine {
                 end: stmt.start + 6,
             });
         }
+
+        this.visitTableReferences(stmt.from, false);
+
+        if (stmt.where) {
+            this.visitExpression(stmt.where, false);
+        }
+
+        this.checkOptionClause(stmt.optionClause);
     }
 
     private checkInsert(stmt: InsertNode): void {
@@ -346,6 +368,8 @@ export class DiagnosticEngine {
                 });
             }
         }
+
+        this.checkOptionClause(stmt.optionClause);
     }
 
     // ── SELECT rules ──────────────────────────────────────────────────────────
@@ -375,42 +399,7 @@ export class DiagnosticEngine {
             this.visitExpression(col.expression, insideView);
         }
 
-        // FROM / JOIN recursion
-        if (stmt.from) {
-            for (const ref of stmt.from) {
-                const table = ref.table;
-
-                if (table?.type === 'SubqueryExpression') {
-                    this.visitQuery(table.query, insideView);
-                } else if (table) {
-                    this.visitExpression(table, insideView);
-                }
-
-                for (const join of ref.joins) {
-                    if (join.joinHint) {
-                        this.emit({
-                            code: DiagnosticCode.JoinHintUsage,
-                            message: `${join.joinHint} JOIN hint can reduce optimizer flexibility; review whether it is really needed`,
-                            severity: 'warning',
-                            start: join.start,
-                            end: join.end,
-                        });
-                    }
-
-                    const jt = join.table;
-
-                    if (jt?.type === 'SubqueryExpression') {
-                        this.visitQuery(jt.query, insideView);
-                    } else if (jt) {
-                        this.visitExpression(jt, insideView);
-                    }
-
-                    if (join.on) {
-                        this.visitExpression(join.on, insideView);
-                    }
-                }
-            }
-        }
+        this.visitTableReferences(stmt.from, insideView);
 
         if (stmt.where) {
             this.visitExpression(stmt.where, insideView);
@@ -431,6 +420,8 @@ export class DiagnosticEngine {
                 this.visitExpression(order.expression, insideView);
             }
         }
+
+        this.checkOptionClause(stmt.optionClause);
     }
 
     // ── WITH / CREATE / IF / BLOCK ───────────────────────────────────────────
@@ -514,6 +505,101 @@ export class DiagnosticEngine {
     private checkBlock(stmt: BlockNode): void {
         for (const s of stmt.body) {
             this.visitStatement(s, false);
+        }
+    }
+
+    private visitTableReferences(
+        refs: SelectNode['from'] | UpdateNode['from'] | DeleteNode['from'],
+        insideView: boolean
+    ): void {
+        if (!refs) {
+            return;
+        }
+
+        for (const ref of refs) {
+            this.checkTableHints(ref.hints, ref.start, ref.end);
+
+            const table = ref.table;
+
+            if (table?.type === 'SubqueryExpression') {
+                this.visitQuery(table.query, insideView);
+            } else if (table) {
+                this.visitExpression(table, insideView);
+            }
+
+            for (const join of ref.joins) {
+                if (join.joinHint) {
+                    this.emit({
+                        code: DiagnosticCode.JoinHintUsage,
+                        message: `${join.joinHint} JOIN hint can reduce optimizer flexibility; review whether it is really needed`,
+                        severity: 'warning',
+                        start: join.start,
+                        end: join.end,
+                    });
+                }
+
+                this.checkTableHints(join.hints, join.start, join.end);
+
+                const jt = join.table;
+
+                if (jt?.type === 'SubqueryExpression') {
+                    this.visitQuery(jt.query, insideView);
+                } else if (jt) {
+                    this.visitExpression(jt, insideView);
+                }
+
+                if (join.on) {
+                    this.visitExpression(join.on, insideView);
+                }
+            }
+        }
+    }
+
+    private checkTableHints(
+        hints: string[] | undefined,
+        start: number,
+        end: number
+    ): void {
+        for (const hint of hints ?? []) {
+            const normalized =
+                hint.trim().toUpperCase();
+
+            if (
+                normalized === 'NOLOCK' ||
+                normalized === 'READUNCOMMITTED'
+            ) {
+                continue;
+            }
+
+            this.emit({
+                code: DiagnosticCode.TableHintUsage,
+                message: this.describeTableHint(hint),
+                severity: 'warning',
+                start,
+                end,
+            });
+        }
+    }
+
+    private checkOptionClause(
+        optionClause: {
+            start: number;
+            end: number;
+            hints: { kind: string; raw: string }[];
+        } | null | undefined
+    ): void {
+        if (!optionClause) {
+            return;
+        }
+
+        for (const hint of optionClause.hints) {
+            this.emit({
+                code: DiagnosticCode.QueryOptionUsage,
+                message: this.describeQueryOption(hint.kind, hint.raw),
+                severity: 'warning',
+                start: optionClause.start,
+                end: optionClause.end,
+            });
         }
     }
 
@@ -827,6 +913,83 @@ export class DiagnosticEngine {
             .trim()
             .replace(/^\[(.*)\]$/, '$1')
             .toLowerCase();
+    }
+
+    private describeTableHint(hint: string): string {
+        const normalized = hint.trim().toUpperCase();
+
+        if (normalized === 'NOLOCK' || normalized === 'READUNCOMMITTED') {
+            return `Table hint '${hint}' can return dirty or inconsistent data; prefer READ COMMITTED SNAPSHOT or SNAPSHOT isolation when blocking is the concern`;
+        }
+
+        if (normalized === 'READPAST') {
+            return `Table hint '${hint}' silently skips locked rows; prefer queue-specific logic or row versioning if skipped work would be risky`;
+        }
+
+        if (normalized === 'UPDLOCK' || normalized === 'HOLDLOCK' || normalized === 'SERIALIZABLE') {
+            return `Table hint '${hint}' increases locking and deadlock risk; consider narrower transactions or stronger isolation only around the critical section`;
+        }
+
+        if (
+            normalized === 'TABLOCK' ||
+            normalized === 'TABLOCKX' ||
+            normalized === 'XLOCK' ||
+            normalized === 'ROWLOCK' ||
+            normalized === 'PAGLOCK'
+        ) {
+            return `Table hint '${hint}' forces a locking strategy and can hurt concurrency; prefer letting the optimizer choose unless contention data proves otherwise`;
+        }
+
+        if (normalized.startsWith('INDEX(')) {
+            return `Table hint '${hint}' couples the query to a specific index and can age badly as data changes; prefer refreshed statistics, indexing changes, or query rewrites first`;
+        }
+
+        if (normalized.startsWith('FORCESEEK') || normalized.startsWith('FORCESCAN')) {
+            return `Table hint '${hint}' forces an access path and can become a regression as data distribution changes; prefer statistics updates or query tuning before pinning the plan`;
+        }
+
+        return `Table hint '${hint}' overrides optimizer behavior and may trade correctness or concurrency for a local fix; verify the risk and consider isolation-level or indexing changes first`;
+    }
+
+    private describeQueryOption(kind: string, raw: string): string {
+        switch (kind) {
+            case 'RECOMPILE':
+                return `OPTION (${raw}) avoids plan reuse and can increase CPU under load; prefer fixing parameter sensitivity with Query Store hints, filtered stats, or query rewrites when possible`;
+
+            case 'MAXDOP':
+                return `OPTION (${raw}) forces a parallelism cap and can shift load elsewhere; prefer server or database-level tuning unless this query is a proven hotspot`;
+
+            case 'FAST':
+                return `OPTION (${raw}) biases the plan for early rows and can hurt full-result performance; prefer explicit pagination or query rewrites if first-row latency matters`;
+
+            case 'MAXRECURSION':
+                return `OPTION (${raw}) changes recursion safety limits; verify termination logic and consider tightening the CTE rather than relying on a high cap`;
+
+            case 'FORCE_ORDER':
+                return `OPTION (${raw}) removes join reordering freedom and can regress as cardinalities drift; prefer better statistics or clearer predicates first`;
+
+            case 'HASH_JOIN':
+            case 'MERGE_JOIN':
+            case 'LOOP_JOIN':
+            case 'HASH_GROUP':
+            case 'ORDER_GROUP':
+            case 'MERGE_UNION':
+            case 'CONCAT_UNION':
+                return `OPTION (${raw}) forces a physical strategy and reduces optimizer flexibility; prefer updated statistics or query/index tuning before pinning the plan shape`;
+
+            case 'KEEP_PLAN':
+            case 'KEEPFIXED_PLAN':
+            case 'ROBUST_PLAN':
+                return `OPTION (${raw}) changes plan stability behavior and can hide underlying cardinality issues; prefer fixing statistics or query shape first`;
+
+            case 'PARAMETERIZATION':
+            case 'OPTIMIZE_FOR':
+            case 'USE_HINT':
+                return `OPTION (${raw}) is a targeted optimizer override; document why it is needed and prefer Query Store hints or schema/statistics fixes when available`;
+
+            default:
+                return `OPTION (${raw}) overrides normal optimizer choices; document the reason and review whether statistics, indexing, or query rewrites would be safer long term`;
+        }
     }
 
     private walkScopes(

@@ -763,6 +763,18 @@ describe('LOG001 â€” self comparison', () => {
         expect(d.length).toBe(1);
     });
 
+    test('fires for qualified identifier compared to itself in UPDATE WHERE clause', () => {
+        const d = only(`
+            UPDATE u
+            SET u.Id = 1
+            FROM dbo.Users u
+            WHERE u.Id = u.Id;
+        `, DiagnosticCode.SelfComparison);
+
+        expect(d.length).toBe(1);
+        expect(d[0].severity).toBe('warning');
+    });
+
     test('does NOT fire when the two sides are different', () => {
         const d = only(`
             SELECT *
@@ -835,6 +847,61 @@ describe('CUR001 â€” cursor usage', () => {
         );
 
         expect(d.length).toBe(1);
+    });
+});
+
+describe('HINT001 â€” table hint usage', () => {
+    test('does not warn on NOLOCK by default', () => {
+        const d = only(
+            `SELECT * FROM dbo.Users WITH (NOLOCK)`,
+            DiagnosticCode.TableHintUsage
+        );
+
+        expect(d).toHaveLength(0);
+    });
+
+    test('does not warn on READUNCOMMITTED by default', () => {
+        const d = only(
+            `SELECT * FROM dbo.Users WITH (READUNCOMMITTED)`,
+            DiagnosticCode.TableHintUsage
+        );
+
+        expect(d).toHaveLength(0);
+    });
+
+    test('warns on INDEX hint with tuning alternative guidance', () => {
+        const d = only(
+            `SELECT * FROM dbo.Users WITH (INDEX(IX_Users_Name))`,
+            DiagnosticCode.TableHintUsage
+        );
+
+        expect(d).toHaveLength(1);
+        expect(d[0].message).toContain(`specific index`);
+        expect(d[0].message).toContain(`statistics`);
+    });
+});
+
+describe('OPT001 â€” query option usage', () => {
+    test('warns on OPTION(RECOMPILE)', () => {
+        const d = only(
+            `SELECT Name FROM dbo.Users OPTION (RECOMPILE)`,
+            DiagnosticCode.QueryOptionUsage
+        );
+
+        expect(d).toHaveLength(1);
+        expect(d[0].message).toContain(`avoids plan reuse`);
+        expect(d[0].message).toContain(`Query Store hints`);
+    });
+
+    test('warns on multiple option hints', () => {
+        const d = only(
+            `SELECT Name FROM dbo.Users OPTION (MAXDOP 1, FORCE ORDER)`,
+            DiagnosticCode.QueryOptionUsage
+        );
+
+        expect(d).toHaveLength(2);
+        expect(d.some(x => x.message.includes(`parallelism cap`))).toBe(true);
+        expect(d.some(x => x.message.includes(`join reordering freedom`))).toBe(true);
     });
 });
 

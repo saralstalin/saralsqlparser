@@ -65,6 +65,17 @@ describe('LineageBuilder', () => {
         ]);
     });
 
+    test('cast expression', () => {
+        expect(
+            edgeStrings(`
+                SELECT CAST(o.Amount AS DECIMAL(10,2)) AS Total
+                FROM Orders o
+            `)
+        ).toEqual([
+            'Orders.Amount -> Total'
+        ]);
+    });
+
     test('multiple dependencies', () => {
         expect(
             edgeStrings(`
@@ -129,6 +140,19 @@ describe('LineageBuilder', () => {
         ]);
     });
 
+    test('scalar subquery expression', () => {
+        expect(
+            edgeStrings(`
+                SELECT (
+                    SELECT o.Amount
+                    FROM Orders o
+                ) AS AmountValue
+            `)
+        ).toEqual([
+            'Orders.Amount -> AmountValue'
+        ]);
+    });
+
     test('case expression', () => {
         expect(
             edgeStrings(`
@@ -180,6 +204,95 @@ describe('LineageBuilder', () => {
             `)
         ).toEqual([
             'Customer.Amount -> t.Total'
+        ]);
+    });
+
+    test('exists expression', () => {
+        expect(
+            edgeStrings(`
+                SELECT CASE
+                    WHEN EXISTS (
+                        SELECT o.CustomerId
+                        FROM Orders o
+                    ) THEN 1
+                    ELSE 0
+                END AS HasOrders
+            `)
+        ).toEqual([
+            'Orders.CustomerId -> HasOrders'
+        ]);
+    });
+
+    test('in subquery expression', () => {
+        expect(
+            edgeStrings(`
+                SELECT CASE
+                    WHEN c.Id IN (
+                        SELECT o.CustomerId
+                        FROM Orders o
+                    ) THEN 1
+                    ELSE 0
+                END AS MatchFlag
+                FROM Customer c
+            `)
+        ).toEqual([
+            'Customer.Id -> MatchFlag',
+            'Orders.CustomerId -> MatchFlag'
+        ]);
+    });
+
+    test('over expression includes partition and order inputs', () => {
+        expect(
+            edgeStrings(`
+                SELECT ROW_NUMBER() OVER (
+                    PARTITION BY o.RegionId
+                    ORDER BY o.CreatedOn
+                ) AS RowNumber
+                FROM Orders o
+            `)
+        ).toEqual([
+            'Orders.CreatedOn -> RowNumber',
+            'Orders.RegionId -> RowNumber'
+        ]);
+    });
+
+    test('within group order by contributes lineage', () => {
+        expect(
+            edgeStrings(`
+                SELECT STRING_AGG(o.Name, ',') WITHIN GROUP (ORDER BY o.SortOrder) AS Names
+                FROM Orders o
+            `)
+        ).toEqual([
+            'Orders.Name -> Names',
+            'Orders.SortOrder -> Names'
+        ]);
+    });
+
+    test('lineage flows through TRY/CATCH blocks', () => {
+        expect(
+            edgeStrings(`
+                CREATE PROCEDURE dbo.SaveInventory
+                AS
+                BEGIN
+                    BEGIN TRY
+                        UPDATE io
+                        SET io.OrganizationCode = iot.OrganizationCode
+                        FROM dbo.InventoryOrgLkp io
+                        JOIN @InventoryType iot ON io.OrgId = iot.OrgId;
+
+                        INSERT INTO dbo.InventoryOrgLkp(OrgId, OrganizationCode)
+                        SELECT iot.OrgId, iot.OrganizationCode
+                        FROM @InventoryType iot;
+                    END TRY
+                    BEGIN CATCH
+                        THROW;
+                    END CATCH
+                END
+            `)
+        ).toEqual([
+            '@InventoryType.OrgId -> dbo.InventoryOrgLkp.OrgId',
+            '@InventoryType.OrganizationCode -> dbo.InventoryOrgLkp.OrganizationCode',
+            '@InventoryType.OrganizationCode -> io.OrganizationCode'
         ]);
     });
 

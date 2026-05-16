@@ -19,6 +19,13 @@ import {
     ThrowNode,
     WhileNode,
     ExecuteNode,
+    ReturnNode,
+    WaitForNode,
+    DeclareCursorNode,
+    OpenCursorNode,
+    FetchCursorNode,
+    CloseCursorNode,
+    DeallocateCursorNode,
     QueryStatement,
     TableReference,
     JoinNode,
@@ -206,6 +213,34 @@ export class ScopeBuilder {
                 this.visitExecute(stmt);
                 break;
 
+            case 'ReturnStatement':
+                this.visitReturn(stmt);
+                break;
+
+            case 'WaitForStatement':
+                this.visitWaitFor(stmt);
+                break;
+
+            case 'DeclareCursorStatement':
+                this.visitDeclareCursor(stmt);
+                break;
+
+            case 'OpenCursorStatement':
+                this.visitOpenCursor(stmt);
+                break;
+
+            case 'FetchCursorStatement':
+                this.visitFetchCursor(stmt);
+                break;
+
+            case 'CloseCursorStatement':
+                this.visitCloseCursor(stmt);
+                break;
+
+            case 'DeallocateCursorStatement':
+                this.visitDeallocateCursor(stmt);
+                break;
+
             default:
                 break;
         }
@@ -313,6 +348,54 @@ export class ScopeBuilder {
                 );
             }
         }
+    }
+
+    private visitReturn(stmt: ReturnNode): void {
+        if (stmt.value) {
+            this.visitExpression(stmt.value);
+        }
+    }
+
+    private visitWaitFor(stmt: WaitForNode): void {
+        if (stmt.value) {
+            this.visitExpression(stmt.value);
+        }
+    }
+
+    private visitDeclareCursor(stmt: DeclareCursorNode): void {
+        if (stmt.query) {
+            this.visitQuery(stmt.query);
+        }
+    }
+
+    private visitOpenCursor(_stmt: OpenCursorNode): void {
+        // Cursor handle names are not tracked as scope symbols today.
+    }
+
+    private visitFetchCursor(stmt: FetchCursorNode): void {
+        if (stmt.offset) {
+            this.visitExpression(stmt.offset);
+        }
+
+        for (const name of stmt.into ?? []) {
+            if (!name.startsWith('@')) {
+                continue;
+            }
+
+            this.recordReference(
+                name,
+                stmt,
+                'write'
+            );
+        }
+    }
+
+    private visitCloseCursor(_stmt: CloseCursorNode): void {
+        // Cursor handle names are not tracked as scope symbols today.
+    }
+
+    private visitDeallocateCursor(_stmt: DeallocateCursorNode): void {
+        // Cursor handle names are not tracked as scope symbols today.
     }
 
     private visitInsert(stmt: InsertNode): void {
@@ -786,6 +869,12 @@ export class ScopeBuilder {
                 for (const arg of expr.args) {
                     this.visitExpression(arg);
                 }
+
+                if (expr.withinGroup) {
+                    for (const order of expr.withinGroup) {
+                        this.visitExpression(order.expression);
+                    }
+                }
                 break;
 
             case 'OverExpression':
@@ -801,6 +890,14 @@ export class ScopeBuilder {
                     for (const o of expr.window.orderBy) {
                         this.visitExpression(o.expression);
                     }
+                }
+                break;
+
+            case 'CastExpression':
+                this.visitExpression(expr.expression);
+
+                if (expr.style) {
+                    this.visitExpression(expr.style);
                 }
                 break;
 
@@ -846,6 +943,15 @@ export class ScopeBuilder {
 
             case 'SubqueryExpression':
                 this.visitSubquery(expr);
+                break;
+
+            case 'ExistsExpression':
+                this.visitSubquery({
+                    type: 'SubqueryExpression',
+                    query: expr.query,
+                    start: expr.start,
+                    end: expr.end,
+                });
                 break;
 
             case 'ValuesTableExpression':

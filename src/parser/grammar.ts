@@ -96,6 +96,10 @@ export const CREATE_OBJECT_TYPES: Record<string, CreateNode['objectType']> = {
     PROCEDURE: 'PROCEDURE',
     FUNCTION: 'FUNCTION',
     TYPE: 'TYPE',
+    TRIGGER: 'TRIGGER',
+    SCHEMA: 'SCHEMA',
+    SEQUENCE: 'SEQUENCE',
+    SYNONYM: 'SYNONYM',
     PROC: 'PROCEDURE'
 };
 

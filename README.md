@@ -106,13 +106,13 @@ import {
 } from '@saralsql/tsql-parser';
 ```
 
-Most consumers should use:
+If you want the full parser + semantic pipeline in one call, use:
 
 ```ts
 analyze(sql)
 ```
 
-Low-level lexer / parser APIs are also exposed for advanced scenarios.
+Use the lower-level APIs only when you need custom control over individual stages such as lexing, parsing, scope building, lineage, or diagnostics.
 
 ---
 
@@ -135,17 +135,39 @@ Low-level lexer / parser APIs are also exposed for advanced scenarios.
 # Diagnostics Example
 
 ```sql
-UPDATE userRow
-SET Status = 1
-FROM dbo.Users userRow WITH (NOLOCK)
-WHERE userRow.Id = userRow.Id;
+UPDATE u
+SET u.Name = 'Bad Update'
+FROM Users u WITH(NOLOCK)
+WHERE u.Id = u.Id
 ```
 
-Typical diagnostics for this shape:
+Diagnostics produced for this exact SQL:
 
-* `DML004` — `UPDATE` target table must not use `WITH (NOLOCK)`
-* `LOG001` — self-comparison like `userRow.Id = userRow.Id`
+```text
+DML004 error   UPDATE target table must not use WITH (NOLOCK)
+LOG001 warning Condition compares 'u.Id' to itself
+```
 
+---
+
+# Lineage Example
+
+```sql
+INSERT INTO dbo.InvoiceSummary (CustomerId, InvoiceMonth, TotalAmount)
+SELECT i.CustomerId,
+       i.InvoiceMonth,
+       i.Subtotal + i.TaxAmount
+FROM dbo.Invoices i;
+```
+
+Lineage edges produced for this exact SQL:
+
+```text
+dbo.Invoices.CustomerId -> dbo.InvoiceSummary.CustomerId
+dbo.Invoices.InvoiceMonth -> dbo.InvoiceSummary.InvoiceMonth
+dbo.Invoices.Subtotal -> dbo.InvoiceSummary.TotalAmount
+dbo.Invoices.TaxAmount -> dbo.InvoiceSummary.TotalAmount
+```
 
 ---
 
@@ -178,6 +200,7 @@ Supported:
 * `FOR JSON` / `FOR XML`
 * `OPTION (...)`
 * `STRING_AGG ... WITHIN GROUP (...)`
+* `COUNT(DISTINCT ...)` and `SUM(DISTINCT ...)`
 
 ---
 
@@ -239,8 +262,10 @@ Supported:
 * ALTER TABLE (partial)
 * CREATE PROCEDURE
 * CREATE FUNCTION (partial)
+* CREATE TRIGGER
 * CREATE INDEX
 * ALTER INDEX
+* UPDATE STATISTICS
 * constraints:
 
   * PRIMARY KEY
@@ -266,6 +291,7 @@ Supports:
 * filtered indexes (`WHERE`)
 * index options (`WITH (...)`)
 * storage targets (`ON [PRIMARY]`)
+* tolerated create preambles such as `WITH EXECUTE AS ...`, `WITH SCHEMABINDING`, `WITH ENCRYPTION`, and function `RETURNS ...`
 
 ---
 
@@ -321,9 +347,11 @@ This is critical for editor scenarios.
 SaralSQL is capable of parsing a large subset of production T-SQL, including:
 
 * procedural stored procedures
+* first enterprise stored procedure codebase pass completed
 * enterprise-style validation / ETL procedures
 * real-world DDL
 * constraints and indexes
+* maintenance scripts with `ALTER INDEX` and `UPDATE STATISTICS`
 * cursor-based procedures
 * procedural flow with `GOTO`, labels, and `WAITFOR`
 * recursive CTEs
@@ -421,7 +449,10 @@ That said, the parser is already hardened around a number of real production sha
 * `OPENJSON ... WITH (...)`
 * legacy string-literal aliases
 * `BEGIN ;WITH ...` CTE handoff inside blocks
+* `SET DATEFIRST` followed by statement bodies
 * computed columns with optional `PERSISTED`
+* aggregate `DISTINCT` forms like `COUNT(DISTINCT ...)`
+* tolerant `CREATE` preambles and trigger headers
 
 Bug reports with SQL samples are extremely valuable.
 

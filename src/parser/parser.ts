@@ -11,6 +11,7 @@ import {
     QueryStatement,
     InsertNode,
     UpdateNode,
+    UpdateStatisticsNode,
     DeleteNode,
     MergeNode,
     MergeWhenClause,
@@ -34,8 +35,10 @@ import {
     CreateIndexNode,
     IndexColumnNode,
     IndexOptionNode,
+    StatisticsOptionNode,
     TruncateNode,
     AlterTableNode,
+    AlterIndexNode,
 
 
     // Expressions
@@ -105,6 +108,7 @@ import {
 
     TopClause,
     AlterTableAction,
+    AlterIndexAction,
     ExistsExpression,
 
 
@@ -401,6 +405,12 @@ export class Parser {
         this.match(TokenType.OpenParen);
 
         const args: Expression[] = [];
+        let distinct = false;
+
+        if (this.peekKeyword('DISTINCT')) {
+            this.consume();
+            distinct = true;
+        }
 
         if (this.peek()?.type !== TokenType.CloseParen) {
             args.push(
@@ -438,10 +448,64 @@ export class Parser {
                     ].end
                     : closeParen.offset +
                     closeParen.value.length,
+            ...(distinct
+                ? { distinct: true }
+                : {}),
             ...(openJsonWith
                 ? { openJsonWith }
                 : {})
         };
+    }
+
+    private skipCreatePreambleUntil(
+        stopKeywords: string[]
+    ): number {
+        let endOffset =
+            this.lastConsumedEnd();
+
+        const stopSet =
+            new Set(
+                stopKeywords.map(x =>
+                    x.toUpperCase()
+                )
+            );
+
+        let previousKeyword:
+            string | null = null;
+
+        while (this.peek()) {
+            const token = this.peek()!;
+
+            if (
+                token.type === TokenType.Keyword
+            ) {
+                const upper =
+                    token.value.toUpperCase();
+
+                if (
+                    stopSet.has(upper) &&
+                    !(
+                        upper === 'AS' &&
+                        previousKeyword === 'EXECUTE'
+                    )
+                ) {
+                    break;
+                }
+
+                previousKeyword = upper;
+            } else {
+                previousKeyword = null;
+            }
+
+            const consumed =
+                this.consume();
+
+            endOffset =
+                consumed.offset +
+                consumed.value.length;
+        }
+
+        return endOffset;
     }
 
     private parseWithinGroupClause(): OrderByNode[] {
@@ -1234,7 +1298,11 @@ export class Parser {
             switch (val) {
                 case 'SELECT': stmt = this.parseQueryExpression(); break;
                 case 'INSERT': stmt = this.parseInsert(); break;
-                case 'UPDATE': stmt = this.parseUpdate(); break;
+                case 'UPDATE':
+                    stmt = this.peek(1)?.value.toUpperCase() === 'STATISTICS'
+                        ? this.parseUpdateStatistics()
+                        : this.parseUpdate();
+                    break;
                 case 'DELETE': stmt = this.parseDelete(); break;
                 case 'DECLARE':
                     stmt = this.isCursorDeclarationStart()
@@ -1248,6 +1316,8 @@ export class Parser {
                     // Check if this is an ALTER TABLE statement
                     if (this.peek(1)?.value.toUpperCase() === 'TABLE') {
                         stmt = this.parseAlterTable();
+                    } else if (this.peek(1)?.value.toUpperCase() === 'INDEX') {
+                        stmt = this.parseAlterIndex();
                     } else {
                         // Fallback for ALTER PROC, ALTER VIEW, etc.
                         stmt = this.parseCreate(true);
@@ -2660,6 +2730,122 @@ export class Parser {
             ...(incomplete ? { incomplete: true } : {}),
             ...(errors.length ? { errors } : {})
         };
+    }
+
+    private parseUpdateStatistics(): UpdateStatisticsNode {
+        const startToken = this.matchKeyword('UPDATE');
+        this.matchKeyword('STATISTICS');
+
+        let incomplete = false;
+        const errors: string[] = [];
+        let table: IdentifierNode | null = null;
+        let statistics: string | null = null;
+        let options: StatisticsOptionNode[] | undefined;
+
+        try {
+            const tableExpr = this.parseMultipartIdentifier();
+            if (tableExpr.type === 'Identifier') {
+                table = tableExpr;
+            } else {
+                throw new Error('Expected table name after UPDATE STATISTICS');
+            }
+
+            const next = this.peek();
+            if (
+                next &&
+                next.type !== TokenType.Semicolon &&
+                !(
+                    next.type === TokenType.Keyword &&
+                    next.value === 'WITH'
+                )
+            ) {
+                if (next.type === TokenType.OpenParen) {
+                    this.consume();
+                    const statsNames = this.parseList<string>(() =>
+                        this.consume().value
+                    , {
+                        isBoundary: (token?: Token) =>
+                            !token || token.type === TokenType.CloseParen
+                    });
+                    this.match(TokenType.CloseParen);
+                    statistics = statsNames.join(', ');
+                } else {
+                    statistics = this.consume().value;
+                }
+            }
+
+            if (this.peekKeyword('WITH')) {
+                this.consume();
+                options = this.parseUpdateStatisticsOptions();
+            }
+        } catch (e) {
+            incomplete = true;
+
+            this.addRecoverableError(
+                errors,
+                'PARSE_UPDATE_STATISTICS',
+                e instanceof Error ? e.message : String(e),
+                startToken.offset,
+                this.lastConsumedEnd()
+            );
+        }
+
+        return {
+            type: 'UpdateStatisticsStatement',
+            table,
+            ...(statistics !== null ? { statistics } : {}),
+            ...(options?.length ? { options } : {}),
+            start: startToken.offset,
+            end: this.lastConsumedEnd(),
+            ...(incomplete ? { incomplete: true } : {}),
+            ...(errors.length ? { errors } : {})
+        };
+    }
+
+    private parseUpdateStatisticsOptions(): StatisticsOptionNode[] {
+        return this.parseList<StatisticsOptionNode>(() => {
+            const startToken = this.consume();
+            let value: string | undefined;
+
+            if (this.peek()?.value === '=') {
+                this.consume();
+
+                const parts: string[] = [];
+                while (this.peek()) {
+                    const token = this.peek()!;
+                    if (
+                        token.type === TokenType.Comma ||
+                        token.type === TokenType.Semicolon ||
+                        (
+                            token.type === TokenType.Keyword &&
+                            RESYNC_KEYWORDS.has(token.value)
+                        )
+                    ) {
+                        break;
+                    }
+
+                    parts.push(this.consume().value);
+                }
+
+                value = parts.join(' ').trim();
+            }
+
+            return {
+                type: 'StatisticsOption',
+                name: startToken.value,
+                ...(value ? { value } : {}),
+                start: startToken.offset,
+                end: this.lastConsumedEnd()
+            };
+        }, {
+            isBoundary: (token?: Token) =>
+                !token ||
+                token.type === TokenType.Semicolon ||
+                (
+                    token.type === TokenType.Keyword &&
+                    RESYNC_KEYWORDS.has(token.value)
+                )
+        });
     }
 
     private parseFrom(): TableReference[] {
@@ -4766,6 +4952,13 @@ export class Parser {
         // statement boundaries.
         else {
             const SESSION_OPTION_TERMINALS = new Set(['ON', 'OFF']);
+            const SESSION_OPTION_STATEMENT_STARTERS = new Set([
+                'SELECT', 'UPDATE', 'DELETE', 'INSERT', 'MERGE',
+                'CREATE', 'ALTER', 'DROP', 'TRUNCATE',
+                'BEGIN', 'IF', 'WHILE', 'SET', 'DECLARE',
+                'EXEC', 'EXECUTE', 'RETURN', 'PRINT',
+                'RAISERROR', 'THROW', 'WITH', 'GO'
+            ]);
 
             const parts: string[] = [];
             let firstToken: Token | null = null;
@@ -4790,8 +4983,13 @@ export class Parser {
                 if (
                     parts.length > 0 &&
                     token.type === TokenType.Keyword &&
-                    this.isStructuralKeyword(token.value) &&
-                    !SESSION_OPTION_TERMINALS.has(token.value)
+                    (
+                        (
+                            this.isStructuralKeyword(token.value) &&
+                            !SESSION_OPTION_TERMINALS.has(token.value)
+                        ) ||
+                        SESSION_OPTION_STATEMENT_STARTERS.has(token.value)
+                    )
                 ) {
                     break;
                 }
@@ -5358,7 +5556,8 @@ export class Parser {
         // 5. PROCEDURE / FUNCTION
         else if (
             objectType === 'PROCEDURE' ||
-            objectType === 'FUNCTION'
+            objectType === 'FUNCTION' ||
+            objectType === 'TRIGGER'
         ) {
             // Parameters
             try {
@@ -5487,6 +5686,38 @@ export class Parser {
                 );
             }
 
+            if (this.peekKeyword('WITH')) {
+                endOffset =
+                    this.skipCreatePreambleUntil([
+                        'AS',
+                        'RETURNS',
+                        'GO'
+                    ]);
+            }
+
+            if (
+                objectType === 'FUNCTION' &&
+                this.peekKeyword('RETURNS')
+            ) {
+                this.consume();
+                endOffset =
+                    this.lastConsumedEnd();
+
+                endOffset =
+                    this.skipCreatePreambleUntil([
+                        'AS',
+                        'GO'
+                    ]);
+            }
+
+            if (objectType === 'TRIGGER') {
+                endOffset =
+                    this.skipCreatePreambleUntil([
+                        'AS',
+                        'GO'
+                    ]);
+            }
+
             // AS
             if (this.peekKeyword('AS')) {
                 this.consume();
@@ -5502,6 +5733,8 @@ export class Parser {
                 while (
                     this.pos < this.tokens.length
                 ) {
+                    const beforePos =
+                        this.pos;
                     const nextToken =
                         this.peek();
 
@@ -5521,6 +5754,22 @@ export class Parser {
                         statements.push(stmt);
                         endOffset = stmt.end;
                     } else {
+                        if (
+                            this.pos > beforePos
+                        ) {
+                            continue;
+                        }
+
+                        if (
+                            this.peek() &&
+                            !stopKeywords.includes(
+                                this.peek()!.value
+                            )
+                        ) {
+                            this.consume();
+                            continue;
+                        }
+
                         break;
                     }
                 }
@@ -5544,6 +5793,14 @@ export class Parser {
         // 6. VIEW
         else if (objectType === 'VIEW') {
             try {
+                if (this.peekKeyword('WITH')) {
+                    endOffset =
+                        this.skipCreatePreambleUntil([
+                            'AS',
+                            'GO'
+                        ]);
+                }
+
                 if (this.peekKeyword('AS')) {
                     this.consume();
                     endOffset =
@@ -5567,6 +5824,17 @@ export class Parser {
                     endOffset
                 );
             }
+        }
+
+        else if (
+            objectType === 'SCHEMA' ||
+            objectType === 'SEQUENCE' ||
+            objectType === 'SYNONYM'
+        ) {
+            endOffset =
+                this.skipCreatePreambleUntil([
+                    'GO'
+                ]);
         }
 
         return {
@@ -6654,6 +6922,7 @@ export class Parser {
 
                     const args:
                         Expression[] = [];
+                    let distinct = false;
 
                     if (
                         idNode.type !==
@@ -6662,6 +6931,15 @@ export class Parser {
                         throw new Error(
                             'Wildcards cannot be used as function names'
                         );
+                    }
+
+                    if (
+                        this.peekKeyword(
+                            'DISTINCT'
+                        )
+                    ) {
+                        this.consume();
+                        distinct = true;
                     }
 
                     // subquery arg
@@ -6717,6 +6995,10 @@ export class Parser {
                             idNode.name,
 
                         args,
+
+                        ...(distinct
+                            ? { distinct: true }
+                            : {}),
 
                         start:
                             idNode.start,
@@ -11639,6 +11921,170 @@ export class Parser {
             ...(incomplete ? { incomplete: true } : {}),
             ...(errors.length ? { errors } : {})
         };
+    }
+
+    private parseAlterIndex(): AlterIndexNode {
+        const startToken = this.matchKeyword('ALTER');
+        this.matchKeyword('INDEX');
+
+        let incomplete = false;
+        const errors: string[] = [];
+
+        let indexName = '';
+        let indexNameNode: IdentifierNode | null = null;
+        let table: IdentifierNode | null = null;
+        let action: AlterIndexAction | null = null;
+
+        try {
+            if (this.peekKeyword('ALL')) {
+                const allToken = this.consume();
+                indexName = allToken.value;
+            } else {
+                const nameExpr = this.parseMultipartIdentifier();
+                if (nameExpr.type === 'Identifier') {
+                    indexName = nameExpr.name;
+                    indexNameNode = nameExpr;
+                } else {
+                    throw new Error('Expected index name');
+                }
+            }
+
+            this.matchKeyword('ON');
+            const tableExpr = this.parseMultipartIdentifier();
+            if (tableExpr.type === 'Identifier') {
+                table = tableExpr;
+            } else {
+                throw new Error('Expected table name after ON');
+            }
+
+            const actionToken = this.consume();
+            const actionVal = actionToken.value.toUpperCase();
+
+            if (actionVal === 'REBUILD') {
+                let partition: Expression | null = null;
+                let options: IndexOptionNode[] | undefined;
+
+                if (this.peekKeyword('PARTITION')) {
+                    this.consume();
+                    if (this.peek()?.value === '=') {
+                        this.consume();
+                    }
+                    partition = this.parseExpression();
+                }
+
+                if (this.peekKeyword('WITH')) {
+                    options = this.parseIndexOptionsWithClause();
+                }
+
+                action = {
+                    kind: 'REBUILD',
+                    ...(partition ? { partition } : {}),
+                    ...(options?.length ? { options } : {})
+                };
+            } else if (actionVal === 'REORGANIZE') {
+                let partition: Expression | null = null;
+
+                if (this.peekKeyword('PARTITION')) {
+                    this.consume();
+                    if (this.peek()?.value === '=') {
+                        this.consume();
+                    }
+                    partition = this.parseExpression();
+                }
+
+                action = {
+                    kind: 'REORGANIZE',
+                    ...(partition ? { partition } : {})
+                };
+            } else if (actionVal === 'DISABLE') {
+                action = { kind: 'DISABLE' };
+            } else if (actionVal === 'SET') {
+                action = {
+                    kind: 'SET',
+                    options: this.parseIndexOptionsBareClause()
+                };
+            } else {
+                incomplete = true;
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_ALTER_INDEX_ACTION',
+                    `Unsupported ALTER INDEX action: ${actionVal}`,
+                    actionToken.offset,
+                    actionToken.offset + actionToken.value.length
+                );
+
+                action = {
+                    kind: 'UNKNOWN',
+                    raw: actionToken.value
+                };
+
+                while (
+                    this.peek() &&
+                    this.peek()?.type !== TokenType.Semicolon
+                ) {
+                    this.consume();
+                }
+            }
+        } catch (e) {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_ALTER_INDEX',
+                e instanceof Error ? e.message : String(e),
+                startToken.offset,
+                this.lastConsumedEnd()
+            );
+        }
+
+        return {
+            type: 'AlterIndexStatement',
+            indexName,
+            indexNameNode,
+            table,
+            action,
+            start: startToken.offset,
+            end: this.lastConsumedEnd(),
+            ...(incomplete ? { incomplete: true } : {}),
+            ...(errors.length ? { errors } : {})
+        };
+    }
+
+    private parseIndexOptionsWithClause(): IndexOptionNode[] {
+        this.matchKeyword('WITH');
+        return this.parseIndexOptionsBareClause();
+    }
+
+    private parseIndexOptionsBareClause(): IndexOptionNode[] {
+        this.match(TokenType.OpenParen);
+
+        const options =
+            this.parseList<IndexOptionNode>(() => {
+                const optionToken = this.consume();
+                const start = optionToken.offset;
+
+                let value = '';
+
+                if (this.peek()?.value === '=') {
+                    this.consume();
+                    value = this.consume().value;
+                }
+
+                return {
+                    type: 'IndexOption',
+                    name: optionToken.value,
+                    value,
+                    start,
+                    end: this.lastConsumedEnd()
+                };
+            }, {
+                isBoundary: (token?: Token) =>
+                    !token ||
+                    token.type === TokenType.CloseParen
+            });
+
+        this.match(TokenType.CloseParen);
+
+        return options;
     }
 
     private parseTruncate(): TruncateNode {

@@ -500,6 +500,78 @@ describe('expression visitor', () => {
         const sym = result.root.resolve('@Cat');
         expect(sym?.references.length).toBeGreaterThanOrEqual(1);
     });
+
+    test('variable inside CAST and CONVERT style is recorded', () => {
+        const result = build(`
+            DECLARE @Amount VARCHAR(20) = '42';
+            DECLARE @Style INT = 120;
+            SELECT CAST(@Amount AS INT), CONVERT(DATETIME, @Amount, @Style);
+        `);
+        expect(result.root.resolve('@Amount')?.references.length).toBeGreaterThanOrEqual(2);
+        expect(result.root.resolve('@Style')?.references.length).toBeGreaterThanOrEqual(1);
+    });
+
+    test('variable inside EXISTS subquery is recorded', () => {
+        const result = build(`
+            DECLARE @DeptId INT = 3;
+            SELECT CASE
+                WHEN EXISTS (
+                    SELECT 1
+                    FROM Depts d
+                    WHERE d.ParentId = @DeptId
+                ) THEN 1
+                ELSE 0
+            END;
+        `);
+        expect(result.root.resolve('@DeptId')?.references.length).toBeGreaterThanOrEqual(1);
+    });
+
+    test('variable inside WITHIN GROUP order by is recorded', () => {
+        const result = build(`
+            DECLARE @SortKey INT = 1;
+            SELECT STRING_AGG(Name, ',') WITHIN GROUP (ORDER BY @SortKey)
+            FROM Users;
+        `);
+        expect(result.root.resolve('@SortKey')?.references.length).toBeGreaterThanOrEqual(1);
+    });
+});
+
+describe('statement coverage', () => {
+    test('return expression is recorded', () => {
+        const result = build(`
+            DECLARE @Code INT = 1;
+            RETURN @Code;
+        `);
+        expect(result.root.resolve('@Code')?.references.length).toBeGreaterThanOrEqual(1);
+    });
+
+    test('waitfor expression is recorded', () => {
+        const result = build(`
+            DECLARE @Delay VARCHAR(20) = '00:00:01';
+            WAITFOR DELAY @Delay;
+        `);
+        expect(result.root.resolve('@Delay')?.references.length).toBeGreaterThanOrEqual(1);
+    });
+
+    test('cursor fetch into writes variables and cursor query is visited', () => {
+        const result = build(`
+            DECLARE @MinId INT = 10;
+            DECLARE @FetchedId INT;
+            DECLARE cur CURSOR FOR
+                SELECT Id
+                FROM Users
+                WHERE Id > @MinId;
+            OPEN cur;
+            FETCH NEXT FROM cur INTO @FetchedId;
+            CLOSE cur;
+            DEALLOCATE cur;
+        `);
+
+        expect(result.root.resolve('@MinId')?.references.length).toBeGreaterThanOrEqual(1);
+
+        const fetchedRefs = result.root.resolve('@FetchedId')?.references ?? [];
+        expect(fetchedRefs.some(ref => ref.kind === 'write')).toBe(true);
+    });
 });
 
 // ─── 9. Derived tables ────────────────────────────────────────────────────────

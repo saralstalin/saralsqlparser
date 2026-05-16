@@ -81,6 +81,7 @@ export class Lexer {
         'INSERT', 'VALUES',
         'UPDATE', 'SET',
         'DELETE',
+        'STATISTICS',
         'MERGE', 'USING', 'MATCHED', 'SOURCE', 'TARGET',
         'OUTPUT', 'OUT',                     // OUTPUT clause + OUTPUT parameter modifier
 
@@ -93,8 +94,9 @@ export class Lexer {
         // ── DDL — Object types ────────────────────────────────────────────────────
         'TABLE', 'VIEW',
         'PROCEDURE', 'PROC',                 // PROC is a shorthand alias for PROCEDURE
-        'FUNCTION',
+        'FUNCTION', 'RETURNS',
         'TYPE',                              // CREATE TYPE ... AS TABLE
+        'TRIGGER', 'SCHEMA', 'SEQUENCE', 'SYNONYM',
         'INDEX',
 
         // ── DDL — Column / constraint modifiers ───────────────────────────────────
