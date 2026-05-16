@@ -136,6 +136,89 @@ describe('T-SQL Parser - TRY / CATCH / THROW / BREAK / CONTINUE', () => {
             ).toHaveLength(2);
         });
 
+        test('TRY block continues after TRUNCATE statement semicolon', () => {
+            const stmt = parseOne<any>(`
+                BEGIN TRY
+                    BEGIN TRAN;
+                    TRUNCATE TABLE dbo.WorkQueue;
+                    INSERT INTO dbo.WorkQueue (Id)
+                    SELECT Id
+                    FROM @PendingRows;
+                    COMMIT TRAN;
+                END TRY
+                BEGIN CATCH
+                    IF @@TRANCOUNT > 0
+                        ROLLBACK TRAN;
+                    THROW;
+                END CATCH
+            `);
+
+            expect(stmt.type)
+                .toBe('TryCatchStatement');
+
+            expect(
+                stmt.tryBlock.body.map((x: any) => x.type)
+            ).toEqual([
+                'TransactionStatement',
+                'TruncateStatement',
+                'InsertStatement',
+                'TransactionStatement'
+            ]);
+
+            expect(
+                stmt.catchBlock.body.map((x: any) => x.type)
+            ).toEqual([
+                'IfStatement',
+                'ThrowStatement'
+            ]);
+        });
+
+        test('stored procedure with TVP, TRUNCATE, INSERT, and THROW parses without issues', () => {
+            const sql = `
+                CREATE PROCEDURE dbo.RefreshLookupCodes
+                (
+                    @LookupCodes LookupCodeTableType READONLY
+                )
+                AS
+                BEGIN
+                    SET NOCOUNT ON;
+                    SET XACT_ABORT ON;
+
+                    BEGIN TRY
+                        BEGIN TRAN;
+
+                        TRUNCATE TABLE dbo.LookupCode;
+
+                        INSERT INTO dbo.LookupCode
+                        (
+                            LookupCode,
+                            [Description],
+                            SortOrder
+                        )
+                        SELECT LookupCode,
+                               [Description],
+                               SortOrder
+                        FROM @LookupCodes;
+
+                        COMMIT TRAN;
+                    END TRY
+                    BEGIN CATCH
+                        IF @@TRANCOUNT > 0
+                            ROLLBACK TRAN;
+
+                        THROW;
+                    END CATCH
+                END
+                GO
+            `;
+
+            const result =
+                new Parser(new Lexer(sql)).parse();
+
+            expect(result.issues)
+                .toEqual([]);
+        });
+
         test('missing END CATCH recovers', () => {
             const stmt = parseOne<any>(`
                 BEGIN TRY

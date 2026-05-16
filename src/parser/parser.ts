@@ -253,9 +253,14 @@ export class Parser {
     }
 
     private parseMultipartIdentifier(
-        firstConsumed?: Token
+        firstConsumed?: Token,
+        options?: {
+            allowStructuralFirstSegment?: boolean;
+        }
     ): Expression {
         const segments: Token[] = [];
+        const allowStructuralFirstSegment =
+            options?.allowStructuralFirstSegment ?? false;
 
         const startToken =
             firstConsumed ?? this.peek();
@@ -275,7 +280,8 @@ export class Parser {
                 TokenType.TempTable
             ].includes(first.type) ||
             (first.type === TokenType.Keyword &&
-                this.isStructuralKeyword(first.value))
+                this.isStructuralKeyword(first.value) &&
+                !allowStructuralFirstSegment)
         ) {
             const message = `Expected identifier`;
 
@@ -2232,11 +2238,17 @@ export class Parser {
             try {
                 if (this.peek()?.type !== TokenType.CloseParen) {
                     columnNodes = this.parseList(() => {
-                        const node = this.parseMultipartIdentifier();
+                        const node = this.parseMultipartIdentifier(
+                            undefined,
+                            { allowStructuralFirstSegment: true }
+                        );
                         if (node.type === 'Identifier') return node;
                         throw new Error(
                             'Wildcards are not allowed in an INSERT column list'
                         );
+                    }, {
+                        isBoundary:
+                            this.isIdentifierListBoundary.bind(this)
                     });
                     columns = columnNodes.map(node => node.name);
                 } else {
@@ -2835,7 +2847,10 @@ export class Parser {
 
                 aliasColumns = this.parseList(() => {
                     const columnExpr =
-                        this.parseMultipartIdentifier();
+                        this.parseMultipartIdentifier(
+                            undefined,
+                            { allowStructuralFirstSegment: true }
+                        );
 
                     if (
                         columnExpr.type === 'Identifier' &&
@@ -2847,6 +2862,9 @@ export class Parser {
                     throw new Error(
                         'Expected identifier in derived table column list'
                     );
+                }, {
+                    isBoundary:
+                        this.isIdentifierListBoundary.bind(this)
                 });
 
                 const closeParen = this.match(TokenType.CloseParen);
@@ -4852,11 +4870,7 @@ export class Parser {
 
             // recovery boundary
             if (
-                token.type === TokenType.Semicolon ||
-                (
-                    token.type === TokenType.Keyword &&
-                    RESYNC_KEYWORDS.has(token.value)
-                )
+                token.type === TokenType.Semicolon
             ) {
                 incomplete = true;
                 break;
@@ -4901,7 +4915,10 @@ export class Parser {
                 const startToken = this.peek()!;
 
                 const nameExpr =
-                    this.parseMultipartIdentifier();
+                    this.parseMultipartIdentifier(
+                        undefined,
+                        { allowStructuralFirstSegment: true }
+                    );
 
                 if (nameExpr.type !== 'Identifier') {
                     incomplete = true;
@@ -7192,6 +7209,15 @@ export class Parser {
         return list;
     }
 
+    private isIdentifierListBoundary(
+        token?: Token
+    ): boolean {
+        return (
+            !token ||
+            token.type === TokenType.CloseParen
+        );
+    }
+
     private isDefaultListBoundary(token?: Token): boolean {
         if (!token) {
             return true;
@@ -7636,7 +7662,10 @@ export class Parser {
                 this.consume();
                 columns = this.parseList(() => {
                     const columnExpr =
-                        this.parseMultipartIdentifier();
+                        this.parseMultipartIdentifier(
+                            undefined,
+                            { allowStructuralFirstSegment: true }
+                        );
 
                     if (
                         columnExpr.type === 'Identifier' &&
@@ -7650,7 +7679,7 @@ export class Parser {
                     );
                 }, {
                     isBoundary:
-                        this.isCteColumnListBoundary.bind(this)
+                        this.isIdentifierListBoundary.bind(this)
                 });
                 this.match(TokenType.CloseParen);
             }
@@ -8284,11 +8313,17 @@ export class Parser {
                 try {
                     if (this.peek()?.type !== TokenType.CloseParen) {
                         intoColumnNodes = this.parseList(() => {
-                            const node = this.parseMultipartIdentifier();
+                            const node = this.parseMultipartIdentifier(
+                                undefined,
+                                { allowStructuralFirstSegment: true }
+                            );
                             if (node.type === 'Identifier') return node;
                             throw new Error(
                                 'Wildcards are not allowed in an OUTPUT INTO column list'
                             );
+                        }, {
+                            isBoundary:
+                                this.isIdentifierListBoundary.bind(this)
                         });
                         intoColumns = intoColumnNodes.map(node => node.name);
                     } else {
@@ -9402,6 +9437,7 @@ export class Parser {
         };
 
         let dataType = '';
+        let style: Expression | null = null;
 
         // --------------------------------
         // opening (
@@ -9458,6 +9494,17 @@ export class Parser {
                         expression =
                             this.parseExpression();
                         end = expression.end;
+
+                        if (this.peek()?.type === TokenType.Comma) {
+                            this.consume(); // ,
+                            end = this.lastConsumedEnd();
+
+                            if (this.peek()) {
+                                style =
+                                    this.parseExpression();
+                                end = style.end;
+                            }
+                        }
                     }
                 }
 
@@ -9481,6 +9528,7 @@ export class Parser {
                     kind,
                     expression,
                     dataType,
+                    ...(style ? { style } : {}),
                     start,
                     end,
                     ...(incomplete ? { incomplete: true } : {}),
@@ -9550,6 +9598,7 @@ export class Parser {
             kind,
             expression,
             dataType,
+            ...(style ? { style } : {}),
             start,
             end,
             ...(incomplete ? { incomplete: true } : {}),
@@ -10728,13 +10777,21 @@ export class Parser {
             this.pos < this.tokens.length &&
             !(this.peek()?.value === 'END' && this.peek(1)?.value === 'TRY')
         ) {
+            const beforePos = this.pos;
             const stmt = this.parseStatement();
             if (stmt) {
                 tryBody.push(stmt);
                 endOffset = stmt.end;
-            } else if (this.peek()?.type === TokenType.Semicolon) {
-                this.consume();
             } else {
+                if (this.pos > beforePos) {
+                    continue;
+                }
+
+                if (this.peek()?.type === TokenType.Semicolon) {
+                    this.consume();
+                    continue;
+                }
+
                 break;
             }
         }
@@ -10785,13 +10842,21 @@ export class Parser {
             this.pos < this.tokens.length &&
             !(this.peek()?.value === 'END' && this.peek(1)?.value === 'CATCH')
         ) {
+            const beforePos = this.pos;
             const stmt = this.parseStatement();
             if (stmt) {
                 catchBody.push(stmt);
                 endOffset = stmt.end;
-            } else if (this.peek()?.type === TokenType.Semicolon) {
-                this.consume();
             } else {
+                if (this.pos > beforePos) {
+                    continue;
+                }
+
+                if (this.peek()?.type === TokenType.Semicolon) {
+                    this.consume();
+                    continue;
+                }
+
                 break;
             }
         }
@@ -11591,7 +11656,10 @@ export class Parser {
 
     private parseColumnDefinition(): ColumnDefinition {
         const startToken = this.peek()!;
-        const nameExpr = this.parseMultipartIdentifier();
+        const nameExpr = this.parseMultipartIdentifier(
+            undefined,
+            { allowStructuralFirstSegment: true }
+        );
 
         if (nameExpr.type !== 'Identifier') {
             throw new Error('Wildcards are not allowed as column names in table definitions');

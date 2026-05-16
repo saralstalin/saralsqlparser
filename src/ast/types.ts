@@ -582,6 +582,7 @@ export interface CastExpression extends NodeLocation, Recoverable {
     kind: 'CAST' | 'TRY_CAST' | 'CONVERT';
     expression: Expression;
     dataType: string;
+    style?: Expression | null;
 }
 
 export interface ConstraintNode extends NodeLocation, Recoverable {

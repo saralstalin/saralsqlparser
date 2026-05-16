@@ -234,6 +234,18 @@ export class Lexer {
             };
         }
 
+        if (char === ':' && this.peek(1) === ':') {
+            this.consume();
+            this.consume();
+            return {
+                type: TokenType.Dot,
+                value: '::',
+                line: startLine,
+                col: startCol,
+                offset: startOffset
+            };
+        }
+
         // 3. Identifiers, Keywords, Variables, Temp Tables, Brackets
         if (/[a-zA-Z_@#$]/.test(char) || char === '[') {
             return this.readIdentifier(startLine, startCol, startOffset);

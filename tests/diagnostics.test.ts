@@ -564,6 +564,20 @@ describe('SEL001 — SELECT *', () => {
         );
         expect(d.length).toBeGreaterThanOrEqual(1);
     });
+
+    test('fires inside INSERT SELECT query', () => {
+        const d = only(`
+            CREATE PROCEDURE dbo.LoadItems
+                @InputRows dbo.ItemType READONLY
+            AS
+            BEGIN
+                INSERT INTO dbo.Target (Id)
+                SELECT *
+                FROM @InputRows src;
+            END
+        `, DiagnosticCode.SelectStar);
+        expect(d.length).toBe(1);
+    });
 });
 
 // ─── SEL002: SELECT * in view ────────────────────────────────────────────────
@@ -851,6 +865,57 @@ describe('JOIN001 â€” join hint usage', () => {
         );
 
         expect(d.length).toBe(2);
+    });
+});
+
+describe('NAM001 - unbracketed keyword column name', () => {
+    test('warns for INSERT column list using an unbracketed keyword-shaped name', () => {
+        const d = only(
+            `
+            INSERT INTO dbo.InventoryOrgLkp
+            (
+                OrgId,
+                OffSet
+            )
+            SELECT src.OrgId, src.OffSet
+            FROM @InventoryRows src
+            `,
+            DiagnosticCode.UnbracketedKeywordColumnName
+        );
+
+        expect(d.length).toBe(1);
+        expect(d[0].severity).toBe('warning');
+        expect(d[0].message).toContain('OFFSET');
+    });
+
+    test('warns for CREATE TABLE column using an unbracketed keyword-shaped name', () => {
+        const d = only(
+            `
+            CREATE TABLE dbo.InventoryOrgLkp
+            (
+                Id INT,
+                OffSet VARCHAR(50)
+            )
+            `,
+            DiagnosticCode.UnbracketedKeywordColumnName
+        );
+
+        expect(d.length).toBe(1);
+        expect(d[0].message).toContain('OFFSET');
+    });
+
+    test('does not warn for bracketed keyword column names', () => {
+        const d = only(
+            `
+            CREATE TABLE dbo.InventoryOrgLkp
+            (
+                [OffSet] VARCHAR(50)
+            )
+            `,
+            DiagnosticCode.UnbracketedKeywordColumnName
+        );
+
+        expect(d.length).toBe(0);
     });
 });
 

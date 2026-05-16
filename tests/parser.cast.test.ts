@@ -135,6 +135,21 @@ describe('T-SQL Parser - CAST / TRY_CAST / CONVERT', () => {
         expect(expr.dataType).toBe('VARCHAR(10)');
     });
 
+    test('should parse CONVERT with style argument', () => {
+        const stmt = parseOne<any>(`
+            SELECT CONVERT(VARCHAR(16), GETUTCDATE(), 120)
+        `);
+
+        const expr = stmt.columns[0].expression;
+
+        expect(expr.type).toBe('CastExpression');
+        expect(expr.kind).toBe('CONVERT');
+        expect(expr.dataType).toBe('VARCHAR(16)');
+        expect(expr.style).toBeDefined();
+        expect(expr.style.type).toBe('Literal');
+        expect(expr.style.value).toBe(120);
+    });
+
     test('should parse CAST varchar length', () => {
         const stmt = parseOne<any>(`
             SELECT CAST(@Name AS VARCHAR(50))
@@ -207,6 +222,17 @@ describe('T-SQL Parser - CAST / TRY_CAST / CONVERT', () => {
 
         expect(expr.args[0].type).toBe('CastExpression');
         expect(expr.args[0].dataType).toBe('VARCHAR(20)');
+    });
+
+    test('should parse nested REPLACE around CONVERT with style', () => {
+        const stmt = parseOne<any>(`
+            SELECT REPLACE(REPLACE(REPLACE(CONVERT(VARCHAR(16), GETUTCDATE(), 120), '-', ''), ' ', ''), ':', '')
+        `);
+
+        const expr = stmt.columns[0].expression;
+
+        expect(expr.type).toBe('FunctionCall');
+        expect(expr.name).toBe('REPLACE');
     });
 
     test('should parse CAST in WHERE clause', () => {

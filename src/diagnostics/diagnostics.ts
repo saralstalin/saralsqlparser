@@ -11,9 +11,11 @@ import {
     IfNode,
     BlockNode,
     CreateNode,
+    AlterTableNode,
     QueryStatement,
     NodeLocation,
     ColumnNode,
+    IdentifierNode,
 } from '../ast/types';
 
 import { ScopeBuilderResult, DuplicateDeclaration } from '../semantic/scopeBuilder';
@@ -37,6 +39,7 @@ export enum DiagnosticCode {
     UnusedParameter = 'VAR003',
     VariableUsedBeforeSet = 'VAR004',
     UnknownColumn = 'COL001',
+    UnbracketedKeywordColumnName = 'NAM001',
 
     MissingCommaBeforeTableConstraint = 'DDL001',
 
@@ -60,6 +63,30 @@ export enum DiagnosticCode {
 export class DiagnosticEngine {
     private diagnostics: Diagnostic[] = [];
     private rootScope: Scope | null = null;
+    private static readonly KEYWORD_COLUMN_NAMES = new Set([
+        'ADD', 'ALL', 'ALTER', 'AND', 'APPLY', 'AS', 'ASC',
+        'BEGIN', 'BETWEEN', 'BREAK', 'BY',
+        'CASE', 'CATCH', 'CHECK', 'CLOSE', 'COLUMN', 'COMMIT', 'CONSTRAINT', 'CONTINUE', 'CREATE', 'CROSS', 'CURSOR',
+        'DEALLOCATE', 'DECLARE', 'DEFAULT', 'DELETE', 'DELAY', 'DESC', 'DISTINCT', 'DROP',
+        'ELSE', 'END', 'EXCEPT', 'EXEC', 'EXECUTE', 'EXISTS',
+        'FETCH', 'FOR', 'FOREIGN', 'FROM', 'FULL', 'FUNCTION',
+        'GO', 'GOTO', 'GROUP',
+        'HAVING',
+        'IDENTITY', 'IF', 'IN', 'INDEX', 'INNER', 'INSERT', 'INTERSECT', 'INTO', 'IS',
+        'JOIN',
+        'KEY',
+        'LEFT', 'LIKE', 'LOOP',
+        'MATCHED', 'MERGE',
+        'NEXT', 'NOT', 'NULL',
+        'OFFSET', 'ON', 'ONLY', 'OPEN', 'OPTION', 'OR', 'ORDER', 'OUT', 'OUTER', 'OUTPUT', 'OVER',
+        'PARTITION', 'PERCENT', 'PIVOT', 'PRECEDING', 'PRIMARY', 'PRINT', 'PROCEDURE',
+        'RAISERROR', 'RANGE', 'READONLY', 'REFERENCES', 'RETURN', 'RIGHT', 'ROLLBACK', 'ROW', 'ROWS',
+        'SAVE', 'SELECT', 'SEMICOLON', 'SET',
+        'TABLE', 'TARGET', 'THEN', 'THROW', 'TIES', 'TOP', 'TRAN', 'TRANSACTION', 'TRUNCATE', 'TRY',
+        'UNBOUNDED', 'UNION', 'UNIQUE', 'UNPIVOT', 'UPDATE', 'USING',
+        'VALUES', 'VIEW',
+        'WAITFOR', 'WHEN', 'WHERE', 'WHILE', 'WITH', 'WITHIN'
+    ]);
 
     run(program: Program, scopeResult: ScopeBuilderResult): Diagnostic[] {
         this.diagnostics = [];
@@ -174,6 +201,10 @@ export class DiagnosticEngine {
                 this.checkCreate(stmt);
                 break;
 
+            case 'AlterTableStatement':
+                this.checkAlterTable(stmt);
+                break;
+
             case 'WithStatement':
                 this.checkWith(stmt);
                 break;
@@ -280,6 +311,18 @@ export class DiagnosticEngine {
                 start: stmt.start,
                 end: stmt.start + 6,
             });
+        }
+
+        for (const columnNode of stmt.columnNodes ?? []) {
+            this.checkIdentifierColumnName(columnNode);
+        }
+
+        for (const columnNode of stmt.output?.intoColumnNodes ?? []) {
+            this.checkIdentifierColumnName(columnNode);
+        }
+
+        if (stmt.selectQuery) {
+            this.visitQuery(stmt.selectQuery, false);
         }
     }
 
@@ -410,6 +453,14 @@ export class DiagnosticEngine {
                 seen.set(key, cte);
             }
 
+            for (const columnName of cte.columns ?? []) {
+                this.checkColumnNameText(
+                    columnName,
+                    cte.start,
+                    cte.end
+                );
+            }
+
             this.visitQuery(cte.query, false);
         }
 
@@ -431,6 +482,14 @@ export class DiagnosticEngine {
                     });
                 }
             }
+        }
+
+        for (const column of stmt.columns ?? []) {
+            this.checkColumnNameText(
+                column.name,
+                column.start,
+                column.start + column.name.length
+            );
         }
 
         if (!stmt.body) return;
@@ -576,6 +635,21 @@ export class DiagnosticEngine {
             case 'Identifier':
                 this.checkQualifiedIdentifierColumn(expr);
                 break;
+        }
+    }
+
+    private checkAlterTable(stmt: AlterTableNode): void {
+        if (
+            stmt.action?.kind === 'ADD_COLUMN' ||
+            stmt.action?.kind === 'ALTER_COLUMN'
+        ) {
+            const column = stmt.action.column;
+
+            this.checkColumnNameText(
+                column.name,
+                column.start,
+                column.start + column.name.length
+            );
         }
     }
 
@@ -768,6 +842,42 @@ export class DiagnosticEngine {
 
     private emit(diagnostic: Diagnostic): void {
         this.diagnostics.push(diagnostic);
+    }
+
+    private checkIdentifierColumnName(node: IdentifierNode): void {
+        this.checkColumnNameText(
+            node.name,
+            node.start,
+            node.end
+        );
+    }
+
+    private checkColumnNameText(
+        name: string,
+        start: number,
+        end: number
+    ): void {
+        if (
+            !name ||
+            name.startsWith('[') ||
+            name.includes('.')
+        ) {
+            return;
+        }
+
+        const normalized = name.toUpperCase();
+
+        if (
+            DiagnosticEngine.KEYWORD_COLUMN_NAMES.has(normalized)
+        ) {
+            this.emit({
+                code: DiagnosticCode.UnbracketedKeywordColumnName,
+                message: `Column name '${normalized}' matches a SQL keyword; bracket it to avoid ambiguity`,
+                severity: 'warning',
+                start,
+                end,
+            });
+        }
     }
 }
 

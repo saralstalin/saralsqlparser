@@ -343,6 +343,51 @@ describe('T-SQL Parser', () => {
         expect(node.selectQuery?.type).toBe('SelectStatement');
     });
 
+    test('should handle INSERT column list with keyword-shaped identifiers', () => {
+        const sql = `
+            INSERT INTO dbo.OrgLkp
+            (
+                OrgId,
+                OffSet,
+                Region
+            )
+            SELECT
+                src.OrgId,
+                src.OffSet,
+                src.Region
+            FROM @InputRows src
+        `;
+
+        const node = parse(sql).body[0] as InsertNode;
+
+        expect(node.selectQuery?.type).toBe('SelectStatement');
+        expect(node.columns).toEqual([
+            'OrgId',
+            'OFFSET',
+            'Region'
+        ]);
+    });
+
+    test('should parse CREATE TABLE columns with keyword-shaped identifiers', () => {
+        const sql = `
+            CREATE TABLE dbo.OrgLkp
+            (
+                Id INT,
+                OffSet VARCHAR(50)
+            )
+        `;
+
+        const result = new Parser(new Lexer(sql)).parse();
+        const stmt = result.ast.body[0] as any;
+
+        expect(result.issues).toEqual([]);
+        expect(stmt.type).toBe('CreateStatement');
+        expect(stmt.columns?.map((col: any) => col.name)).toEqual([
+            'Id',
+            'OFFSET'
+        ]);
+    });
+
     // 23. UPDATE Standard
     test('should handle standard UPDATE', () => {
         const sql = `UPDATE Users SET Status = 1 WHERE ID = 1`;
@@ -610,6 +655,15 @@ END`;
         expect(expr.type).toBe('Identifier');
         expect(expr.name).toBe('#Temp.Id');
         expect(expr.parts).toEqual(['#Temp', 'Id']);
+    });
+
+    test('should parse static member call with double colon', () => {
+        const stmt = parse(`SELECT GEOGRAPHY::Point(@Latitude, @Longitude, 4326) AS GeoLocation`).body[0] as SelectNode;
+        const expr = stmt.columns[0].expression as any;
+
+        expect(expr.type).toBe('FunctionCall');
+        expect(expr.name).toBe('GEOGRAPHY.Point');
+        expect(expr.args).toHaveLength(3);
     });
 
     // 37. IF...ELSE
@@ -1412,6 +1466,21 @@ INTO @NewRows (KeyValue, DisplayValue, TargetId);`;
             expect(stmt.output!.intoColumns).toEqual([
                 'Id',
                 'Name'
+            ]);
+        });
+
+        test('should parse OUTPUT INTO columns with keyword-shaped identifiers', () => {
+            const sql = `
+            INSERT INTO Users(Name)
+            OUTPUT inserted.Id
+            INTO Audit(OffSet)
+            VALUES ('John')
+        `;
+
+            const stmt = parse(sql).body[0] as InsertNode;
+
+            expect(stmt.output!.intoColumns).toEqual([
+                'OFFSET'
             ]);
         });
 
