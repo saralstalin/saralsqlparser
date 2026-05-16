@@ -148,9 +148,19 @@ WHERE u.Id = u.Id
 
 Diagnostics:
 
-```text
-DML004 error   UPDATE target table must not use WITH (NOLOCK)
-LOG001 warning Condition compares 'u.Id' to itself
+```json
+[
+  {
+    "code": "DML004",
+    "severity": "error",
+    "message": "UPDATE target table must not use WITH (NOLOCK)"
+  },
+  {
+    "code": "LOG001",
+    "severity": "warning",
+    "message": "Condition compares 'u.Id' to itself"
+  }
+]
 ```
 
 ### Column Lineage
@@ -165,13 +175,27 @@ SELECT i.CustomerId,
 FROM dbo.Invoices i;
 ```
 
-Lineage edges:
+Lineage:
 
-```text
-dbo.Invoices.CustomerId -> dbo.InvoiceSummary.CustomerId
-dbo.Invoices.InvoiceMonth -> dbo.InvoiceSummary.InvoiceMonth
-dbo.Invoices.Subtotal -> dbo.InvoiceSummary.TotalAmount
-dbo.Invoices.TaxAmount -> dbo.InvoiceSummary.TotalAmount
+```json
+[
+  {
+    "source": "dbo.Invoices.CustomerId",
+    "target": "dbo.InvoiceSummary.CustomerId"
+  },
+  {
+    "source": "dbo.Invoices.InvoiceMonth",
+    "target": "dbo.InvoiceSummary.InvoiceMonth"
+  },
+  {
+    "source": "dbo.Invoices.Subtotal",
+    "target": "dbo.InvoiceSummary.TotalAmount"
+  },
+  {
+    "source": "dbo.Invoices.TaxAmount",
+    "target": "dbo.InvoiceSummary.TotalAmount"
+  }
+]
 ```
 
 ## Supported Surface
