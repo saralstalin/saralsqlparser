@@ -66,7 +66,7 @@ export class Lexer {
         // ── Predicates ────────────────────────────────────────────────────────────
         'IN', 'BETWEEN', 'LIKE', 'EXISTS',
         'IS', 'NULL',
-        'CAST', 'TRY_CAST', 'CONVERT',
+        'CAST', 'TRY_CAST', 'CONVERT', 'PARSE', 'TRY_PARSE',
 
         // ── CASE expression ───────────────────────────────────────────────────────
         'CASE', 'WHEN', 'THEN', 'ELSE', 'END',

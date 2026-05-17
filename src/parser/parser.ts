@@ -2152,14 +2152,14 @@ export class Parser {
         return {
             type: 'SelectStatement',
             distinct,
-            top,
             columns,
-            into,
-            from,
-            where,
-            groupBy,
-            having,
-            orderBy,
+            ...(top ? { top } : {}),
+            ...(into ? { into } : {}),
+            ...(from ? { from } : {}),
+            ...(where ? { where } : {}),
+            ...(groupBy ? { groupBy } : {}),
+            ...(having ? { having } : {}),
+            ...(orderBy ? { orderBy } : {}),
             ...(offset ? { offset } : {}),
             ...(fetch ? { fetch } : {}),
             ...(forClause ? { forClause } : {}),
@@ -2231,11 +2231,6 @@ export class Parser {
                     return {
                         type: 'InsertStatement',
                         table: tableNode,
-                        columns: null,
-                        columnNodes: null,
-                        output: undefined,
-                        values: null,
-                        selectQuery: null,
                         start: startToken.offset,
                         end: endOffset,
                         incomplete: true,
@@ -2258,11 +2253,6 @@ export class Parser {
                 return {
                     type: 'InsertStatement',
                     table: tableNode,
-                    columns: null,
-                    columnNodes: null,
-                    output: undefined,
-                    values: null,
-                    selectQuery: null,
                     start: startToken.offset,
                     end: endOffset,
                     incomplete: true,
@@ -2285,11 +2275,6 @@ export class Parser {
             return {
                 type: 'InsertStatement',
                 table: tableNode,
-                columns: null,
-                columnNodes: null,
-                output: undefined,
-                values: null,
-                selectQuery: null,
                 start: startToken.offset,
                 end: endOffset,
                 incomplete: true,
@@ -2449,11 +2434,11 @@ export class Parser {
         return {
             type: 'InsertStatement',
             table: tableNode,
-            columns,
-            columnNodes,
-            output,
-            values,
-            selectQuery,
+            ...(columns ? { columns } : {}),
+            ...(columnNodes ? { columnNodes } : {}),
+            ...(output ? { output } : {}),
+            ...(values ? { values } : {}),
+            ...(selectQuery ? { selectQuery } : {}),
             start: startToken.offset,
             end: endOffset,
             ...(incomplete ? { incomplete: true } : {}),
@@ -2486,6 +2471,7 @@ export class Parser {
 
         // 1. Target
         let targetNode: Expression | null = null;
+        let targetHints: string[] | undefined;
 
         try {
             const next = this.peek();
@@ -2498,6 +2484,14 @@ export class Parser {
                     this.parseMultipartIdentifier();
 
                 endOffset = targetNode.end;
+
+                if (
+                    this.peekKeyword('WITH') ||
+                    this.peek()?.type === TokenType.OpenParen
+                ) {
+                    targetHints = this.parseTableHints();
+                    endOffset = this.lastConsumedEnd();
+                }
             } else {
                 incomplete = true;
 
@@ -2720,10 +2714,11 @@ export class Parser {
             type: 'UpdateStatement',
             ...(top ? { top } : {}),
             target: targetNode,
-            assignments,
-            output,
-            from,
-            where,
+            ...(targetHints?.length ? { targetHints } : {}),
+            ...(assignments?.length ? { assignments } : {}),
+            ...(output ? { output } : {}),
+            ...(from ? { from } : {}),
+            ...(where ? { where } : {}),
             ...(optionClause ? { optionClause } : {}),
             start: startToken.offset,
             end: endOffset,
@@ -3025,7 +3020,8 @@ export class Parser {
                 alias &&
                 (
                     source?.type === 'SubqueryExpression' ||
-                    source?.type === 'ValuesTableExpression'
+                    source?.type === 'ValuesTableExpression' ||
+                    source?.type === 'FunctionCall'
                 ) &&
                 this.peek()?.type === TokenType.OpenParen
             ) {
@@ -3851,6 +3847,7 @@ export class Parser {
 
         // 3. Alias
         let alias: string | undefined;
+        let aliasColumns: string[] | undefined;
 
         if (tableTarget) {
             try {
@@ -3896,11 +3893,56 @@ export class Parser {
             }
         }
 
+        if (
+            alias &&
+            (
+                tableTarget?.type === 'SubqueryExpression' ||
+                tableTarget?.type === 'ValuesTableExpression' ||
+                tableTarget?.type === 'FunctionCall'
+            ) &&
+            this.peek()?.type === TokenType.OpenParen
+        ) {
+            try {
+                this.consume();
+
+                aliasColumns = this.parseList(() => {
+                    const columnExpr =
+                        this.parseMultipartIdentifier(
+                            undefined,
+                            { allowStructuralFirstSegment: true }
+                        );
+
+                    if (
+                        columnExpr.type === 'Identifier' &&
+                        columnExpr.name
+                    ) {
+                        return columnExpr.name;
+                    }
+
+                    throw new Error(
+                        'Expected identifier in derived table column list'
+                    );
+                }, {
+                    isBoundary:
+                        this.isIdentifierListBoundary.bind(this)
+                });
+
+                const closeParen = this.match(TokenType.CloseParen);
+                endOffset = closeParen.offset + closeParen.value.length;
+            } catch (e) {
+                incomplete = true;
+
+                errors.push(
+                    e instanceof Error ? e.message : String(e)
+                );
+            }
+        }
+
         // 4. Hints
         let hints: string[] | undefined;
 
         if (
-            tableTarget &&
+            tableTarget?.type === 'Identifier' &&
             (
                 this.peek()?.value === 'WITH' ||
                 (this.peek()?.type === TokenType.OpenParen && alias)
@@ -3954,6 +3996,7 @@ export class Parser {
             ...(joinHint ? { joinHint } : {}),
             table: tableTarget,
             alias,
+            ...(aliasColumns?.length ? { aliasColumns } : {}),
             hints,
             on,
             start: startToken.offset,
@@ -4319,9 +4362,9 @@ export class Parser {
             type: 'DeleteStatement',
             ...(top ? { top } : {}),
             target,
-            output,
-            from,
-            where,
+            ...(output ? { output } : {}),
+            ...(from ? { from } : {}),
+            ...(where ? { where } : {}),
             ...(optionClause ? { optionClause } : {}),
             start: startToken.offset,
             end: endOffset,
@@ -4761,6 +4804,38 @@ export class Parser {
             state.endOffset =
                 eqToken.offset + eqToken.value.length;
             assignmentEnd = state.endOffset;
+
+            const valueStarter = this.peek();
+            const isMissingValueBoundary =
+                !valueStarter ||
+                valueStarter.type === TokenType.Comma ||
+                valueStarter.type === TokenType.Semicolon ||
+                (
+                    valueStarter.type === TokenType.Keyword &&
+                    ['OUTPUT', 'FROM', 'WHERE', 'OPTION'].includes(
+                        valueStarter.value.toUpperCase()
+                    )
+                );
+
+            if (isMissingValueBoundary) {
+                state.incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_UPDATE_ASSIGNMENT_VALUE',
+                    'Expected assignment value',
+                    state.endOffset
+                );
+
+                return {
+                    type: 'UpdateAssignment',
+                    column: columnName,
+                    columnNode,
+                    start: assignmentStart,
+                    end: assignmentEnd,
+                    value: null
+                };
+            }
 
             // 3) value
             try {
@@ -6807,11 +6882,13 @@ export class Parser {
                     return this.parseExists(token);
                 }
 
-                // CAST / TRY_CAST / CONVERT
+                // CAST / TRY_CAST / CONVERT / PARSE / TRY_PARSE
                 if (
                     upperValue === 'CAST' ||
                     upperValue === 'TRY_CAST' ||
-                    upperValue === 'CONVERT'
+                    upperValue === 'CONVERT' ||
+                    upperValue === 'PARSE' ||
+                    upperValue === 'TRY_PARSE'
                 ) {
 
                     this.pos--;
@@ -9700,7 +9777,9 @@ export class Parser {
             keyword.value.toUpperCase() as
             | 'CAST'
             | 'TRY_CAST'
-            | 'CONVERT';
+            | 'CONVERT'
+            | 'PARSE'
+            | 'TRY_PARSE';
 
         let incomplete = false;
         const errors: string[] = [];
@@ -9720,6 +9799,7 @@ export class Parser {
 
         let dataType = '';
         let style: Expression | null = null;
+        let culture: Expression | null = null;
 
         // --------------------------------
         // opening (
@@ -9821,6 +9901,8 @@ export class Parser {
             // --------------------------------
             // CAST(expr AS type)
             // TRY_CAST(expr AS type)
+            // PARSE(expr AS type [USING culture])
+            // TRY_PARSE(expr AS type [USING culture])
             // --------------------------------
             if (this.peek()) {
                 expression =
@@ -9843,8 +9925,35 @@ export class Parser {
                 end = this.lastConsumedEnd();
 
                 dataType =
-                    this.parseDataTypeName();
+                    this.parseDataTypeName(
+                        kind === 'PARSE' || kind === 'TRY_PARSE'
+                            ? ['USING']
+                            : []
+                    );
                 end = this.lastConsumedEnd();
+
+                if (
+                    (kind === 'PARSE' || kind === 'TRY_PARSE') &&
+                    this.peekKeyword('USING')
+                ) {
+                    this.consume();
+                    end = this.lastConsumedEnd();
+
+                    if (this.peek()) {
+                        culture = this.parseExpression();
+                        end = culture.end;
+                    } else {
+                        incomplete = true;
+
+                        this.addRecoverableError(
+                            errors,
+                            'PARSE_CAST_USING',
+                            `Expected culture expression after USING in ${kind}`,
+                            end,
+                            end
+                        );
+                    }
+                }
             }
 
             if (this.peek()?.type === TokenType.CloseParen) {
@@ -9881,6 +9990,7 @@ export class Parser {
             expression,
             dataType,
             ...(style ? { style } : {}),
+            ...(culture ? { culture } : {}),
             start,
             end,
             ...(incomplete ? { incomplete: true } : {}),
@@ -9888,9 +9998,10 @@ export class Parser {
         };
     }
 
-    private parseDataTypeName(): string {
+    private parseDataTypeName(stopKeywords: string[] = []): string {
         const parts: string[] = [];
         let parenDepth = 0;
+        const stopSet = new Set(stopKeywords.map(x => x.toUpperCase()));
 
         while (this.peek()) {
             const token = this.peek()!;
@@ -9901,6 +10012,14 @@ export class Parser {
                     token.type === TokenType.Comma ||
                     token.type === TokenType.CloseParen
                 )
+            ) {
+                break;
+            }
+
+            if (
+                parenDepth === 0 &&
+                token.type === TokenType.Keyword &&
+                stopSet.has(token.value.toUpperCase())
             ) {
                 break;
             }

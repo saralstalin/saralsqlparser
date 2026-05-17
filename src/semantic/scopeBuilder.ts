@@ -748,6 +748,14 @@ export class ScopeBuilder {
             }
         }
 
+        if (stmt.offset) {
+            this.visitExpression(stmt.offset);
+        }
+
+        if (stmt.fetch) {
+            this.visitExpression(stmt.fetch);
+        }
+
         this.popScope();
     }
 

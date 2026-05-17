@@ -461,6 +461,80 @@ describe('LineageBuilder', () => {
         ]);
     });
 
+    test('insert values lineage from procedure parameters', () => {
+        expect(
+            edgeStrings(`
+            CREATE PROCEDURE dbo.InsertEvent
+                @Category NVARCHAR(100),
+                @GroupId NVARCHAR(100),
+                @ItemIndex INT,
+                @LocationCode NVARCHAR(100)
+            AS
+            BEGIN
+                INSERT INTO dbo.EventLog (
+                    Category,
+                    GroupId,
+                    ItemIndex,
+                    LocationCode,
+                    StatusFlag
+                )
+                VALUES (
+                    @Category,
+                    @GroupId,
+                    @ItemIndex,
+                    @LocationCode,
+                    NULL
+                );
+            END
+        `)
+        ).toEqual([
+            '@Category -> dbo.EventLog.Category',
+            '@GroupId -> dbo.EventLog.GroupId',
+            '@ItemIndex -> dbo.EventLog.ItemIndex',
+            '@LocationCode -> dbo.EventLog.LocationCode'
+        ]);
+    });
+
+    test('temp table lineage survives insert-select without explicit target columns', () => {
+        expect(
+            edgeStrings(`
+            CREATE TABLE #ActiveProducts
+            (
+                ProductId INT
+            )
+
+            INSERT INTO #ActiveProducts
+            SELECT DISTINCT p.Id
+            FROM dbo.SourceProducts p
+
+            CREATE TABLE #ActiveMappings
+            (
+                MappingId INT
+            )
+
+            INSERT INTO #ActiveMappings
+            SELECT sourceMap.Id
+            FROM dbo.SourceMappings sourceMap
+            JOIN #ActiveProducts P
+              ON sourceMap.ProductId = P.ProductId
+        `)
+        ).toEqual([
+            'dbo.SourceMappings.Id -> #ActiveMappings.MappingId',
+            'dbo.SourceProducts.Id -> #ActiveProducts.ProductId'
+        ]);
+    });
+
+    test('select variable assignment emits variable-target lineage', () => {
+        expect(
+            edgeStrings(`
+            SELECT TOP 1 @IsEnabled = CONVERT(BIT, ConfigValue)
+            FROM dbo.Settings
+        `)
+        ).toEqual([
+            'dbo.Settings.ConfigValue -> @IsEnabled'
+        ]);
+    });
+
     test('update computed assignment lineage', () => {
         expect(
             edgeStrings(`

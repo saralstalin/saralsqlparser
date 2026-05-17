@@ -116,6 +116,25 @@ describe('TVP and table variable hardening', () => {
         ]);
     });
 
+    test('TVP wildcard insert into named table variable emits wildcard lineage', () => {
+        const sql = `
+            CREATE PROCEDURE dbo.Proc1
+                @InputRows dbo.GenericRowSet READONLY
+            AS
+            BEGIN
+                DECLARE @RowsToProcess dbo.GenericRowSet;
+
+                INSERT INTO @RowsToProcess
+                SELECT *
+                FROM @InputRows;
+            END
+        `;
+
+        expect(lineageEdges(sql)).toEqual([
+            '@InputRows.* -> @RowsToProcess.*'
+        ]);
+    });
+
     test('table variable update-from maps lineage into table variable target column', () => {
         const sql = `
             DECLARE @T TABLE(

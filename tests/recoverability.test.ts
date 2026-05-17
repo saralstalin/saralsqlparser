@@ -182,6 +182,37 @@ describe('Recoverability - Part 1A - Core Statements', () => {
             expect(stmt.type).toBe('UpdateStatement');
             expect(stmt.assignments).not.toBeNull();
         });
+
+        test('UPDATE with missing assignment value preserves FROM and WHERE', () => {
+            const sql = `
+DECLARE @Id AS INT = 1
+
+UPDATE u
+SET u.Name = 'Bad Update',
+    u.DOB =
+FROM Users u
+WHERE u.Id = @Id
+`;
+
+            const lexer = new Lexer(sql);
+            const parser = new Parser(lexer);
+            const result = parser.parse();
+            const stmt = result.ast.body.find(
+                node => node.type === 'UpdateStatement'
+            ) as UpdateNode;
+
+            expect(stmt).toBeTruthy();
+            expect(stmt.assignments?.length).toBe(2);
+            expect(stmt.assignments?.[1].column).toBe('u.DOB');
+            expect(stmt.assignments?.[1].value).toBeNull();
+            expect(stmt.from).not.toBeNull();
+            expect(stmt.where).not.toBeNull();
+            expect(
+                (result.issues ?? []).some(
+                    issue => issue.code === 'PARSE_UPDATE_ASSIGNMENT_VALUE'
+                )
+            ).toBe(true);
+        });
     });
 
     describe('DELETE', () => {

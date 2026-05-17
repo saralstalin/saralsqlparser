@@ -691,6 +691,76 @@ END`;
         expect(tableSource?.aliasColumns).toEqual(['Status', 'StatusDate']);
     });
 
+        test('should handle APPLY subquery alias columns without treating them as hints', () => {
+            const sql = `
+            SELECT m.ItemCodes
+            FROM dbo.SourceTable sourceRow
+            CROSS APPLY (
+                SELECT sourceInner.Value
+                FROM dbo.SourceInner sourceInner
+                FOR XML PATH('')
+            ) xmlRow (ItemCodes)
+        `;
+
+        const result = new Parser(new Lexer(sql)).parse();
+
+        expect(result.issues).toEqual([]);
+
+            const stmt = result.ast.body[0] as SelectNode;
+            const join = stmt.from?.[0].joins[0];
+
+            expect(join?.table?.type).toBe('SubqueryExpression');
+            expect(join?.alias).toBe('xmlRow');
+            expect(join?.aliasColumns).toEqual(['ItemCodes']);
+            expect(join?.hints).toBeUndefined();
+        });
+
+    test('should handle XML nodes table-valued function alias columns', () => {
+        const sql = `
+            SELECT requestRow.valueColumn.value('SessionID[1]', 'VARCHAR(50)')
+            FROM @Request.nodes('/Request') AS requestRow(valueColumn)
+        `;
+
+        const result = new Parser(new Lexer(sql)).parse();
+
+        expect(result.issues).toEqual([]);
+
+        const stmt = result.ast.body[0] as SelectNode;
+        const tableSource = stmt.from?.[0];
+
+        expect(tableSource?.table?.type).toBe('FunctionCall');
+        expect(tableSource?.alias).toBe('requestRow');
+        expect(tableSource?.aliasColumns).toEqual(['valueColumn']);
+    });
+
+    test('should omit absent SELECT clauses from the AST', () => {
+        const stmt = parse(`SELECT Id FROM dbo.Users`).body[0] as SelectNode;
+
+        expect('top' in stmt).toBe(false);
+        expect('where' in stmt).toBe(false);
+        expect('groupBy' in stmt).toBe(false);
+        expect('having' in stmt).toBe(false);
+        expect('orderBy' in stmt).toBe(false);
+        expect('into' in stmt).toBe(false);
+        expect(stmt.from).toBeDefined();
+    });
+
+    test('should omit absent INSERT/UPDATE/DELETE clauses from the AST', () => {
+        const insertStmt = parse(`INSERT INTO dbo.Users (Id) VALUES (1)`).body[0] as InsertNode;
+        expect('selectQuery' in insertStmt).toBe(false);
+        expect('output' in insertStmt).toBe(false);
+
+        const updateStmt = parse(`UPDATE dbo.Users SET Name = 'A'`).body[0] as UpdateNode;
+        expect('from' in updateStmt).toBe(false);
+        expect('where' in updateStmt).toBe(false);
+        expect('output' in updateStmt).toBe(false);
+
+        const deleteStmt = parse(`DELETE FROM dbo.Users`).body[0] as DeleteNode;
+        expect('from' in deleteStmt).toBe(false);
+        expect('where' in deleteStmt).toBe(false);
+        expect('output' in deleteStmt).toBe(false);
+    });
+
     // 34. CASE Statements
     test('should handle CASE WHEN', () => {
         const sql = `SELECT CASE WHEN 1=1 THEN 'A' END`;
@@ -1137,6 +1207,26 @@ describe('T-SQL Parser - Deep Expression Validation', () => {
 
             // The fragment must match the SQL input exactly
             expect(getSqlFragment(sql, from)).toBe("FROM T1 WITH (NOLOCK) JOIN T2 WITH(NOLOCK) ON T1.id = T2.id");
+        });
+
+        test('should parse UPDATE target WITH(ROWLOCK)', () => {
+            const sql = `
+                UPDATE dbo.WorkQueue WITH(ROWLOCK)
+                SET ProcessState = @BatchId
+                WHERE Id IN
+                    (SELECT TOP(@BatchSize) queueRow.Id
+                     FROM dbo.WorkQueue queueRow WITH(NOLOCK)
+                     WHERE queueRow.ProcessState = 'I'
+                     ORDER BY queueRow.CreatedOnUtc ASC)
+            `;
+            const ast = parse(sql);
+            const stmt = ast.body[0] as UpdateNode;
+
+            expect(stmt.type).toBe('UpdateStatement');
+            expect(stmt.target).not.toBeNull();
+            expect(stmt.target?.type).toBe('Identifier');
+            expect(stmt.targetHints).toContain('ROWLOCK');
+            expect(stmt.where).toBeDefined();
         });
     });
 

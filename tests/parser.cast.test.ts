@@ -2,6 +2,7 @@ import {
     parseOne,
     expectSql
 } from './parser.helpers';
+import { analyze } from '../src';
 
 describe('T-SQL Parser - CAST / TRY_CAST / CONVERT', () => {
     test('should parse CAST literal', () => {
@@ -106,6 +107,33 @@ describe('T-SQL Parser - CAST / TRY_CAST / CONVERT', () => {
         expect(expr.kind).toBe('TRY_CAST');
         expect(expr.dataType).toBe('INT');
         expectSql(expr.expression, '@Value');
+    });
+
+    test('should parse TRY_PARSE', () => {
+        const stmt = parseOne<any>(`
+            SELECT TRY_PARSE(@Value AS SMALLINT)
+        `);
+
+        const expr = stmt.columns[0].expression;
+
+        expect(expr.type).toBe('CastExpression');
+        expect(expr.kind).toBe('TRY_PARSE');
+        expect(expr.dataType).toBe('SMALLINT');
+        expectSql(expr.expression, '@Value');
+    });
+
+    test('should parse PARSE with USING culture', () => {
+        const stmt = parseOne<any>(`
+            SELECT PARSE(@Value AS DATETIME USING 'en-US')
+        `);
+
+        const expr = stmt.columns[0].expression;
+
+        expect(expr.type).toBe('CastExpression');
+        expect(expr.kind).toBe('PARSE');
+        expect(expr.dataType).toBe('DATETIME');
+        expect(expr.culture).toBeDefined();
+        expect(expr.culture.type).toBe('Literal');
     });
 
     test('should parse CONVERT', () => {
@@ -278,5 +306,24 @@ describe('T-SQL Parser - CAST / TRY_CAST / CONVERT', () => {
 
         expect(expr.type).toBe('CastExpression');
         expect(expr.incomplete).toBe(true);
+    });
+
+    test('should parse TRY_PARSE inside stored procedure assignment query', () => {
+        const sql = `
+CREATE PROCEDURE [dbo].[LoadThresholdConfig] @GroupId INT = NULL
+AS
+BEGIN
+    DECLARE @ThresholdDays INT,
+            @SettingName VARCHAR(100) = ''
+
+    SELECT @ThresholdDays = ISNULL(TRY_PARSE(s.ConfigValue AS SMALLINT), 6)
+    FROM [dbo].[Settings] s WITH (NOLOCK)
+    WHERE [ConfigName] = @SettingName
+END
+`;
+
+        const result = analyze(sql);
+
+        expect(result.issues).toEqual([]);
     });
 });

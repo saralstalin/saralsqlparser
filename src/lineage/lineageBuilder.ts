@@ -135,6 +135,40 @@ export class LineageBuilder {
     }
 
     private visitCreate(stmt: CreateNode): void {
+        if (
+            stmt.objectType === 'TABLE' &&
+            stmt.nameNode?.name &&
+            stmt.nameNode.name.startsWith('#') &&
+            stmt.columns &&
+            stmt.columns.length > 0
+        ) {
+            const name = stmt.nameNode.name;
+            const source: VirtualSource = {
+                name,
+                columns: new Map(
+                    stmt.columns.map(col => [
+                        col.name.toLowerCase(),
+                        {
+                            name: col.name,
+                            inputs: [],
+                            location: stmt
+                        } as DerivedColumn
+                    ])
+                ),
+                wildcardSources: [
+                    {
+                        kind: 'column',
+                        name: `${name}.*`,
+                        source: name,
+                        wildcard: true,
+                        location: stmt.nameNode
+                    }
+                ]
+            };
+
+            this.defineSource(name, source);
+        }
+
         if (!stmt.body) {
             return;
         }
@@ -452,6 +486,27 @@ export class LineageBuilder {
         const derived: DerivedColumn[] = [];
 
         for (const col of stmt.columns) {
+            if (
+                col.expression.type === 'BinaryExpression' &&
+                col.expression.operator === '=' &&
+                col.expression.left.type === 'Variable'
+            ) {
+                const dc: DerivedColumn = {
+                    name: col.expression.left.name,
+                    expression: col.expression.right ?? undefined,
+                    inputs: this.resolveExpression(col.expression.right),
+                    location: col
+                };
+
+                derived.push(dc);
+
+                if (emit) {
+                    this.columns.push(dc);
+                }
+
+                continue;
+            }
+
             const dc: DerivedColumn = {
                 name: col.outputName,
                 expression: col.expression,
@@ -573,18 +628,37 @@ export class LineageBuilder {
         if (
             stmt.table &&
             stmt.table.type === 'Identifier' &&
-            stmt.selectQuery &&
-            stmt.columns &&
-            stmt.columns.length > 0
+            stmt.selectQuery
         ) {
             const target = stmt.table.name;
             const sourceCols = this.visitQuery(
                 stmt.selectQuery,
                 false
             );
+            const targetSource =
+                this.resolveSource(target);
+            const targetCols =
+                stmt.columns && stmt.columns.length > 0
+                    ? stmt.columns
+                    : [...(
+                        targetSource?.columns.values() ?? []
+                    )].map(col => col.name);
 
-            for (let i = 0; i < stmt.columns.length; i++) {
-                const targetCol = stmt.columns[i];
+            if (
+                targetCols.length === 0 &&
+                sourceCols.length === 1 &&
+                sourceCols[0].inputs.some(input => input.wildcard)
+            ) {
+                this.columns.push({
+                    name: `${target}.*`,
+                    expression: sourceCols[0].expression,
+                    inputs: sourceCols[0].inputs,
+                    location: stmt
+                });
+            }
+
+            for (let i = 0; i < targetCols.length; i++) {
+                const targetCol = targetCols[i];
                 const src = sourceCols[i];
 
                 if (!src) {
@@ -596,6 +670,35 @@ export class LineageBuilder {
                     inputs: src.inputs,
                     location: stmt
                 });
+            }
+        }
+
+        // INSERT ... VALUES lineage
+        if (
+            stmt.table &&
+            stmt.table.type === 'Identifier' &&
+            stmt.values &&
+            stmt.columns &&
+            stmt.columns.length > 0
+        ) {
+            const target = stmt.table.name;
+
+            for (const row of stmt.values) {
+                for (let i = 0; i < stmt.columns.length; i++) {
+                    const targetCol = stmt.columns[i];
+                    const expr = row[i];
+
+                    if (!expr) {
+                        continue;
+                    }
+
+                    this.columns.push({
+                        name: `${target}.${targetCol}`,
+                        expression: expr,
+                        inputs: this.resolveExpression(expr),
+                        location: stmt
+                    });
+                }
             }
         }
 

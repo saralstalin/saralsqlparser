@@ -63,12 +63,7 @@ exports[`T-SQL Parser should build AST for a basic SELECT 1`] = `
           "type": "TableReference",
         },
       ],
-      "groupBy": null,
-      "having": null,
-      "into": null,
-      "orderBy": null,
       "start": 0,
-      "top": null,
       "type": "SelectStatement",
       "where": {
         "end": 40,

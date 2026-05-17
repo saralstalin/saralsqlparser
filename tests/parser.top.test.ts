@@ -102,12 +102,12 @@ describe('T-SQL Parser - TOP clause', () => {
     });
 
     describe('no TOP', () => {
-        test('SELECT without TOP has null top', () => {
+        test('SELECT without TOP omits top', () => {
             const stmt = parseOne<any>(`
                 SELECT Id FROM dbo.Employee
             `);
 
-            expect(stmt.top).toBeNull();
+            expect(stmt.top).toBeUndefined();
         });
     });
 

@@ -317,11 +317,7 @@ export class DiagnosticEngine {
     }
 
     private checkInsert(stmt: InsertNode): void {
-        const hasValuesClause =
-            stmt.values !== null;
-
         if (
-            hasValuesClause &&
             !stmt.columns
         ) {
             this.emit({

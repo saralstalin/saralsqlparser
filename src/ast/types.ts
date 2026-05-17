@@ -247,19 +247,19 @@ export type Statement = (
 export interface SelectNode extends NodeLocation, Recoverable {
     type: 'SelectStatement';
     distinct: boolean;
-    top: TopClause  | null;
+    top?: TopClause;
     columns: ColumnNode[];
-    into?: IdentifierNode | null;
-    from: TableReference[] | null;
-    where: Expression | null;
-    groupBy: Expression[] | null;
-    having: Expression | null;
-    orderBy: OrderByNode[] | null;
+    into?: IdentifierNode;
+    from?: TableReference[];
+    where?: Expression;
+    groupBy?: Expression[];
+    having?: Expression;
+    orderBy?: OrderByNode[];
 
-    offset?: Expression | null;
-    fetch?: Expression | null;
-    forClause?: ForClause | null;
-    optionClause?: OptionClause | null;
+    offset?: Expression;
+    fetch?: Expression;
+    forClause?: ForClause;
+    optionClause?: OptionClause;
 }
 
 // ===============================
@@ -280,11 +280,11 @@ export interface SetOperatorNode extends NodeLocation, Recoverable {
 export interface InsertNode extends NodeLocation, Recoverable {
     type: 'InsertStatement';
     table: Expression | null;
-    columns: string[] | null;
-    columnNodes: IdentifierNode[] | null;
+    columns?: string[];
+    columnNodes?: IdentifierNode[];
     output?: OutputClauseNode;
-    values: Expression[][] | null;
-    selectQuery: QueryStatement | null;
+    values?: Expression[][];
+    selectQuery?: QueryStatement;
 }
 
 export interface UpdateAssignment extends NodeLocation {
@@ -296,13 +296,14 @@ export interface UpdateAssignment extends NodeLocation {
 
 export interface UpdateNode extends NodeLocation, Recoverable {
     type: 'UpdateStatement';
-    top?: TopClause | null;
+    top?: TopClause;
     target: Expression | null;
-    assignments: UpdateAssignment[] | null;
+    targetHints?: string[];
+    assignments?: UpdateAssignment[];
     output?: OutputClauseNode;
-    from: TableReference[] | null;
-    where: Expression | null;
-    optionClause?: OptionClause | null;
+    from?: TableReference[];
+    where?: Expression;
+    optionClause?: OptionClause;
 }
 
 export interface StatisticsOptionNode extends NodeLocation {
@@ -320,12 +321,12 @@ export interface UpdateStatisticsNode extends NodeLocation, Recoverable {
 
 export interface DeleteNode extends NodeLocation, Recoverable {
     type: 'DeleteStatement';
-    top?: TopClause | null;
+    top?: TopClause;
     target: Expression | null;
     output?: OutputClauseNode;
-    from: TableReference[] | null;
-    where: Expression | null;
-    optionClause?: OptionClause | null;
+    from?: TableReference[];
+    where?: Expression;
+    optionClause?: OptionClause;
 }
 
 // ===============================
@@ -535,6 +536,7 @@ export interface JoinNode extends NodeLocation, Recoverable {
     on: Expression | null;
     hints?: string[];
     alias?: string;
+    aliasColumns?: string[];
 }
 
 export interface ColumnNode extends NodeLocation {
@@ -595,10 +597,11 @@ export interface ExecuteNode extends NodeLocation, Recoverable {
 
 export interface CastExpression extends NodeLocation, Recoverable {
     type: 'CastExpression';
-    kind: 'CAST' | 'TRY_CAST' | 'CONVERT';
+    kind: 'CAST' | 'TRY_CAST' | 'CONVERT' | 'PARSE' | 'TRY_PARSE';
     expression: Expression;
     dataType: string;
     style?: Expression | null;
+    culture?: Expression | null;
 }
 
 export interface ConstraintNode extends NodeLocation, Recoverable {

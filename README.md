@@ -99,7 +99,6 @@ AST excerpt:
 {
   type: 'SelectStatement',
   distinct: false,
-  top: null,
   columns: [
     {
       type: 'Column',
@@ -116,7 +115,6 @@ AST excerpt:
       wildcard: false
     }
   ],
-  into: null,
   from: [
     {
       type: 'TableReference',
@@ -130,12 +128,11 @@ AST excerpt:
     left: { type: 'Identifier', name: 'o.Status', parts: ['o', 'Status'] },
     operator: '=',
     right: { type: 'Literal', value: 'Paid', variant: 'string' }
-  },
-  groupBy: null,
-  having: null,
-  orderBy: null
+  }
 }
 ```
+
+Absent clauses are omitted rather than emitted as `null`. For example, a `SELECT` without `TOP`, `GROUP BY`, or `ORDER BY` does not include those fields in the AST.
 
 ## Behavioral Examples
 

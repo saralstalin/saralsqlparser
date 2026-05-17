@@ -46,7 +46,7 @@ FROM OPENJSON (@products) WITH(
 `;
 
 describe('Microsoft complex T-SQL corpus characterization', () => {
-    test('parses without throwing and keeps known gaps visible', () => {
+    test('parses without throwing and keeps remaining known gaps visible', () => {
         expect(() => parseResult(microsoftComplexCorpus)).not.toThrow();
 
         const result = parseResult(microsoftComplexCorpus);
@@ -56,9 +56,9 @@ describe('Microsoft complex T-SQL corpus characterization', () => {
         expect(types).toContain('CreateStatement');
         expect(types).toContain('InsertStatement');
 
-        expect(messages).toContain('Unexpected token: returns');
         expect(messages).toContain('Expected JSON or XML after FOR');
         expect(messages).toContain('Unexpected token: SYSTEM_TIME');
         expect(messages).toContain('Expected CloseParen but found WHERE at line 10');
+        expect(messages).not.toContain('Unexpected token: returns');
     });
 });

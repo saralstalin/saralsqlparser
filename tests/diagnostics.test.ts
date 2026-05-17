@@ -407,6 +407,29 @@ describe('VAR003 — unused parameter', () => {
 
         expect(d.length).toBe(0);
     });
+
+    test('does NOT fire when parameters are used in OFFSET and FETCH', () => {
+        const d = only(`
+            CREATE PROCEDURE [dbo].[TestSproc] @CatalogID VARCHAR(50)
+                                                         , @StartRow INT = 0
+                                                         , @BatchSize INT = 1000
+            AS
+            BEGIN
+                SELECT
+                    oc.Id,
+                    oc.Name
+                FROM [dbo].[TestTable] oc WITH(NOLOCK)
+                WHERE oc.CatalogId = @CatalogID
+                    AND oc.IsActive = 1
+                    AND oc.ReferenceId IS NULL
+                ORDER BY oc.Id
+                OFFSET (@StartRow * @BatchSize) ROWS
+                FETCH NEXT @BatchSize ROWS ONLY
+            END
+        `, DiagnosticCode.UnusedParameter);
+
+        expect(d.length).toBe(0);
+    });
 });
 
 // ─── DML001: UPDATE without WHERE ────────────────────────────────────────────
@@ -513,13 +536,12 @@ describe('DML003 — INSERT without column list', () => {
         expect(d.length).toBe(0);
     });
 
-    test('does NOT fire for INSERT … SELECT', () => {
-        // INSERT … SELECT has no VALUES so the rule does not apply
+    test('fires for INSERT … SELECT without column list', () => {
         const d = only(
             `INSERT INTO Archive SELECT * FROM Users`,
             DiagnosticCode.InsertWithoutColumnList
         );
-        expect(d.length).toBe(0);
+        expect(d.length).toBe(1);
     });
 
     test('fires for MERGE INSERT action without column list', () => {
@@ -878,6 +900,23 @@ describe('HINT001 â€” table hint usage', () => {
         expect(d).toHaveLength(1);
         expect(d[0].message).toContain(`specific index`);
         expect(d[0].message).toContain(`statistics`);
+    });
+
+    test('does not warn on derived table alias column lists', () => {
+        const d = only(
+            `
+            SELECT outerRow.EmpNumbers
+            FROM dbo.SourceTable sourceRow
+            CROSS APPLY (
+                SELECT sourceInner.Value
+                FROM dbo.SourceInner sourceInner
+                FOR XML PATH('')
+            ) outerRow (EmpNumbers)
+            `,
+            DiagnosticCode.TableHintUsage
+        );
+
+        expect(d).toHaveLength(0);
     });
 });
 
