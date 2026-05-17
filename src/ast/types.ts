@@ -220,6 +220,7 @@ export type Statement = (
     ReturnNode |
     RaiseErrorNode |
     ExecuteNode |
+    UseNode |
     WhileNode |
     TryCatchNode |   
     ThrowNode | 
@@ -443,7 +444,7 @@ export interface ParameterDefinition extends NodeLocation {
 
 export interface CreateNode extends NodeLocation, Recoverable {
     type: 'CreateStatement';
-    objectType: 'TABLE' | 'VIEW' | 'PROCEDURE' | 'FUNCTION' | 'TYPE' | 'TRIGGER' | 'SCHEMA' | 'SEQUENCE' | 'SYNONYM';
+    objectType: 'TABLE' | 'VIEW' | 'PROCEDURE' | 'FUNCTION' | 'TYPE' | 'TRIGGER' | 'SCHEMA' | 'SEQUENCE' | 'SYNONYM' | 'PARTITION_FUNCTION' | 'PARTITION_SCHEME';
     orAlter: boolean;
     name: string;
     nameNode: IdentifierNode;
@@ -452,6 +453,14 @@ export interface CreateNode extends NodeLocation, Recoverable {
     parameters?: ParameterDefinition[];
     body?: Statement | Statement[];
     isTableType?: boolean;
+    storage?: StorageTargetNode;
+    textImageOn?: StorageTargetNode;
+    partitionRange?: 'LEFT' | 'RIGHT';
+    partitionInputType?: string;
+    boundaryValues?: Expression[];
+    partitionFunction?: IdentifierNode;
+    filegroups?: IdentifierNode[];
+    allTo?: boolean;
 }
 
 // ===============================
@@ -507,7 +516,7 @@ export interface ErrorNode extends NodeLocation {
 
 export interface TableReference extends NodeLocation, Recoverable {
     type: 'TableReference';
-    table: Expression | null;
+    table: Expression | TableReference | null;
     alias?: string;
     aliasColumns?: string[];
     schema?: string;
@@ -532,7 +541,7 @@ export interface JoinNode extends NodeLocation, Recoverable {
     type: JoinType;
     rawType: string;
     joinHint?: JoinHint;
-    table: Expression | null;
+    table: Expression | TableReference | null;
     on: Expression | null;
     hints?: string[];
     alias?: string;
@@ -595,6 +604,11 @@ export interface ExecuteNode extends NodeLocation, Recoverable {
     args: ExecArgument[];
 }
 
+export interface UseNode extends NodeLocation, Recoverable {
+    type: 'UseStatement';
+    database: Expression | null;
+}
+
 export interface CastExpression extends NodeLocation, Recoverable {
     type: 'CastExpression';
     kind: 'CAST' | 'TRY_CAST' | 'CONVERT' | 'PARSE' | 'TRY_PARSE';
@@ -622,10 +636,19 @@ export interface ConstraintNode extends NodeLocation, Recoverable {
 
     referencesTable?: string;
     referencesColumns?: string[];
+    storage?: StorageTargetNode;
 
     seed?: number;
     increment?: number;
     missingLeadingComma?: boolean;
+}
+
+export interface StorageTargetNode extends NodeLocation, Recoverable {
+    type: 'StorageTarget';
+    kind: 'FILEGROUP' | 'PARTITION_SCHEME' | 'DEFAULT';
+    name?: string;
+    nameNode?: IdentifierNode;
+    partitionColumn?: IdentifierNode;
 }
 
 export interface WhileNode extends NodeLocation, Recoverable {
@@ -661,6 +684,7 @@ export interface CreateIndexNode extends NodeLocation, Recoverable {
     include?: IdentifierNode[];
     where?: Expression;
     options?: IndexOptionNode[];
+    storage?: StorageTargetNode;
 }
 
 // ===============================

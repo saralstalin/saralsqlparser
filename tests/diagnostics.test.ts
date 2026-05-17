@@ -632,6 +632,17 @@ describe('SEL002 — SELECT * inside CREATE VIEW', () => {
         `, DiagnosticCode.SelectStarInView);
         expect(d.length).toBe(0);
     });
+
+    test('fires inside CREATE VIEW when body starts with CTE', () => {
+        const d = only(`
+            CREATE VIEW dbo.AllUsers AS
+            WITH X AS (
+                SELECT * FROM dbo.Users
+            )
+            SELECT * FROM X
+        `, DiagnosticCode.SelectStarInView);
+        expect(d.length).toBeGreaterThanOrEqual(1);
+    });
 });
 
 // ─── DUP002: Duplicate CTE name ──────────────────────────────────────────────

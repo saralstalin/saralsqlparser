@@ -273,6 +273,66 @@ describe('T-SQL Parser', () => {
         expect(result.issues).toEqual([]);
     });
 
+    test('should parse view body starting with CTE', () => {
+        const sql = `
+            CREATE VIEW dbo.ActiveUsers
+            AS
+            WITH RecentUsers AS (
+                SELECT Id
+                FROM dbo.Users
+            )
+            SELECT Id
+            FROM RecentUsers
+        `;
+
+        const result = new Parser(new Lexer(sql)).parse();
+        const stmt = result.ast.body[0] as CreateNode;
+
+        expect(result.issues).toEqual([]);
+        expect(stmt.objectType).toBe('VIEW');
+        expect((stmt.body as any).type).toBe('WithStatement');
+    });
+
+    test('should parse parenthesized joined table source in FROM', () => {
+        const sql = `
+            SELECT baseRow.Id
+            FROM (
+                dbo.SourceA baseRow
+                INNER JOIN dbo.SourceB childRow
+                    ON baseRow.Id = childRow.SourceAId
+            )
+        `;
+
+        const result = new Parser(new Lexer(sql)).parse();
+        const stmt = result.ast.body[0] as SelectNode;
+
+        expect(result.issues).toEqual([]);
+        expect(stmt.from).toHaveLength(1);
+        expect((stmt.from?.[0].table as any).type).toBe('TableReference');
+    });
+
+    test('should parse procedure with parenthesized joined source in FROM', () => {
+        const sql = `
+            CREATE PROCEDURE dbo.GetPendingOrderDetails
+                @Interval BIGINT = 1440
+            AS
+            BEGIN
+                SELECT itemRow.Sku
+                FROM (
+                    dbo.InventoryView inventoryRow
+                    INNER JOIN dbo.Products itemRow
+                        ON inventoryRow.Sku = itemRow.Sku
+                    INNER JOIN dbo.Reservations reservationRow
+                        ON itemRow.Id = reservationRow.ProductId
+                )
+            END
+        `;
+
+        const result = new Parser(new Lexer(sql)).parse();
+
+        expect(result.issues).toEqual([]);
+    });
+
     test('should parse scalar function RETURNS clause before AS', () => {
         const sql = `
             CREATE FUNCTION dbo.GetFlag(@Id INT)
@@ -759,6 +819,14 @@ END`;
         expect('from' in deleteStmt).toBe(false);
         expect('where' in deleteStmt).toBe(false);
         expect('output' in deleteStmt).toBe(false);
+    });
+
+    test('should parse USE database statement', () => {
+        const stmt = parse(`USE [ReportingDb]`).body[0] as any;
+
+        expect(stmt.type).toBe('UseStatement');
+        expect(stmt.database?.type).toBe('Identifier');
+        expect(stmt.database?.name).toBe('[ReportingDb]');
     });
 
     // 34. CASE Statements

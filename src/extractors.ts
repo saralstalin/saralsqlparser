@@ -501,14 +501,22 @@ function collectReferencesFromTableReference(
     references: ExtractedReference[],
     context: ExtractedReferenceContext
 ): void {
-    addObjectReference(ref.table, references, context);
+    if (ref.table?.type === 'TableReference') {
+        collectReferencesFromTableReference(ref.table, references, context);
+    } else {
+        addObjectReference(ref.table, references, context);
+    }
 
     if (ref.table?.type === 'SubqueryExpression') {
         collectReferencesFromQuery(ref.table.query, references);
     }
 
     for (const join of ref.joins) {
-        addObjectReference(join.table, references, 'join');
+        if (join.table?.type === 'TableReference') {
+            collectReferencesFromTableReference(join.table, references, 'join');
+        } else {
+            addObjectReference(join.table, references, 'join');
+        }
 
         if (join.table?.type === 'SubqueryExpression') {
             collectReferencesFromQuery(join.table.query, references);

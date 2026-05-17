@@ -30,11 +30,13 @@ import {
     ErrorNode,
     RaiseErrorNode,
     ExecuteNode,
+    UseNode,
     ConstraintNode,
     WhileNode,
     CreateIndexNode,
     IndexColumnNode,
     IndexOptionNode,
+    StorageTargetNode,
     StatisticsOptionNode,
     TruncateNode,
     AlterTableNode,
@@ -655,7 +657,19 @@ export class Parser {
         return columns;
     }
 
-    private parseTableSourceExpression(): Expression | null {
+    private parseParenthesizedTableReference(): TableReference {
+        const openParen = this.match(TokenType.OpenParen);
+        const inner = this.parseTableSource(openParen.offset);
+        const closeParen = this.match(TokenType.CloseParen);
+
+        return {
+            ...inner,
+            start: openParen.offset,
+            end: closeParen.offset + closeParen.value.length
+        };
+    }
+
+    private parseTableSourceExpression(): Expression | TableReference | null {
         const next = this.peek();
         const nextNext = this.peek(1);
 
@@ -687,6 +701,10 @@ export class Parser {
                     closeParen.offset +
                     closeParen.value.length
             };
+        }
+
+        if (next?.type === TokenType.OpenParen) {
+            return this.parseParenthesizedTableReference();
         }
 
         const source =
@@ -1278,6 +1296,10 @@ export class Parser {
         const token = this.peek();
         if (!token) return null;
 
+        if (this.isLabelStatementStart()) {
+            return this.parseLabel();
+        }
+
         if (
             this.peekKeyword('ELSE') ||
             this.peekKeyword('END') ||
@@ -1290,9 +1312,6 @@ export class Parser {
         const startOffset = token.offset;
 
         try {
-            if (this.isLabelStatementStart()) {
-                stmt = this.parseLabel();
-            } else {
             const val = token.value;
 
             switch (val) {
@@ -1331,6 +1350,7 @@ export class Parser {
                 case 'RAISERROR': stmt = this.parseRaiseError(); break;
                 case 'EXEC':
                 case 'EXECUTE': stmt = this.parseExecute(); break;
+                case 'USE': stmt = this.parseUse(); break;
                 case 'WHILE': stmt = this.parseWhile(); break;
                 case 'TRY': stmt = this.parseTryCatch(); break;
                 case 'THROW': stmt = this.parseThrow(); break;
@@ -1381,7 +1401,6 @@ export class Parser {
                     }
                     throw new Error(`Unexpected token: ${token.value}`);
             }
-            }
 
         } catch (e) {
             const errorMsg =
@@ -1419,6 +1438,57 @@ export class Parser {
         }
 
         return stmt;
+    }
+
+    private parseUse(): UseNode {
+        const startToken = this.matchKeyword('USE');
+        let incomplete = false;
+        const errors: string[] = [];
+        let database: Expression | null = null;
+        let endOffset = startToken.offset + startToken.value.length;
+
+        try {
+            const next = this.peek();
+
+            if (
+                next &&
+                next.type !== TokenType.Semicolon &&
+                !this.isStructuralKeyword(next.value)
+            ) {
+                database = this.parseMultipartIdentifier(
+                    undefined,
+                    { allowStructuralFirstSegment: true }
+                );
+                endOffset = database.end;
+            } else {
+                incomplete = true;
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_USE_DATABASE',
+                    'Expected database name after USE',
+                    endOffset,
+                    endOffset
+                );
+            }
+        } catch (e) {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_USE_DATABASE',
+                e instanceof Error ? e.message : String(e),
+                endOffset,
+                endOffset
+            );
+        }
+
+        return {
+            type: 'UseStatement',
+            database,
+            start: startToken.offset,
+            end: endOffset,
+            ...(incomplete ? { incomplete: true } : {}),
+            ...(errors.length ? { errors } : {})
+        };
     }
 
     private isLabelStatementStart(): boolean {
@@ -2940,7 +3010,7 @@ export class Parser {
         let incomplete = false;
         const errors: string[] = [];
 
-        let source: Expression | null = null;
+        let source: Expression | TableReference | null = null;
         let alias: string | null = null;
         let aliasColumns: string[] | undefined;
         let hints: string[] | undefined;
@@ -2987,6 +3057,14 @@ export class Parser {
                 throw new Error(
                     'Wildcards cannot be used as table aliases'
                 );
+            }
+
+            if (
+                token &&
+                this.peek(1)?.type === TokenType.Operator &&
+                this.peek(1)?.value === ':'
+            ) {
+                return null;
             }
 
             if (canStartAlias(token)) {
@@ -3795,7 +3873,7 @@ export class Parser {
         }
 
         // 2. Join target
-        let tableTarget: Expression | null = null;
+        let tableTarget: Expression | TableReference | null = null;
 
         try {
             const nextToken = this.peek();
@@ -3826,7 +3904,7 @@ export class Parser {
                 endOffset = tableTarget.end;
             }
             else if (nextToken.type === TokenType.OpenParen) {
-                tableTarget = this.parseExpression();
+                tableTarget = this.parseParenthesizedTableReference();
                 endOffset = tableTarget.end;
             }
             else {
@@ -3870,6 +3948,10 @@ export class Parser {
 
                     if (
                         potentialAlias &&
+                        !(
+                            this.peek(1)?.type === TokenType.Operator &&
+                            this.peek(1)?.value === ':'
+                        ) &&
                         canStartAlias(potentialAlias)
                     ) {
                         const aliasExpr = this.parseMultipartIdentifier();
@@ -5412,6 +5494,118 @@ export class Parser {
         };
     }
 
+    private parseStorageTarget(): StorageTargetNode {
+        const start = this.peek()?.offset ?? this.lastConsumedEnd();
+        const first = this.peek();
+
+        if (!first) {
+            throw new Error('Expected storage target');
+        }
+
+        if (first.value.toUpperCase() === 'DEFAULT') {
+            const token = this.consume();
+            return {
+                type: 'StorageTarget',
+                kind: 'DEFAULT',
+                start: token.offset,
+                end: token.offset + token.value.length
+            };
+        }
+
+        const nameExpr = this.parseMultipartIdentifier(
+            undefined,
+            { allowStructuralFirstSegment: true }
+        );
+
+        if (nameExpr.type !== 'Identifier') {
+            throw new Error('Expected filegroup or partition scheme name');
+        }
+
+        if (this.peek()?.type === TokenType.OpenParen) {
+            this.consume();
+
+            const columnExpr = this.parseMultipartIdentifier(
+                undefined,
+                { allowStructuralFirstSegment: true }
+            );
+
+            if (columnExpr.type !== 'Identifier') {
+                throw new Error('Expected partition column name');
+            }
+
+            if (this.peek()?.type !== TokenType.CloseParen) {
+                throw new Error('Expected ) after partition scheme column');
+            }
+
+            this.consume();
+
+            return {
+                type: 'StorageTarget',
+                kind: 'PARTITION_SCHEME',
+                name: nameExpr.name,
+                nameNode: nameExpr,
+                partitionColumn: columnExpr,
+                start,
+                end: this.lastConsumedEnd()
+            };
+        }
+
+        return {
+            type: 'StorageTarget',
+            kind: 'FILEGROUP',
+            name: nameExpr.name,
+            nameNode: nameExpr,
+            start,
+            end: nameExpr.end
+        };
+    }
+
+    private parsePartitionSchemeFilegroups(): {
+        allTo?: boolean;
+        filegroups: IdentifierNode[];
+    } {
+        let allTo = false;
+
+        if (this.peek()?.value?.toUpperCase() === 'ALL') {
+            this.consume();
+            allTo = true;
+        }
+
+        const toToken = this.peek();
+        if (!toToken || toToken.value.toUpperCase() !== 'TO') {
+            throw new Error('Expected TO in PARTITION SCHEME');
+        }
+        this.consume();
+
+        if (this.peek()?.type !== TokenType.OpenParen) {
+            throw new Error('Expected ( after TO in PARTITION SCHEME');
+        }
+        this.consume();
+
+        const filegroups = this.parseList<IdentifierNode>(() => {
+            const filegroup = this.parseMultipartIdentifier(
+                undefined,
+                { allowStructuralFirstSegment: true }
+            );
+
+            if (filegroup.type !== 'Identifier') {
+                throw new Error('Expected filegroup name');
+            }
+
+            return filegroup;
+        });
+
+        if (this.peek()?.type !== TokenType.CloseParen) {
+            throw new Error('Expected ) after PARTITION SCHEME filegroups');
+        }
+        this.consume();
+
+        return {
+            ...(allTo ? { allTo: true } : {}),
+            filegroups
+        };
+    }
+
     private parseCreate(orAlter: boolean = false): CreateNode {
         // For standalone ALTER: consume ALTER keyword as the start token.
         // For CREATE and CREATE OR ALTER: consume CREATE keyword.
@@ -5473,27 +5667,52 @@ export class Parser {
             const typeToken = this.consume();
             const rawType = typeToken.value.toUpperCase();
 
-            const mapped =
-                CREATE_OBJECT_TYPES[
-                rawType as keyof typeof CREATE_OBJECT_TYPES
-                ];
+            if (rawType === 'PARTITION') {
+                const subtypeToken = this.consume();
+                const subtype = subtypeToken.value.toUpperCase();
 
-            if (mapped) {
-                objectType = mapped;
+                if (subtype === 'FUNCTION') {
+                    objectType = 'PARTITION_FUNCTION';
+                } else if (subtype === 'SCHEME') {
+                    objectType = 'PARTITION_SCHEME';
+                } else {
+                    incomplete = true;
+
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_CREATE_TYPE',
+                        `Unsupported CREATE PARTITION subtype: ${subtype}`,
+                        subtypeToken.offset,
+                        subtypeToken.offset + subtypeToken.value.length
+                    );
+                }
+
+                endOffset =
+                    subtypeToken.offset + subtypeToken.value.length;
             } else {
-                incomplete = true;
 
-                this.addRecoverableError(
-                    errors,
-                    'PARSE_CREATE_TYPE',
-                    `Unsupported CREATE object type: ${rawType}`,
-                    typeToken.offset,
-                    typeToken.offset + typeToken.value.length
-                );
+                const mapped =
+                    CREATE_OBJECT_TYPES[
+                    rawType as keyof typeof CREATE_OBJECT_TYPES
+                    ];
+
+                if (mapped) {
+                    objectType = mapped;
+                } else {
+                    incomplete = true;
+
+                    this.addRecoverableError(
+                        errors,
+                        'PARSE_CREATE_TYPE',
+                        `Unsupported CREATE object type: ${rawType}`,
+                        typeToken.offset,
+                        typeToken.offset + typeToken.value.length
+                    );
+                }
+
+                endOffset =
+                    typeToken.offset + typeToken.value.length;
             }
-
-            endOffset =
-                typeToken.offset + typeToken.value.length;
 
         } catch (e) {
             incomplete = true;
@@ -5555,6 +5774,14 @@ export class Parser {
         let parameters: ParameterDefinition[] | undefined;
         let body: Statement | Statement[] | undefined;
         let isTableType: boolean | undefined;
+        let storage: StorageTargetNode | undefined;
+        let textImageOn: StorageTargetNode | undefined;
+        let partitionRange: 'LEFT' | 'RIGHT' | undefined;
+        let partitionInputType: string | undefined;
+        let boundaryValues: Expression[] | undefined;
+        let partitionFunction: IdentifierNode | undefined;
+        let filegroups: IdentifierNode[] | undefined;
+        let allTo: boolean | undefined;
 
         // 3. TYPE
         if (objectType === 'TYPE') {
@@ -5613,6 +5840,18 @@ export class Parser {
 
                 endOffset =
                     this.lastConsumedEnd();
+
+                if (this.peek()?.value?.toUpperCase() === 'ON') {
+                    this.consume();
+                    storage = this.parseStorageTarget();
+                    endOffset = this.lastConsumedEnd();
+                }
+
+                if (this.peek()?.value?.toUpperCase() === 'TEXTIMAGE_ON') {
+                    this.consume();
+                    textImageOn = this.parseStorageTarget();
+                    endOffset = this.lastConsumedEnd();
+                }
 
             } catch (e) {
                 incomplete = true;
@@ -5883,7 +6122,9 @@ export class Parser {
                 }
 
                 body =
-                    this.parseQueryExpression();
+                    this.peekKeyword('WITH')
+                        ? this.parseWith()
+                        : this.parseQueryExpression();
 
                 endOffset = body.end;
 
@@ -5893,6 +6134,114 @@ export class Parser {
                 this.addRecoverableError(
                     errors,
                     'PARSE_CREATE_VIEW',
+                    e instanceof Error
+                        ? e.message
+                        : String(e),
+                    endOffset
+                );
+            }
+        }
+
+        else if (objectType === 'PARTITION_FUNCTION') {
+            try {
+                if (this.peek()?.type !== TokenType.OpenParen) {
+                    throw new Error('Expected ( after partition function name');
+                }
+
+                this.consume();
+                partitionInputType = this.parseDataTypeName();
+
+                if (this.peek()?.type !== TokenType.CloseParen) {
+                    throw new Error('Expected ) after partition function input type');
+                }
+                this.consume();
+
+                if (!this.peekKeyword('AS')) {
+                    throw new Error('Expected AS in PARTITION FUNCTION');
+                }
+                this.consume();
+
+                const rangeToken = this.peek();
+                if (!rangeToken || rangeToken.value.toUpperCase() !== 'RANGE') {
+                    throw new Error('Expected RANGE in PARTITION FUNCTION');
+                }
+                this.consume();
+
+                const sideToken = this.peek();
+                if (!sideToken) {
+                    throw new Error('Expected LEFT or RIGHT in PARTITION FUNCTION');
+                }
+
+                const side = sideToken.value.toUpperCase();
+                if (side !== 'LEFT' && side !== 'RIGHT') {
+                    throw new Error('Expected LEFT or RIGHT in PARTITION FUNCTION');
+                }
+                this.consume();
+                partitionRange = side;
+
+                if (this.peek()?.value?.toUpperCase() !== 'FOR') {
+                    throw new Error('Expected FOR in PARTITION FUNCTION');
+                }
+                this.consume();
+
+                if (this.peek()?.value?.toUpperCase() !== 'VALUES') {
+                    throw new Error('Expected VALUES in PARTITION FUNCTION');
+                }
+                this.consume();
+
+                if (this.peek()?.type !== TokenType.OpenParen) {
+                    throw new Error('Expected ( after FOR VALUES');
+                }
+                this.consume();
+
+                boundaryValues = this.parseList<Expression>(() => this.parseExpression());
+
+                if (this.peek()?.type !== TokenType.CloseParen) {
+                    throw new Error('Expected ) after partition boundary values');
+                }
+                this.consume();
+                endOffset = this.lastConsumedEnd();
+            } catch (e) {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_CREATE_PARTITION_FUNCTION',
+                    e instanceof Error
+                        ? e.message
+                        : String(e),
+                    endOffset
+                );
+            }
+        }
+
+        else if (objectType === 'PARTITION_SCHEME') {
+            try {
+                if (!this.peekKeyword('AS')) {
+                    throw new Error('Expected AS in PARTITION SCHEME');
+                }
+                this.consume();
+
+                const functionExpr = this.parseMultipartIdentifier(
+                    undefined,
+                    { allowStructuralFirstSegment: true }
+                );
+
+                if (functionExpr.type !== 'Identifier') {
+                    throw new Error('Expected partition function name');
+                }
+                partitionFunction = functionExpr;
+
+                const scheme = this.parsePartitionSchemeFilegroups();
+                filegroups = scheme.filegroups;
+                allTo = scheme.allTo;
+                endOffset = this.lastConsumedEnd();
+            } catch (e) {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_CREATE_PARTITION_SCHEME',
                     e instanceof Error
                         ? e.message
                         : String(e),
@@ -5923,6 +6272,14 @@ export class Parser {
             parameters,
             body,
             isTableType,
+            ...(storage ? { storage } : {}),
+            ...(textImageOn ? { textImageOn } : {}),
+            ...(partitionRange ? { partitionRange } : {}),
+            ...(partitionInputType ? { partitionInputType } : {}),
+            ...(boundaryValues ? { boundaryValues } : {}),
+            ...(partitionFunction ? { partitionFunction } : {}),
+            ...(filegroups ? { filegroups } : {}),
+            ...(allTo ? { allTo: true } : {}),
             start: startToken.offset,
             end: endOffset,
             ...(incomplete
@@ -10240,6 +10597,7 @@ export class Parser {
         let expression: Expression | null | undefined;
         let referencesTable: string | undefined;
         let referencesColumns: string[] | undefined;
+        let storage: StorageTargetNode | undefined;
 
         const fail = (
             code: string,
@@ -10664,6 +11022,14 @@ export class Parser {
                 this.consume();
             }
 
+            if (
+                (kind === 'PRIMARY KEY' || kind === 'UNIQUE') &&
+                this.peek()?.value?.toUpperCase() === 'ON'
+            ) {
+                this.consume();
+                storage = this.parseStorageTarget();
+            }
+
         } catch (e) {
             incomplete = true;
 
@@ -10692,6 +11058,7 @@ export class Parser {
             ...(referencesColumns?.length
                 ? { referencesColumns }
                 : {}),
+            ...(storage ? { storage } : {}),
             start,
             end: this.lastConsumedEnd(),
             ...(incomplete
@@ -11067,6 +11434,7 @@ export class Parser {
         // WITH is a Keyword token. Check next token is '(' to distinguish
         // from WITH used as a CTE introducer (not valid here, but defensive).
         let options: IndexOptionNode[] | undefined;
+        let storage: StorageTargetNode | undefined;
 
         if (
             this.peek()?.value === 'WITH' &&
@@ -11131,6 +11499,24 @@ export class Parser {
             }
         }
 
+        if (this.peek()?.value?.toUpperCase() === 'ON') {
+            this.consume();
+            endOffset = this.lastConsumedEnd();
+
+            try {
+                storage = this.parseStorageTarget();
+                endOffset = storage.end;
+            } catch (e) {
+                incomplete = true;
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_CREATE_INDEX_STORAGE',
+                    e instanceof Error ? e.message : String(e),
+                    endOffset
+                );
+            }
+        }
+
         return {
             type: 'CreateIndexStatement',
             unique,
@@ -11142,6 +11528,7 @@ export class Parser {
             ...(include !== undefined ? { include } : {}),
             ...(where !== undefined ? { where } : {}),
             ...(options !== undefined ? { options } : {}),
+            ...(storage ? { storage } : {}),
             start: startToken.offset,
             end: endOffset,
             ...(incomplete ? { incomplete: true } : {}),

@@ -792,7 +792,9 @@ export class ScopeBuilder {
         // Visit table
         // -----------------------------------------
         if (table) {
-            if (table.type === 'SubqueryExpression') {
+            if (table.type === 'TableReference') {
+                this.visitTableReference(table);
+            } else if (table.type === 'SubqueryExpression') {
                 this.visitSubquery(table);
             } else {
                 this.visitExpression(table);
@@ -821,7 +823,9 @@ export class ScopeBuilder {
         const table = join.table;
 
         if (table) {
-            if (table.type === 'SubqueryExpression') {
+            if (table.type === 'TableReference') {
+                this.visitTableReference(table);
+            } else if (table.type === 'SubqueryExpression') {
                 this.visitSubquery(table);
             } else {
                 this.visitExpression(table);
@@ -1117,9 +1121,13 @@ export class ScopeBuilder {
             : undefined;
     }
 
-    private getExpressionOutputColumns(expr: Expression | null | undefined): string[] | undefined {
+    private getExpressionOutputColumns(expr: Expression | TableReference | null | undefined): string[] | undefined {
         if (!expr) {
             return undefined;
+        }
+
+        if (expr.type === 'TableReference') {
+            return this.getTableReferenceAliasColumns(expr);
         }
 
         if (expr.type === 'Identifier') {

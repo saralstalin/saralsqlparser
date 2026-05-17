@@ -210,6 +210,56 @@ describe('T-SQL Parser - RETURN', () => {
         expect(block.body[1].type).toBe('SelectStatement');
     });
 
+    test('should parse label named END after an END block terminator', () => {
+        const result = parseResult(`
+            SELECT TOP 1 Name
+            FROM Table1
+
+            IF (@@ROWCOUNT > 0)
+            BEGIN
+                GOTO END
+            END
+
+            END:
+        `);
+
+        expect(result.issues).toEqual([]);
+        expect(result.ast.body[result.ast.body.length - 1].type).toBe('LabelStatement');
+    });
+
+    test('should not treat GOTO or labels as implicit aliases after FROM', () => {
+        const result = parseResult(`
+            DECLARE @ID INT
+
+            SELECT TOP 1 @ID = Id
+            FROM dbo.Table
+
+            IF (@ID = 1)
+            BEGIN
+                GOTO Somewhere
+            END
+
+            SELECT TOP 1 Id
+            FROM Table1
+
+            GOTO SomewhereElse
+
+            SELECT TOP 1 Id
+            FROM Table1
+
+            Somewhere:
+
+            SELECT TOP 1 Address
+            FROM Table1
+
+            SomewhereElse:
+        `);
+
+        expect(result.issues).toEqual([]);
+        expect(result.ast.body.some((s: any) => s.type === 'GotoStatement')).toBe(true);
+        expect(result.ast.body.filter((s: any) => s.type === 'LabelStatement')).toHaveLength(2);
+    });
+
     test('should parse WAITFOR TIME', () => {
         const stmt = parseOne<any>(`WAITFOR TIME '22:30:00'`);
 

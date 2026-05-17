@@ -208,7 +208,7 @@ export class DiagnosticEngine {
                 break;
 
             case 'WithStatement':
-                this.checkWith(stmt);
+                this.checkWith(stmt, insideView);
                 break;
 
             case 'IfStatement':
@@ -422,7 +422,7 @@ export class DiagnosticEngine {
 
     // ── WITH / CREATE / IF / BLOCK ───────────────────────────────────────────
 
-    private checkWith(stmt: WithNode): void {
+    private checkWith(stmt: WithNode, insideView: boolean): void {
         const seen = new Map<string, NodeLocation>();
 
         for (const cte of stmt.ctes) {
@@ -448,10 +448,10 @@ export class DiagnosticEngine {
                 );
             }
 
-            this.visitQuery(cte.query, false);
+            this.visitQuery(cte.query, insideView);
         }
 
-        this.visitStatement(stmt.body, false);
+        this.visitStatement(stmt.body, insideView);
     }
 
     private checkCreate(stmt: CreateNode): void {
@@ -517,7 +517,9 @@ export class DiagnosticEngine {
 
             const table = ref.table;
 
-            if (table?.type === 'SubqueryExpression') {
+            if (table?.type === 'TableReference') {
+                this.visitTableReferences([table], insideView);
+            } else if (table?.type === 'SubqueryExpression') {
                 this.visitQuery(table.query, insideView);
             } else if (table) {
                 this.visitExpression(table, insideView);
@@ -538,7 +540,9 @@ export class DiagnosticEngine {
 
                 const jt = join.table;
 
-                if (jt?.type === 'SubqueryExpression') {
+                if (jt?.type === 'TableReference') {
+                    this.visitTableReferences([jt], insideView);
+                } else if (jt?.type === 'SubqueryExpression') {
                     this.visitQuery(jt.query, insideView);
                 } else if (jt) {
                     this.visitExpression(jt, insideView);

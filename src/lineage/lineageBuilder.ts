@@ -539,10 +539,15 @@ export class LineageBuilder {
     }
 
     private registerSource(
-        expr: Expression | null,
+        expr: Expression | TableReference | null,
         alias?: string
     ): void {
         if (!expr) {
+            return;
+        }
+
+        if (expr.type === 'TableReference') {
+            this.registerTableReference(expr);
             return;
         }
 

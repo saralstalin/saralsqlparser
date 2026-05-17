@@ -143,6 +143,7 @@ export class Lexer {
 
         // ── Miscellaneous statement-level keywords ────────────────────────────────
         'PRINT',
+        'USE',
         'GO',                                // batch separator
         'OPTION',                            // OPTION (RECOMPILE), OPTION (MAXDOP N)
 
