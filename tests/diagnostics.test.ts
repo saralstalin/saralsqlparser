@@ -125,6 +125,15 @@ describe('VAR002 — unused variable', () => {
         expect(d.length).toBe(0);
     });
 
+    test('does NOT fire on compound SET assignment because the variable is read and written', () => {
+        const d = only(
+            `DECLARE @X INT = 5; SET @X -= 1;`,
+            DiagnosticCode.UnusedVariable
+        );
+
+        expect(d.length).toBe(0);
+    });
+
     test('does NOT fire when initialized and later PRINTED', () => {
         const d = only(
             `
@@ -671,6 +680,20 @@ describe('DUP002 — duplicate CTE name', () => {
 });
 
 // ─── Sorting and position ─────────────────────────────────────────────────────
+
+describe('DUP001 â€” duplicate declaration', () => {
+    test('does not fire when a SELECT output alias matches a table alias', () => {
+        const d = only(`
+            SELECT
+                itemBase.Code BaseCode,
+                parentItem.Code
+            FROM dbo.Items itemBase
+            JOIN dbo.Items parentItem ON parentItem.ParentId = itemBase.Id
+        `, DiagnosticCode.DuplicateVariable);
+
+        expect(d.length).toBe(0);
+    });
+});
 
 describe('diagnostic ordering', () => {
     test('diagnostics are sorted by start offset', () => {

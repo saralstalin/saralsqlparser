@@ -20,11 +20,50 @@ export function canStartAlias(token?: Token): boolean {
     return !ALIAS_STOP_KEYWORDS.has(token.value);
 }
 
-export function isJoinToken(token: Token | undefined): boolean {
+export function isJoinToken(
+    token: Token | undefined,
+    next?: Token
+): boolean {
     if (!token) return false;
 
-    return Object.values(JoinKeywords)
-        .includes(token.value as JoinKeyword);
+    switch (token.value as JoinKeyword) {
+        case JoinKeywords.JOIN:
+            return true;
+
+        case JoinKeywords.HASH:
+        case JoinKeywords.MERGE:
+        case JoinKeywords.LOOP:
+            return next?.value === JoinKeywords.JOIN;
+
+        case JoinKeywords.INNER:
+            return ([
+                JoinKeywords.JOIN,
+                JoinKeywords.HASH,
+                JoinKeywords.MERGE,
+                JoinKeywords.LOOP
+            ] as string[]).includes(next?.value ?? '');
+
+        case JoinKeywords.LEFT:
+        case JoinKeywords.RIGHT:
+        case JoinKeywords.FULL:
+            return ([
+                'OUTER',
+                JoinKeywords.JOIN,
+                JoinKeywords.HASH,
+                JoinKeywords.MERGE,
+                JoinKeywords.LOOP
+            ] as string[]).includes(next?.value ?? '');
+
+        case JoinKeywords.CROSS:
+            return next?.value === JoinKeywords.JOIN
+                || next?.value === JoinKeywords.APPLY;
+
+        case JoinKeywords.OUTER:
+            return next?.value === JoinKeywords.APPLY;
+
+        default:
+            return false;
+    }
 }
 
 export function isFromBoundary(token?: Token): boolean {

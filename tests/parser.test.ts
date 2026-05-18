@@ -311,6 +311,19 @@ describe('T-SQL Parser', () => {
         expect((stmt.from?.[0].table as any).type).toBe('TableReference');
     });
 
+    test('should parse spaced composite comparison operators', () => {
+        const sql = `
+            SELECT recordRow.Id
+            FROM dbo.Records recordRow
+            WHERE recordRow.CreatedOn > = @Cutoff
+              AND recordRow.Score < = @Threshold
+        `;
+
+        const result = new Parser(new Lexer(sql)).parse();
+
+        expect(result.issues).toEqual([]);
+    });
+
     test('should parse procedure with parenthesized joined source in FROM', () => {
         const sql = `
             CREATE PROCEDURE dbo.GetPendingOrderDetails
@@ -561,6 +574,15 @@ describe('T-SQL Parser', () => {
         });
     });
 
+    test('should handle compound UPDATE assignment', () => {
+        const sql = `UPDATE ProductStatus SET [Committed] -= @MinusQuantity WHERE ProductId = @ProductID`;
+        const node = parse(sql).body[0] as UpdateNode;
+
+        expect(node.type).toBe('UpdateStatement');
+        expect(node.assignments?.[0].column).toBe('[Committed]');
+        expect(toSql(node.assignments?.[0].value)).toBe('[Committed] - @MinusQuantity');
+    });
+
     // 24. UPDATE with JOIN (T-SQL style)
     test('should handle UPDATE with FROM and JOIN', () => {
         const sql = `UPDATE u SET x = 1 FROM Users u JOIN T2 ON u.id = T2.id`;
@@ -610,6 +632,11 @@ describe('T-SQL Parser', () => {
     test('should handle SET @Var = Expr', () => {
         const sql = `SET @ID = @ID + 1`;
         expect(toSql((parse(sql).body[0] as SetNode).value)).toBe('@ID + 1');
+    });
+
+    test('should handle SET @Var compound assignment', () => {
+        const sql = `SET @ID -= 1`;
+        expect(toSql((parse(sql).body[0] as SetNode).value)).toBe('@ID - 1');
     });
 
     // 29. CREATE TABLE
@@ -1397,8 +1424,8 @@ OUTPUT inserted.Id, deleted.Id INTO Audit(InsertedId, DeletedId);`;
 
         test('should parse MERGE INTO with derived USING source and OUTPUT INTO table variable', () => {
             const sql = `MERGE INTO dbo.Target AS tgt
-USING
-(
+  USING
+  (
     SELECT DISTINCT pendingRow.KeyValue, pendingRow.DisplayValue
     FROM @PendingRows pendingRow
 ) AS srcRows
@@ -1420,6 +1447,27 @@ INTO @NewRows (KeyValue, DisplayValue, TargetId);`;
             expect(stmt.output).toBeDefined();
             expect(stmt.output.intoTable.name).toBe('@NewRows');
             expect(stmt.output.intoColumns).toEqual(['KeyValue', 'DisplayValue', 'TargetId']);
+        });
+
+        test('should not treat following MERGE statement as a JOIN after prior FROM without semicolon', () => {
+            const sql = `
+                SELECT @MaxDate = MAX(ModifiedOn)
+                FROM dbo.StageRows WITH (NOLOCK)
+
+                MERGE INTO dbo.TargetRows tgt
+                USING (SELECT RowId FROM dbo.SourceRows) src
+                ON tgt.RowId = src.RowId
+                WHEN NOT MATCHED BY TARGET THEN
+                    INSERT (RowId) VALUES (src.RowId)
+                WHEN MATCHED THEN
+                    UPDATE SET tgt.RowId = src.RowId;
+            `;
+
+            const result = new Parser(new Lexer(sql)).parse();
+
+            expect(result.issues).toEqual([]);
+            expect(result.ast.body[0].type).toBe('SelectStatement');
+            expect(result.ast.body[1].type).toBe('MergeStatement');
         });
     });
 

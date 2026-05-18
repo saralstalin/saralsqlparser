@@ -24,8 +24,16 @@ export interface Token {
     offset: number; // Absolute character position for LSP integration
 }
 
-const COMPOSITE_START = new Set(['>', '<', '!', '=']);
-const COMPOSITE_OPERATORS = new Set(['>=', '<=', '<>', '!=']);
+const COMPOSITE_START = new Set([
+    '>', '<', '!', '=',
+    '+', '-', '*', '/', '%',
+    '&', '^', '|'
+]);
+const COMPOSITE_OPERATORS = new Set([
+    '>=', '<=', '<>', '!=',
+    '+=', '-=', '*=', '/=', '%=',
+    '&=', '^=', '|='
+]);
 
 export class Lexer {
     private pos = 0;
@@ -201,6 +209,12 @@ export class Lexer {
         return char;
     }
 
+    private consumeWhitespace(): void {
+        while (this.pos < this.input.length && /\s/.test(this.input[this.pos])) {
+            this.consume();
+        }
+    }
+
     public nextToken(): Token {
         this.skipWhitespaceAndComments();
 
@@ -264,11 +278,21 @@ export class Lexer {
         if (COMPOSITE_START.has(char)) {
             let op = this.consume();
             const next = this.peek();
-            const combined = op + next;
+            let combined = op + next;
 
             if (COMPOSITE_OPERATORS.has(combined)) {
                 op = combined;
                 this.consume();
+            } else if (/\s/.test(next ?? '')) {
+                this.consumeWhitespace();
+
+                const nextAfterWhitespace = this.peek();
+                combined = op + nextAfterWhitespace;
+
+                if (COMPOSITE_OPERATORS.has(combined)) {
+                    op = combined;
+                    this.consume();
+                }
             }
             return {
                 type: TokenType.Operator,

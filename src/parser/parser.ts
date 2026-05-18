@@ -2818,11 +2818,7 @@ export class Parser {
             const next = this.peek();
             if (
                 next &&
-                next.type !== TokenType.Semicolon &&
-                !(
-                    next.type === TokenType.Keyword &&
-                    next.value === 'WITH'
-                )
+                !this.isUpdateStatisticsBoundary(next)
             ) {
                 if (next.type === TokenType.OpenParen) {
                     this.consume();
@@ -2867,6 +2863,21 @@ export class Parser {
         };
     }
 
+    private isUpdateStatisticsBoundary(token?: Token): boolean {
+        return (
+            !token ||
+            token.type === TokenType.Semicolon ||
+            (
+                token.type === TokenType.Keyword &&
+                (
+                    token.value === 'WITH' ||
+                    STRUCTURAL_KEYWORDS.has(token.value) ||
+                    RESYNC_KEYWORDS.has(token.value)
+                )
+            )
+        );
+    }
+
     private parseUpdateStatisticsOptions(): StatisticsOptionNode[] {
         return this.parseList<StatisticsOptionNode>(() => {
             const startToken = this.consume();
@@ -2903,13 +2914,7 @@ export class Parser {
                 end: this.lastConsumedEnd()
             };
         }, {
-            isBoundary: (token?: Token) =>
-                !token ||
-                token.type === TokenType.Semicolon ||
-                (
-                    token.type === TokenType.Keyword &&
-                    RESYNC_KEYWORDS.has(token.value)
-                )
+            isBoundary: this.isUpdateStatisticsBoundary.bind(this)
         });
     }
 
@@ -3247,7 +3252,7 @@ export class Parser {
         // ------------------------------------------------------------
         const joins: JoinNode[] = [];
 
-        while (isJoinToken(this.peek())) {
+        while (isJoinToken(this.peek(), this.peek(1))) {
             const join = this.parseJoin();
 
             joins.push(join);
@@ -3904,8 +3909,10 @@ export class Parser {
                 endOffset = tableTarget.end;
             }
             else if (nextToken.type === TokenType.OpenParen) {
-                tableTarget = this.parseParenthesizedTableReference();
-                endOffset = tableTarget.end;
+                tableTarget = this.parseTableSourceExpression();
+                if (tableTarget) {
+                    endOffset = tableTarget.end;
+                }
             }
             else {
                 tableTarget =
@@ -4861,14 +4868,23 @@ export class Parser {
                 };
             }
 
-            // 2) equals
-            if (this.peek()?.value !== '=') {
+            const assignmentToken = this.peek();
+            const isSimpleAssignment =
+                assignmentToken?.value === '=';
+            const isCompoundAssignment =
+                !!assignmentToken?.value &&
+                this.getCompoundAssignmentBinaryOperator(
+                    assignmentToken.value
+                ) !== null;
+
+            // 2) assignment operator
+            if (!isSimpleAssignment && !isCompoundAssignment) {
                 state.incomplete = true;
 
                 this.addRecoverableError(
                     errors,
                     'PARSE_UPDATE_ASSIGNMENT_EQUALS',
-                    'Expected =',
+                    'Expected = or compound assignment operator',
                     state.endOffset
                 );
 
@@ -4921,7 +4937,20 @@ export class Parser {
 
             // 3) value
             try {
-                value = this.parseExpression();
+                const parsedValue = this.parseExpression();
+                value = isCompoundAssignment
+                    ? this.buildCompoundAssignmentExpression(
+                        columnNode ?? {
+                            type: 'Identifier',
+                            name: columnName,
+                            parts: [columnName],
+                            start: assignmentStart,
+                            end: assignmentEnd
+                        },
+                        eqToken,
+                        parsedValue
+                    )
+                    : parsedValue;
 
                 if (value) {
                     state.endOffset = value.end;
@@ -5009,6 +5038,46 @@ export class Parser {
         };
     }
 
+    private getCompoundAssignmentBinaryOperator(
+        operator: string
+    ): string | null {
+        switch (operator) {
+            case '+=': return '+';
+            case '-=': return '-';
+            case '*=': return '*';
+            case '/=': return '/';
+            case '%=': return '%';
+            case '&=': return '&';
+            case '^=': return '^';
+            case '|=': return '|';
+            default: return null;
+        }
+    }
+
+    private buildCompoundAssignmentExpression(
+        left: Expression,
+        operatorToken: Token,
+        right: Expression | null
+    ): Expression {
+        const binaryOperator =
+            this.getCompoundAssignmentBinaryOperator(
+                operatorToken.value
+            );
+
+        if (!binaryOperator) {
+            return right ?? left;
+        }
+
+        return {
+            type: 'BinaryExpression',
+            left,
+            operator: binaryOperator,
+            right,
+            start: left.start,
+            end: right?.end ?? (operatorToken.offset + operatorToken.value.length)
+        };
+    }
+
     private parseSet(): SetNode {
         const startToken = this.matchKeyword('SET');
 
@@ -5037,8 +5106,16 @@ export class Parser {
 
             endOffset = variableEnd;
 
-            // expect =
-            if (this.peek()?.value === '=') {
+            const assignmentToken = this.peek();
+            const isSimpleAssignment =
+                assignmentToken?.value === '=';
+            const isCompoundAssignment =
+                !!assignmentToken?.value &&
+                this.getCompoundAssignmentBinaryOperator(
+                    assignmentToken.value
+                ) !== null;
+
+            if (isSimpleAssignment || isCompoundAssignment) {
                 const eqToken = this.consume();
                 endOffset =
                     eqToken.offset + eqToken.value.length;
@@ -5052,7 +5129,19 @@ export class Parser {
                         next.type !== TokenType.Comma &&
                         this.canStartExpressionToken(next)
                     ) {
-                        value = this.parseExpression();
+                        const parsedValue = this.parseExpression();
+                        value = isCompoundAssignment
+                            ? this.buildCompoundAssignmentExpression(
+                                {
+                                    type: 'Variable',
+                                    name: variable,
+                                    start: variableStart,
+                                    end: variableEnd
+                                },
+                                eqToken,
+                                parsedValue
+                            )
+                            : parsedValue;
 
                         if (value) {
                             endOffset = value.end;
@@ -5089,7 +5178,7 @@ export class Parser {
                 this.addRecoverableError(
                     errors,
                     'PARSE_SET_EQUALS',
-                    'Expected =',
+                    'Expected = or compound assignment operator',
                     variableEnd,
                     variableEnd
                 );
@@ -10590,6 +10679,7 @@ export class Parser {
             | 'CHECK'
             | 'DEFAULT'
             | 'NOT NULL'
+            | 'NOT FOR REPLICATION'
             | 'NULL'
             | 'IDENTITY' = 'NULL';
 
@@ -10908,6 +10998,23 @@ export class Parser {
                         'PARSE_CONSTRAINT_DEFAULT',
                         'Expected DEFAULT expression'
                     );
+                }
+            }
+
+            // NOT FOR REPLICATION
+            else if (
+                value === 'NOT' &&
+                this.peek(1)?.value === 'FOR' &&
+                this.peek(2)?.value === 'REPLICATION'
+            ) {
+                this.consume();
+                this.consume();
+                this.consume();
+
+                kind = 'NOT FOR REPLICATION';
+
+                if (implicitColumn) {
+                    columns = [implicitColumn];
                 }
             }
 
@@ -12475,7 +12582,20 @@ export class Parser {
                     if (this.peek()?.value === '=') {
                         this.consume();
                     }
-                    partition = this.parseExpression();
+                    if (this.peekKeyword('ALL')) {
+                        const partitionExpr = this.parseMultipartIdentifier(
+                            undefined,
+                            { allowStructuralFirstSegment: true }
+                        );
+
+                        if (partitionExpr.type === 'Identifier') {
+                            partition = partitionExpr;
+                        } else {
+                            throw new Error('Expected partition value after PARTITION =');
+                        }
+                    } else {
+                        partition = this.parseExpression();
+                    }
                 }
 
                 if (this.peekKeyword('WITH')) {
@@ -12495,7 +12615,20 @@ export class Parser {
                     if (this.peek()?.value === '=') {
                         this.consume();
                     }
-                    partition = this.parseExpression();
+                    if (this.peekKeyword('ALL')) {
+                        const partitionExpr = this.parseMultipartIdentifier(
+                            undefined,
+                            { allowStructuralFirstSegment: true }
+                        );
+
+                        if (partitionExpr.type === 'Identifier') {
+                            partition = partitionExpr;
+                        } else {
+                            throw new Error('Expected partition value after PARTITION =');
+                        }
+                    } else {
+                        partition = this.parseExpression();
+                    }
                 }
 
                 action = {

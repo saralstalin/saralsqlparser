@@ -717,15 +717,6 @@ export class ScopeBuilder {
 
         for (const col of stmt.columns) {
             this.visitExpression(col.expression);
-
-            if (col.alias) {
-                this.declare({
-                    name: col.alias,
-                    kind: SymbolKind.Alias,
-                    location: col,
-                    references: [],
-                });
-            }
         }
 
         if (stmt.where) {
@@ -742,6 +733,20 @@ export class ScopeBuilder {
             this.visitExpression(stmt.having);
         }
 
+        // SELECT output aliases are visible to ORDER BY, but they should not
+        // collide with table aliases declared earlier in the same SELECT.
+        this.pushScope(stmt.start, stmt.end, 'select-output');
+        for (const col of stmt.columns) {
+            if (col.alias) {
+                this.declare({
+                    name: col.alias,
+                    kind: SymbolKind.Alias,
+                    location: col,
+                    references: [],
+                });
+            }
+        }
+
         if (stmt.orderBy) {
             for (const order of stmt.orderBy) {
                 this.visitExpression(order.expression);
@@ -756,6 +761,7 @@ export class ScopeBuilder {
             this.visitExpression(stmt.fetch);
         }
 
+        this.popScope();
         this.popScope();
     }
 

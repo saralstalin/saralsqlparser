@@ -186,6 +186,19 @@ describe('T-SQL Parser - DDL Changes', () => {
             expect(stmt.action.partition.type).toBe('Literal');
         });
 
+        test('REBUILD PARTITION = ALL with options', () => {
+            const stmt = parseOne<any>(
+                'ALTER INDEX ALL ON dbo.Users REBUILD PARTITION = ALL WITH (FILLFACTOR = 100, SORT_IN_TEMPDB = ON, STATISTICS_NORECOMPUTE = OFF)'
+            );
+
+            expect(stmt.type).toBe('AlterIndexStatement');
+            expect(stmt.indexName).toBe('ALL');
+            expect(stmt.action.kind).toBe('REBUILD');
+            expect(stmt.action.partition.type).toBe('Identifier');
+            expect(stmt.action.partition.name).toBe('ALL');
+            expect(stmt.action.options).toHaveLength(3);
+        });
+
         test('DISABLE', () => {
             const stmt = parseOne<any>(
                 'ALTER INDEX IX_Users_Name ON dbo.Users DISABLE'
@@ -229,6 +242,23 @@ describe('T-SQL Parser - DDL Changes', () => {
             expect(stmt.options).toHaveLength(2);
             expect(stmt.options[0].name).toBe('FULLSCAN');
             expect(stmt.options[1].name).toBe('NORECOMPUTE');
+        });
+
+        test('table only before following IF statement', () => {
+            const result = new Parser(new Lexer(`
+                UPDATE STATISTICS dbo.Users
+
+                IF EXISTS (SELECT 1 FROM dbo.Users)
+                BEGIN
+                    DROP TABLE dbo.UsersOld
+                END
+            `)).parse();
+
+            expect(result.issues).toHaveLength(0);
+            expect(result.ast.body[0].type).toBe('UpdateStatisticsStatement');
+            expect((result.ast.body[0] as any).table.name).toBe('dbo.Users');
+            expect((result.ast.body[0] as any).statistics).toBeUndefined();
+            expect(result.ast.body[1].type).toBe('IfStatement');
         });
 
         test('statistics list in parentheses', () => {

@@ -516,6 +516,24 @@ describe('IDENTITY constraints', () => {
         expect(identity.increment)
             .toBeUndefined();
     });
+
+    test('NOT FOR REPLICATION before NOT NULL', () => {
+        const stmt = parseOne<any>(`
+            CREATE TABLE X(
+                Id INT NOT FOR REPLICATION NOT NULL
+            )
+        `);
+
+        const constraints =
+            stmt.columns[0].constraints;
+
+        expect(
+            constraints.map((x: any) => x.kind)
+        ).toEqual([
+            'NOT FOR REPLICATION',
+            'NOT NULL'
+        ]);
+    });
 });
 
 describe('unnamed table constraints', () => {

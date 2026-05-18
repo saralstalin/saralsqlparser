@@ -628,6 +628,7 @@ export interface ConstraintNode extends NodeLocation, Recoverable {
     | 'CHECK'
     | 'DEFAULT'
     | 'NOT NULL'
+    | 'NOT FOR REPLICATION'
     | 'NULL'
     | 'IDENTITY';
 
