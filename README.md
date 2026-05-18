@@ -227,6 +227,7 @@ Supported:
 - `DECLARE`, `SET`, `PRINT`, `RETURN`
 - `RAISERROR`, `THROW`
 - `EXEC / EXECUTE`
+- `USE`
 - `IF / ELSE`
 - `BEGIN / END`
 - `BEGIN TRY / END TRY / BEGIN CATCH / END CATCH`
@@ -251,6 +252,7 @@ Supported:
 - function calls
 - `IIF`
 - null handling
+- compound assignment operators such as `+=` and `-=`
 - old-style string literal aliases in projections
 
 ### DDL and maintenance scripts
@@ -262,9 +264,14 @@ Supported:
 - `CREATE PROCEDURE`
 - `CREATE FUNCTION` (partial)
 - `CREATE VIEW`
+- indexed views, including schemabound views plus `CREATE UNIQUE CLUSTERED INDEX` on the view
+- `CREATE LOGIN`
+- `CREATE USER`
 - `CREATE TYPE ... AS TABLE`
 - `CREATE TRIGGER`
 - `CREATE INDEX`
+- `CREATE PARTITION FUNCTION`
+- `CREATE PARTITION SCHEME`
 - `ALTER INDEX`
 - `UPDATE STATISTICS`
 - `DROP TABLE / VIEW / PROCEDURE / FUNCTION / INDEX`
@@ -278,11 +285,14 @@ Also supported:
 - include columns
 - filtered indexes
 - index `WITH (...)` options
+- index and table placement on filegroups or partition schemes
+- `ALTER TABLE ... WITH CHECK|NOCHECK ADD CONSTRAINT ...`
 - tolerant create preambles such as:
   - `WITH EXECUTE AS ...`
   - `WITH SCHEMABINDING`
   - `WITH ENCRYPTION`
   - function `RETURNS ...`
+- parenthesized view bodies such as `CREATE VIEW ... AS (SELECT ...)`
 
 ## Semantic Layers
 
@@ -351,7 +361,13 @@ SaralSQL is hardened around real production-style SQL Server code, including:
 - aggregate `DISTINCT` forms
 - `BEGIN ;WITH ...` handoff inside blocks
 - `SET DATEFIRST` followed by additional statements
+- XML `.nodes(...) AS alias(column)` table-source forms
+- `OUTPUT` used as an identifier in column positions
+- `UPDATE ... WITH(ROWLOCK)` targets
+- `UNPIVOT` after joined sources
+- parenthesized joined table sources
 - tolerant procedure/view/function/trigger headers
+- indexed view scripts and `NOEXPAND` table-hint usage
 
 Milestone:
 
@@ -365,9 +381,7 @@ Current known gaps or partial areas include:
 
 - advanced transaction grammar edge cases
 - dynamic `EXEC` edge cases
-- partition grammar
-- advanced index/storage options
-- indexed views
+- advanced index/storage options beyond current coverage
 - `OPENQUERY` / `OPENROWSET` family
 - deeper XML grammar
 - JSON edge cases beyond current `OPENJSON` support

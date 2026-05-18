@@ -566,7 +566,8 @@ export class DiagnosticEngine {
 
             if (
                 normalized === 'NOLOCK' ||
-                normalized === 'READUNCOMMITTED'
+                normalized === 'READUNCOMMITTED' ||
+                normalized === 'NOEXPAND'
             ) {
                 continue;
             }

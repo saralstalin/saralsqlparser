@@ -1703,7 +1703,29 @@ export class Parser {
         let columns: ColumnNode[] = [];
 
         try {
-            columns = this.parseList(() => this.parseColumn());
+            columns = this.parseList(() => this.parseColumn(), {
+                isBoundary: (token?: Token) =>
+                    !token ||
+                    token.type === TokenType.Semicolon ||
+                    token.type === TokenType.CloseParen ||
+                    (
+                        token.type === TokenType.Keyword &&
+                        [
+                            'FROM',
+                            'WHERE',
+                            'GROUP',
+                            'HAVING',
+                            'ORDER',
+                            'UNION',
+                            'EXCEPT',
+                            'INTERSECT',
+                            'FOR',
+                            'OPTION',
+                            'OFFSET',
+                            'FETCH'
+                        ].includes(token.value.toUpperCase())
+                    )
+            });
 
             if (columns.length === 0) {
                 incomplete = true;
@@ -3273,6 +3295,75 @@ export class Parser {
             }
         }
 
+        // ------------------------------------------------------------
+        // 7. PIVOT / UNPIVOT after joined source
+        // ------------------------------------------------------------
+        try {
+            if (!pivot && !unpivot) {
+                if (this.peekKeyword('PIVOT')) {
+                    pivot =
+                        this.parsePivotClause(
+                            alias || undefined
+                        );
+                    alias = null;
+                    endOffset = pivot.end;
+
+                    const pivotAlias =
+                        parseOptionalAlias();
+
+                    if (pivotAlias) {
+                        alias = pivotAlias;
+                    } else {
+                        incomplete = true;
+
+                        this.addRecoverableError(
+                            errors,
+                            'PARSE_PIVOT_ALIAS',
+                            'Expected alias after PIVOT clause',
+                            endOffset,
+                            endOffset
+                        );
+                    }
+                } else if (this.peekKeyword('UNPIVOT')) {
+                    unpivot =
+                        this.parseUnpivotClause(
+                            alias || undefined
+                        );
+                    alias = null;
+                    endOffset = unpivot.end;
+
+                    const unpivotAlias =
+                        parseOptionalAlias();
+
+                    if (unpivotAlias) {
+                        alias = unpivotAlias;
+                    } else {
+                        incomplete = true;
+
+                        this.addRecoverableError(
+                            errors,
+                            'PARSE_UNPIVOT_ALIAS',
+                            'Expected alias after UNPIVOT clause',
+                            endOffset,
+                            endOffset
+                        );
+                    }
+                }
+            }
+        } catch (e) {
+            incomplete = true;
+
+            this.addRecoverableError(
+                errors,
+                this.peekKeyword('UNPIVOT')
+                    ? 'PARSE_UNPIVOT'
+                    : 'PARSE_PIVOT',
+                e instanceof Error ? e.message : String(e),
+                endOffset,
+                endOffset
+            );
+        }
+
         return {
             type: 'TableReference',
             table: source,
@@ -4819,7 +4910,10 @@ export class Parser {
                 }
 
                 const columnExpr =
-                    this.parseMultipartIdentifier();
+                    this.parseMultipartIdentifier(
+                        undefined,
+                        { allowStructuralFirstSegment: true }
+                    );
 
                 if (columnExpr.type === 'Identifier') {
                     columnName = columnExpr.name;
@@ -4978,6 +5072,25 @@ export class Parser {
                 end: assignmentEnd,
                 value
             };
+        }, {
+            isBoundary: (token?: Token) =>
+                !token ||
+                token.type === TokenType.Semicolon ||
+                (
+                    token.type === TokenType.Keyword &&
+                    (
+                        token.value.toUpperCase() === 'OUTPUT'
+                            ? !(
+                                this.peek(1)?.value === '=' ||
+                                this.getCompoundAssignmentBinaryOperator(
+                                    this.peek(1)?.value ?? ''
+                                ) !== null
+                            )
+                            : ['FROM', 'WHERE', 'OPTION'].includes(
+                                token.value.toUpperCase()
+                            )
+                    )
+                )
         });
     }
 
@@ -6210,12 +6323,25 @@ export class Parser {
                         this.lastConsumedEnd();
                 }
 
+                const hasParens =
+                    this.peek()?.type === TokenType.OpenParen;
+
+                if (hasParens) {
+                    this.consume();
+                    endOffset = this.lastConsumedEnd();
+                }
+
                 body =
                     this.peekKeyword('WITH')
                         ? this.parseWith()
                         : this.parseQueryExpression();
 
                 endOffset = body.end;
+
+                if (hasParens) {
+                    this.match(TokenType.CloseParen);
+                    endOffset = this.lastConsumedEnd();
+                }
 
             } catch (e) {
                 incomplete = true;
@@ -6342,7 +6468,9 @@ export class Parser {
         else if (
             objectType === 'SCHEMA' ||
             objectType === 'SEQUENCE' ||
-            objectType === 'SYNONYM'
+            objectType === 'SYNONYM' ||
+            objectType === 'LOGIN' ||
+            objectType === 'USER'
         ) {
             endOffset =
                 this.skipCreatePreambleUntil([
@@ -6526,7 +6654,6 @@ export class Parser {
 
             'OUTER',
             'VALUES',
-            'OUTPUT',
             'FOR',
 
             'OPTION',
@@ -6555,6 +6682,63 @@ export class Parser {
 
         const startOffset =
             this.peek()?.offset ?? 0;
+
+        const isKeywordIdentifierColumnStart = (): boolean => {
+            const token = this.peek();
+
+            if (token?.type !== TokenType.Keyword) {
+                return false;
+            }
+
+            if (
+                [
+                    'FROM',
+                    'WHERE',
+                    'GROUP',
+                    'ORDER',
+                    'HAVING',
+                    'UNION',
+                    'ALL',
+                    'EXCEPT',
+                    'INTERSECT',
+                    'JOIN',
+                    'ON',
+                    'APPLY',
+                    'INTO',
+                    'OUTER',
+                    'VALUES',
+                    'FOR',
+                    'OPTION',
+                    'FETCH',
+                    'OFFSET',
+                    'CROSS',
+                    'PIVOT',
+                    'UNPIVOT',
+                    'WITHIN',
+                    'WHEN',
+                    'THEN',
+                    'BEGIN',
+                    'END',
+                    'ELSE',
+                    'CATCH'
+                ].includes(token.value)
+            ) {
+                return false;
+            }
+
+            return ![
+                'NULL',
+                'CASE',
+                'EXISTS',
+                'CAST',
+                'TRY_CAST',
+                'CONVERT',
+                'PARSE',
+                'TRY_PARSE',
+                'NOT',
+                'SELECT'
+            ].includes(token.value);
+        };
 
         const parseColumnAlias = (): string => {
             const nextToken =
@@ -6618,8 +6802,16 @@ export class Parser {
             // ---------------------------------------------
 
             else {
-                expression =
-                    this.parseExpression();
+                if (isKeywordIdentifierColumnStart()) {
+                    expression =
+                        this.parseMultipartIdentifier(
+                            undefined,
+                            { allowStructuralFirstSegment: true }
+                        );
+                } else {
+                    expression =
+                        this.parseExpression();
+                }
 
                 const nextToken =
                     this.peek();
@@ -12458,6 +12650,29 @@ export class Parser {
         let incomplete = false;
         const errors: string[] = [];
 
+        let enforcement: 'CHECK' | 'NOCHECK' | undefined;
+        if (this.peekKeyword('WITH')) {
+            this.consume();
+
+            if (this.peekKeyword('CHECK')) {
+                this.consume();
+                enforcement = 'CHECK';
+            } else if (this.peekKeyword('NOCHECK')) {
+                this.consume();
+                enforcement = 'NOCHECK';
+            } else {
+                incomplete = true;
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_ALTER_TABLE_WITH',
+                    'Expected CHECK or NOCHECK after WITH in ALTER TABLE',
+                    this.lastConsumedEnd(),
+                    this.lastConsumedEnd()
+                );
+            }
+        }
+
         const actionToken = this.consume(); // ADD or DROP
         const actionVal = actionToken.value.toUpperCase();
         let action: AlterTableAction;
@@ -12468,7 +12683,8 @@ export class Parser {
                 // parseConstraint() needs to see that token to correctly parse the name.
                 action = {
                     kind: 'ADD_CONSTRAINT',
-                    constraint: this.parseConstraint()
+                    constraint: this.parseConstraint(),
+                    ...(enforcement ? { enforcement } : {})
                 };
             } else {
                 if (this.peekKeyword('COLUMN')) this.consume();

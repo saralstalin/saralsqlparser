@@ -74,6 +74,31 @@ describe('UNPIVOT parsing', () => {
         expect(from.alias).toBe('u');
     });
 
+    test('parses UNPIVOT after joined source', () => {
+        const sql = `
+            SELECT *
+            FROM (
+                SELECT srcItem.Item, sourceUnpivot.Quantity
+                FROM dbo.SourceItems srcItem
+                JOIN dbo.ConfigRows cfgRow ON cfgRow.Item = srcItem.Item
+                UNPIVOT (
+                    Quantity
+                    FOR BucketName IN ([MRP_1], [MRP_2])
+                ) sourceUnpivot
+            ) outerRows;
+        `;
+
+        const result = parseResult(sql);
+        const from = (result.ast.body[0] as any).from[0];
+        const innerFrom = from.table.query.from[0];
+
+        expect(result.issues).toHaveLength(0);
+        expect(from.alias).toBe('outerRows');
+        expect(innerFrom.unpivot).toBeDefined();
+        expect(innerFrom.alias).toBe('sourceUnpivot');
+        expect(innerFrom.joins).toHaveLength(1);
+    });
+
     test('reports recoverable issue when UNPIVOT alias is missing', () => {
         const sql = `
             SELECT *

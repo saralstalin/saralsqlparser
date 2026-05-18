@@ -263,10 +263,18 @@ describe('SELECT aliases', () => {
 
     test('column alias registered in select scope', () => {
         const scope = rootScope(`
-            SELECT Name AS UserName FROM dbo.Users;
-        `);
-        const selectScope = scope.getChildren().find(x => x.name === 'select');
-        expect(selectScope?.resolveLocal('UserName')?.kind).toBe(SymbolKind.Alias);
+        SELECT Name AS UserName FROM dbo.Users;
+    `);
+
+        // Look for the inner 'select-output' scope
+        const selectScope = scope.getChildren()
+            .find(x => x.name === 'select');
+
+        const outputScope = selectScope?.getChildren()
+            .find(x => x.name === 'select-output');
+
+        expect(outputScope?.resolveLocal('UserName')?.kind)
+            .toBe(SymbolKind.Alias);
     });
 
     test('PIVOT alias exposes pivot output columns in select scope', () => {

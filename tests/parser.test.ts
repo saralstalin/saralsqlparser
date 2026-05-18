@@ -1,5 +1,5 @@
 import { Lexer, TokenType } from '../src/parser/lexer';
-import { SelectNode, InsertNode, UpdateNode, DeleteNode, DeclareNode, SetNode, CreateNode, DropNode, SetOperatorNode, IfNode, BlockNode, WithNode, OverExpression, TableReference, MemberExpression, IdentifierNode, LiteralNode } from '../src/ast/types';
+import { SelectNode, InsertNode, UpdateNode, DeleteNode, DeclareNode, SetNode, CreateNode, CreateIndexNode, DropNode, SetOperatorNode, IfNode, BlockNode, WithNode, OverExpression, TableReference, MemberExpression, IdentifierNode, LiteralNode } from '../src/ast/types';
 import { Parser } from '../src/parser/parser';
 
 /**
@@ -293,6 +293,25 @@ describe('T-SQL Parser', () => {
         expect((stmt.body as any).type).toBe('WithStatement');
     });
 
+    test('should parse parenthesized view body', () => {
+        const sql = `
+            CREATE VIEW [dbo].[SomeView]
+            AS
+            (
+                SELECT st.Name, sot.Description
+                FROM dbo.SomeTable st
+                     JOIN dbo.SomeOtherTable sot ON sot.Id = st.Id
+            );
+        `;
+
+        const result = new Parser(new Lexer(sql)).parse();
+        const stmt = result.ast.body[0] as CreateNode;
+
+        expect(result.issues).toEqual([]);
+        expect(stmt.objectType).toBe('VIEW');
+        expect((stmt.body as any).type).toBe('SelectStatement');
+    });
+
     test('should parse parenthesized joined table source in FROM', () => {
         const sql = `
             SELECT baseRow.Id
@@ -583,6 +602,15 @@ describe('T-SQL Parser', () => {
         expect(toSql(node.assignments?.[0].value)).toBe('[Committed] - @MinusQuantity');
     });
 
+    test('should handle keyword column name in UPDATE assignment target', () => {
+        const sql = `UPDATE T SET OUTPUT = 1 WHERE Id = 1`;
+        const node = parse(sql).body[0] as UpdateNode;
+
+        expect(node.type).toBe('UpdateStatement');
+        expect(node.assignments?.[0].column).toBe('OUTPUT');
+        expect(toSql(node.assignments?.[0].value)).toBe('1');
+    });
+
     // 24. UPDATE with JOIN (T-SQL style)
     test('should handle UPDATE with FROM and JOIN', () => {
         const sql = `UPDATE u SET x = 1 FROM Users u JOIN T2 ON u.id = T2.id`;
@@ -659,6 +687,67 @@ describe('T-SQL Parser', () => {
         const sqlP = `CREATE PROC P AS SELECT 1`;
         expect((parse(sqlV).body[0] as CreateNode).objectType).toBe('VIEW');
         expect((parse(sqlP).body[0] as CreateNode).objectType).toBe('PROCEDURE');
+    });
+
+    test('should handle CREATE LOGIN', () => {
+        const sql = `
+            CREATE LOGIN ReportingUser
+            WITH PASSWORD = 'StrongPassword!42',
+                 CHECK_POLICY = OFF,
+                 DEFAULT_DATABASE = ReportingDb
+        `;
+
+        const node = parse(sql).body[0] as CreateNode;
+
+        expect(node.objectType).toBe('LOGIN');
+        expect(node.name).toBe('ReportingUser');
+    });
+
+    test('should handle CREATE USER', () => {
+        const sql = `
+            CREATE USER ReportingUser
+            FOR LOGIN ReportingLogin
+            WITH DEFAULT_SCHEMA = dbo
+        `;
+
+        const node = parse(sql).body[0] as CreateNode;
+
+        expect(node.objectType).toBe('USER');
+        expect(node.name).toBe('ReportingUser');
+    });
+
+    test('should parse indexed view definition and index creation batch', () => {
+        const sql = `
+            CREATE VIEW dbo.SalesByCustomer
+            WITH SCHEMABINDING
+            AS
+            SELECT salesRow.CustomerId,
+                   COUNT_BIG(*) AS OrderCount
+            FROM dbo.Sales salesRow
+            GROUP BY salesRow.CustomerId;
+            GO
+            CREATE UNIQUE CLUSTERED INDEX IX_SalesByCustomer
+            ON dbo.SalesByCustomer (CustomerId);
+        `;
+
+        const ast = parse(sql);
+        const viewStmt = ast.body[0] as CreateNode;
+        const indexStmt = ast.body[1] as CreateIndexNode;
+
+        expect(viewStmt.objectType).toBe('VIEW');
+        expect(indexStmt.type).toBe('CreateIndexStatement');
+        expect(indexStmt.unique).toBe(true);
+        expect(indexStmt.clustered).toBe('CLUSTERED');
+        expect(indexStmt.table.name).toBe('dbo.SalesByCustomer');
+    });
+
+    test('should handle keyword column name in SELECT projection', () => {
+        const sql = `SELECT OUTPUT, Name FROM T`;
+        const node = parse(sql).body[0] as SelectNode;
+
+        expect(node.type).toBe('SelectStatement');
+        expect(node.columns[0].expression.type).toBe('Identifier');
+        expect((node.columns[0].expression as any).name).toBe('OUTPUT');
     });
 
     // 30.5. DROP TABLE / VIEW / PROC

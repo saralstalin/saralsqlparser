@@ -160,6 +160,21 @@ describe('T-SQL Parser - DDL Changes', () => {
                 'Amount > 0'
             );
         });
+
+        test('ADD CONSTRAINT with WITH CHECK preamble', () => {
+            const stmt = parseOne<any>(`
+                ALTER TABLE dbo.Orders
+                WITH CHECK
+                ADD CONSTRAINT FK_Orders_Customers
+                FOREIGN KEY (CustomerId)
+                REFERENCES dbo.Customers(Id)
+            `);
+
+            expect(stmt.action.kind).toBe('ADD_CONSTRAINT');
+            expect(stmt.action.enforcement).toBe('CHECK');
+            expect(stmt.action.constraint.kind).toBe('FOREIGN KEY');
+            expect(stmt.action.constraint.name).toBe('FK_Orders_Customers');
+        });
     });
 
     describe('ALTER INDEX', () => {

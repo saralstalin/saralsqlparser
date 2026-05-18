@@ -925,6 +925,15 @@ describe('HINT001 â€” table hint usage', () => {
         expect(d).toHaveLength(0);
     });
 
+    test('does not warn on NOEXPAND by default', () => {
+        const d = only(
+            `SELECT * FROM dbo.IndexedSalesView WITH (NOEXPAND)`,
+            DiagnosticCode.TableHintUsage
+        );
+
+        expect(d).toHaveLength(0);
+    });
+
     test('warns on INDEX hint with tuning alternative guidance', () => {
         const d = only(
             `SELECT * FROM dbo.Users WITH (INDEX(IX_Users_Name))`,
@@ -1026,6 +1035,25 @@ describe('NAM001 - unbracketed keyword column name', () => {
         expect(d.length).toBe(1);
         expect(d[0].severity).toBe('warning');
         expect(d[0].message).toContain('OFFSET');
+    });
+
+    test('warns for INSERT column list using OUTPUT as an unbracketed keyword-shaped name', () => {
+        const d = only(
+            `
+            INSERT INTO dbo.InventoryOrgLkp
+            (
+                OrgId,
+                OUTPUT
+            )
+            SELECT src.OrgId, src.OUTPUT
+            FROM @InventoryRows src
+            `,
+            DiagnosticCode.UnbracketedKeywordColumnName
+        );
+
+        expect(d.length).toBe(1);
+        expect(d[0].severity).toBe('warning');
+        expect(d[0].message).toContain('OUTPUT');
     });
 
     test('warns for CREATE TABLE column using an unbracketed keyword-shaped name', () => {

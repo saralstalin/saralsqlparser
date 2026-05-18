@@ -444,7 +444,7 @@ export interface ParameterDefinition extends NodeLocation {
 
 export interface CreateNode extends NodeLocation, Recoverable {
     type: 'CreateStatement';
-    objectType: 'TABLE' | 'VIEW' | 'PROCEDURE' | 'FUNCTION' | 'TYPE' | 'TRIGGER' | 'SCHEMA' | 'SEQUENCE' | 'SYNONYM' | 'PARTITION_FUNCTION' | 'PARTITION_SCHEME';
+    objectType: 'TABLE' | 'VIEW' | 'PROCEDURE' | 'FUNCTION' | 'TYPE' | 'TRIGGER' | 'SCHEMA' | 'SEQUENCE' | 'SYNONYM' | 'PARTITION_FUNCTION' | 'PARTITION_SCHEME' | 'LOGIN' | 'USER';
     orAlter: boolean;
     name: string;
     nameNode: IdentifierNode;
@@ -878,11 +878,11 @@ export interface FrameClause extends NodeLocation, Recoverable {
 
     // ALTER TABLE
 export type AlterTableAction =
-    | { kind: 'ADD_COLUMN'; column: ColumnDefinition }
-    | { kind: 'DROP_COLUMN'; name: string, ifExists?: boolean }
-    | { kind: 'ADD_CONSTRAINT'; constraint: ConstraintNode }
-    | { kind: 'DROP_CONSTRAINT'; name: string, ifExists?: boolean }
-    | { kind: 'ALTER_COLUMN'; column: ColumnDefinition }; 
+      | { kind: 'ADD_COLUMN'; column: ColumnDefinition }
+      | { kind: 'DROP_COLUMN'; name: string, ifExists?: boolean }
+      | { kind: 'ADD_CONSTRAINT'; constraint: ConstraintNode, enforcement?: 'CHECK' | 'NOCHECK' }
+      | { kind: 'DROP_CONSTRAINT'; name: string, ifExists?: boolean }
+      | { kind: 'ALTER_COLUMN'; column: ColumnDefinition }; 
 
 export interface AlterTableNode extends NodeLocation, Recoverable {
     type: 'AlterTableStatement';
