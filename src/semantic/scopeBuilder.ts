@@ -884,6 +884,8 @@ export class ScopeBuilder {
                 break;
 
             case 'FunctionCall':
+                this.recordFunctionCallVariableReference(expr);
+
                 for (const arg of expr.args) {
                     this.visitExpression(arg);
                 }
@@ -1048,6 +1050,28 @@ export class ScopeBuilder {
 
         //  DO NOT attempt column resolution here
         //  DO NOT push undeclared for identifiers
+    }
+
+    private recordFunctionCallVariableReference(expr: { name: string; start: number; end: number }): void {
+        const match = expr.name.match(/^(@@?[^.\s]+)\./);
+
+        if (!match) {
+            return;
+        }
+
+        const variableName = match[1];
+
+        if (!variableName.startsWith('@') || variableName.startsWith('@@')) {
+            return;
+        }
+
+        this.recordReference(
+            variableName,
+            {
+                start: expr.start,
+                end: expr.start + variableName.length
+            }
+        );
     }
 
     private getTableReferenceAliasColumns(ref: TableReference): string[] | undefined {

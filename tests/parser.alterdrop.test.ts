@@ -175,6 +175,19 @@ describe('T-SQL Parser - DDL Changes', () => {
             expect(stmt.action.constraint.kind).toBe('FOREIGN KEY');
             expect(stmt.action.constraint.name).toBe('FK_Orders_Customers');
         });
+
+        test('ADD CONSTRAINT DEFAULT ... FOR column', () => {
+            const stmt = parseOne<any>(`
+                ALTER TABLE [dbo].[GdoDuplicateMessage]
+                ADD CONSTRAINT [DF_GdoDuplicateMessage1_ATSReceivedOn]
+                DEFAULT (getutcdate()) FOR [ATSReceivedOn]
+            `);
+
+            expect(stmt.action.kind).toBe('ADD_CONSTRAINT');
+            expect(stmt.action.constraint.kind).toBe('DEFAULT');
+            expect(stmt.action.constraint.name).toBe('[DF_GdoDuplicateMessage1_ATSReceivedOn]');
+            expect(stmt.action.constraint.columns).toEqual(['[ATSReceivedOn]']);
+        });
     });
 
     describe('ALTER INDEX', () => {

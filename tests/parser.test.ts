@@ -312,6 +312,41 @@ describe('T-SQL Parser', () => {
         expect((stmt.body as any).type).toBe('SelectStatement');
     });
 
+    test('should parse parenthesized standalone select inside procedure body', () => {
+        const sql = `
+            CREATE PROCEDURE [dbo].[PROC_ATS_GetProductNotifications_2012I1]
+            (
+                  @ResultCount INT,
+                  @RegionId INT
+            )
+            AS
+            BEGIN
+                IF(@ResultCount>0)SET ROWCOUNT @ResultCount
+                (
+                    (
+                        SELECT
+                            TOP 1 CreationDate, Info, NotificationType
+                        FROM PRODUCT productRow WITH (NOLOCK)
+                        INNER JOIN ProductCatalog catalogRow WITH (NOLOCK)
+                            ON productRow.ID = catalogRow.ProductID
+                        INNER JOIN ProductCountry countryRow
+                            ON (
+                                countryRow.ProductId = productRow.Id
+                                AND catalogRow.CatalogID = @RegionId
+                            )
+                        INNER JOIN ProductNotification notificationRow
+                            ON (countryRow.Id = notificationRow.ProductCountryId)
+                    )
+                )
+                ORDER BY CreationDate DESC
+            END
+        `;
+
+        const result = new Parser(new Lexer(sql)).parse();
+
+        expect(result.issues).toEqual([]);
+    });
+
     test('should parse parenthesized joined table source in FROM', () => {
         const sql = `
             SELECT baseRow.Id
@@ -1366,6 +1401,34 @@ describe('T-SQL Parser - Deep Expression Validation', () => {
             expect(from.hints).toContain('TABLOCK');
 
             expect(getSqlFragment(sql, from)).toBe("FROM Products p WITH (NOLOCK, INDEX(PK_Products), TABLOCK)");
+        });
+
+        test('should parse table constraint WITH index options and ON storage inside CREATE TABLE', () => {
+            const sql = `
+                CREATE TABLE dbo.GdoDuplicateMessage (
+                    DuplicateID INT NOT NULL,
+                    CONSTRAINT PK_GdoDuplicateMessage PRIMARY KEY CLUSTERED
+                    (
+                        DuplicateID ASC
+                    )
+                    WITH (
+                        PAD_INDEX = OFF,
+                        STATISTICS_NORECOMPUTE = OFF,
+                        IGNORE_DUP_KEY = OFF,
+                        ALLOW_ROW_LOCKS = ON,
+                        ALLOW_PAGE_LOCKS = ON
+                    ) ON [PRIMARY]
+                ) ON [PRIMARY] TEXTIMAGE_ON [PRIMARY]
+            `;
+
+            const result = new Parser(new Lexer(sql)).parse();
+            const stmt = result.ast.body[0] as CreateNode;
+
+            expect(result.issues).toEqual([]);
+            expect(stmt.constraints).toHaveLength(1);
+            expect(stmt.constraints?.[0].kind).toBe('PRIMARY KEY');
+            expect(stmt.constraints?.[0].storage?.name).toBe('[PRIMARY]');
+            expect(stmt.columns?.some(col => col.name === 'WITH')).toBe(false);
         });
 
         test('should handle legacy hint syntax without WITH keyword', () => {

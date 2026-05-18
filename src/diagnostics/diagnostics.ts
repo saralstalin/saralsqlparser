@@ -16,6 +16,7 @@ import {
     NodeLocation,
     ColumnNode,
     IdentifierNode,
+    TableReference,
 } from '../ast/types';
 
 import { ScopeBuilderResult, DuplicateDeclaration } from '../semantic/scopeBuilder';
@@ -38,6 +39,7 @@ export enum DiagnosticCode {
     UnusedVariable = 'VAR002',
     UnusedParameter = 'VAR003',
     VariableUsedBeforeSet = 'VAR004',
+    InvalidQualifiedTableVariableReference = 'VAR005',
     UnknownColumn = 'COL001',
     UnbracketedKeywordColumnName = 'NAM001',
 
@@ -65,6 +67,7 @@ export enum DiagnosticCode {
 export class DiagnosticEngine {
     private diagnostics: Diagnostic[] = [];
     private rootScope: Scope | null = null;
+    private invalidQualifiedTableVariables = new Set<string>();
     private static readonly KEYWORD_COLUMN_NAMES = new Set([
         'ADD', 'ALL', 'ALTER', 'AND', 'APPLY', 'AS', 'ASC',
         'BEGIN', 'BETWEEN', 'BREAK', 'BY',
@@ -93,14 +96,15 @@ export class DiagnosticEngine {
     run(program: Program, scopeResult: ScopeBuilderResult): Diagnostic[] {
         this.diagnostics = [];
         this.rootScope = scopeResult.root;
-
-        this.checkUndeclaredVariables(scopeResult);
-        this.checkUnusedSymbols(scopeResult);
-        this.checkDuplicateDeclarations(scopeResult);
+        this.invalidQualifiedTableVariables = new Set();
 
         for (const stmt of program.body) {
             this.visitStatement(stmt, false);
         }
+
+        this.checkUndeclaredVariables(scopeResult);
+        this.checkUnusedSymbols(scopeResult);
+        this.checkDuplicateDeclarations(scopeResult);
 
         return this.diagnostics.sort((a, b) => a.start - b.start);
     }
@@ -160,6 +164,10 @@ export class DiagnosticEngine {
                         symbol.metadata?.isOutput === true;
 
                     if (isOutputParameter && writeRefs.length > 0) {
+                        continue;
+                    }
+
+                    if (this.invalidQualifiedTableVariables.has(symbol.name.toLowerCase())) {
                         continue;
                     }
 
@@ -517,6 +525,8 @@ export class DiagnosticEngine {
 
             const table = ref.table;
 
+            this.checkInvalidQualifiedTableVariableReference(table, ref.start, ref.end);
+
             if (table?.type === 'TableReference') {
                 this.visitTableReferences([table], insideView);
             } else if (table?.type === 'SubqueryExpression') {
@@ -539,6 +549,8 @@ export class DiagnosticEngine {
                 this.checkTableHints(join.hints, join.start, join.end);
 
                 const jt = join.table;
+
+                this.checkInvalidQualifiedTableVariableReference(jt, join.start, join.end);
 
                 if (jt?.type === 'TableReference') {
                     this.visitTableReferences([jt], insideView);
@@ -580,6 +592,51 @@ export class DiagnosticEngine {
                 end,
             });
         }
+    }
+
+    private checkInvalidQualifiedTableVariableReference(
+        table: Expression | TableReference | null | undefined,
+        start: number,
+        end: number
+    ): void {
+        if (!table || table.type !== 'Identifier') {
+            return;
+        }
+
+        const invalidVariableName =
+            this.getInvalidQualifiedTableVariableName(table);
+
+        if (!invalidVariableName) {
+            return;
+        }
+
+        this.invalidQualifiedTableVariables.add(invalidVariableName.toLowerCase());
+
+        this.emit({
+            code: DiagnosticCode.InvalidQualifiedTableVariableReference,
+            message: `Invalid schema-qualified table variable reference '${table.name}'; use '${invalidVariableName}' directly in the FROM clause`,
+            severity: 'error',
+            start,
+            end,
+        });
+    }
+
+    private getInvalidQualifiedTableVariableName(expr: IdentifierNode): string | null {
+        if (expr.parts.length < 2) {
+            return null;
+        }
+
+        const lastPart = this.normalizeIdentifierPart(expr.parts[expr.parts.length - 1]);
+
+        if (!lastPart.startsWith('@')) {
+            return null;
+        }
+
+        return lastPart;
+    }
+
+    private normalizeIdentifierPart(part: string): string {
+        return part.trim().replace(/^\[(.*)\]$/, '$1');
     }
 
     private checkOptionClause(

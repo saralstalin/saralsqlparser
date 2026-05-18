@@ -26,6 +26,7 @@ import {
     IfNode,
     BlockNode,
     WithNode,
+    SelectNode,
     PrintNode,
     ErrorNode,
     RaiseErrorNode,
@@ -1300,6 +1301,10 @@ export class Parser {
             return this.parseLabel();
         }
 
+        if (this.isParenthesizedQueryStatementStart()) {
+            return this.parseParenthesizedQueryStatement();
+        }
+
         if (
             this.peekKeyword('ELSE') ||
             this.peekKeyword('END') ||
@@ -1438,6 +1443,120 @@ export class Parser {
         }
 
         return stmt;
+    }
+
+    private isParenthesizedQueryStatementStart(): boolean {
+        if (this.peek()?.type !== TokenType.OpenParen) {
+            return false;
+        }
+
+        let lookahead = 0;
+        while (this.peek(lookahead)?.type === TokenType.OpenParen) {
+            lookahead++;
+        }
+
+        const next = this.peek(lookahead);
+        return next?.value === 'SELECT';
+    }
+
+    private parseParenthesizedQueryStatement(): Statement {
+        const start = this.peek()!.offset;
+        let parenDepth = 0;
+
+        while (this.peek()?.type === TokenType.OpenParen) {
+            this.consume();
+            parenDepth++;
+        }
+
+        const query = this.parseQueryExpression();
+
+        while (
+            parenDepth > 0 &&
+            this.peek()?.type === TokenType.CloseParen
+        ) {
+            this.consume();
+            parenDepth--;
+        }
+
+        if (query.type === 'SelectStatement') {
+            this.parseSelectTail(query);
+        }
+
+        query.start = start;
+        query.end = this.lastConsumedEnd();
+
+        return query;
+    }
+
+    private parseSelectTail(select: SelectNode): void {
+        if (this.peekKeyword('ORDER')) {
+            this.consume();
+            this.matchKeyword('BY');
+
+            select.orderBy = this.parseList(() => {
+                const expr = this.parseExpression();
+
+                let direction: 'ASC' | 'DESC' = 'ASC';
+                let itemEnd = expr.end;
+
+                if (this.peekKeyword('DESC')) {
+                    const dirToken = this.consume();
+                    direction = 'DESC';
+                    itemEnd =
+                        dirToken.offset +
+                        dirToken.value.length;
+                } else if (this.peekKeyword('ASC')) {
+                    const dirToken = this.consume();
+                    direction = 'ASC';
+                    itemEnd =
+                        dirToken.offset +
+                        dirToken.value.length;
+                }
+
+                return {
+                    expression: expr,
+                    direction,
+                    start: expr.start,
+                    end: itemEnd
+                } as OrderByNode;
+            });
+        }
+
+        if (this.peekKeyword('OFFSET')) {
+            this.consume();
+            select.offset = this.parseExpression();
+
+            if (
+                this.peekKeyword('ROW') ||
+                this.peekKeyword('ROWS')
+            ) {
+                this.consume();
+            }
+
+            if (this.peekKeyword('FETCH')) {
+                this.consume();
+
+                if (this.peekKeyword('NEXT') || this.peekKeyword('FIRST')) {
+                    this.consume();
+                }
+
+                select.fetch = this.parseExpression();
+
+                if (this.peekKeyword('ROW') || this.peekKeyword('ROWS')) {
+                    this.consume();
+                }
+
+                if (this.peekKeyword('ONLY')) {
+                    this.consume();
+                }
+            }
+        }
+
+        if (this.peekKeyword('OPTION')) {
+            select.optionClause = this.parseOptionClause();
+        }
+
+        select.end = this.lastConsumedEnd();
     }
 
     private parseUse(): UseNode {
@@ -5334,6 +5453,16 @@ export class Parser {
                     break;
                 }
 
+                // Parenthesized queries can follow session-option SET forms
+                // like `SET ROWCOUNT @n (SELECT ...)`. Do not absorb the
+                // opening wrapper into the SET statement.
+                if (
+                    parts.length > 0 &&
+                    token.type === TokenType.OpenParen
+                ) {
+                    break;
+                }
+
                 // Structural keywords terminate the option, EXCEPT for ON
                 // and OFF which are valid terminal values in session options.
                 // Only apply this stop after at least one token has been
@@ -6222,6 +6351,7 @@ export class Parser {
                 endOffset =
                     this.skipCreatePreambleUntil([
                         'AS',
+                        'BEGIN',
                         'GO'
                     ]);
             }
@@ -11191,6 +11321,22 @@ export class Parser {
                         'Expected DEFAULT expression'
                     );
                 }
+
+                if (this.peek()?.value?.toUpperCase() === 'FOR') {
+                    this.consume();
+
+                    const targetColumn =
+                        this.parseMultipartIdentifier();
+
+                    if (targetColumn.type === 'Identifier') {
+                        columns = [targetColumn.name];
+                    } else {
+                        fail(
+                            'PARSE_CONSTRAINT_DEFAULT_FOR',
+                            'Expected column name after DEFAULT ... FOR'
+                        );
+                    }
+                }
             }
 
             // NOT FOR REPLICATION
@@ -11319,6 +11465,14 @@ export class Parser {
                 );
 
                 this.consume();
+            }
+
+            if (
+                (kind === 'PRIMARY KEY' || kind === 'UNIQUE') &&
+                this.peek()?.value?.toUpperCase() === 'WITH' &&
+                this.peek(1)?.type === TokenType.OpenParen
+            ) {
+                this.parseIndexOptionsWithClause();
             }
 
             if (

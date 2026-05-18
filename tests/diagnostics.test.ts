@@ -439,6 +439,82 @@ describe('VAR003 — unused parameter', () => {
 
         expect(d.length).toBe(0);
     });
+    test('does NOT fire when parameter is only referenced through invalid schema-qualified TVP syntax', () => {
+        const d = only(`
+            CREATE PROCEDURE [dbo].[UpdateSomeTable]
+                @UpdateSomeTable dbo.UpdateSomeTableType READONLY
+            AS
+            BEGIN
+                SELECT dsa.Id
+                FROM [dbo].[@UpdateSomeTable] dsa
+            END
+        `, DiagnosticCode.UnusedParameter);
+
+        expect(d).toHaveLength(0);
+    });
+
+    test('does NOT fire when XML parameter is used via .nodes()', () => {
+        const d = only(`
+            CREATE PROCEDURE dbo.ReadOrders
+                @Request XML
+            AS
+            BEGIN
+                SELECT rowAlias.NodeCol.value('OrderNumber[1]', 'BIGINT')
+                FROM @Request.nodes('/Request/Orders/Order') AS rowAlias(NodeCol)
+            END
+        `, DiagnosticCode.UnusedParameter);
+
+        expect(d).toHaveLength(0);
+    });
+
+    test('does NOT fire for function parameter used in body when RETURNS is followed directly by BEGIN', () => {
+        const d = only(`
+            CREATE FUNCTION [dbo].[GetTrimmedZipCode]
+            (
+                @CustomerZipCode VARCHAR(MAX)
+            )
+            RETURNS NVARCHAR(100)
+            BEGIN
+                SET @CustomerZipCode = REPLACE(@CustomerZipCode, ' ', '')
+
+                DECLARE @ZipCode NVARCHAR(100) = NULL
+                WHILE (LEN(@CustomerZipCode) > 0)
+                BEGIN
+                    SELECT @ZipCode = zipcode
+                    FROM zipcode WITH (NOLOCK)
+                    WHERE zipcode = @CustomerZipCode
+
+                    IF (@ZipCode IS NOT NULL)
+                        RETURN @ZipCode
+
+                    SET @CustomerZipCode = LEFT(@CustomerZipCode, LEN(@CustomerZipCode) - 1)
+                END
+
+                RETURN @ZipCode
+            END
+        `, DiagnosticCode.UnusedParameter);
+
+        expect(d).toHaveLength(0);
+    });
+});
+
+describe('VAR005 — invalid schema-qualified table variable reference', () => {
+    test('fires on schema-qualified TVP reference and points to the real fix', () => {
+        const d = only(`
+            CREATE PROCEDURE [dbo].[UpdateSomeTable]
+                @UpdateSomeTable dbo.UpdateSomeTableType READONLY
+            AS
+            BEGIN
+                SELECT dsa.Id
+                FROM [dbo].[@UpdateSomeTable] dsa
+            END
+        `, DiagnosticCode.InvalidQualifiedTableVariableReference);
+
+        expect(d).toHaveLength(1);
+        expect(d[0].severity).toBe('error');
+        expect(d[0].message).toContain('[dbo].[@UpdateSomeTable]');
+        expect(d[0].message).toContain('@UpdateSomeTable');
+    });
 });
 
 // ─── DML001: UPDATE without WHERE ────────────────────────────────────────────
