@@ -113,6 +113,7 @@ const result = analyze(sql);
 # Coverage Scorecard
 
 <p>
+<b>Everyday TSQL coverage:</b> ~94%<br>
 <b>Overall coverage:</b> ~78%<br>
 <b>Strongest areas:</b> expressions, SELECT grammar, procedural T-SQL, error recovery<br>
 <b>Largest gaps:</b> Azure-native DDL, advanced DDL/storage syntax, DCL, linked-server constructs
