@@ -66,6 +66,22 @@ describe('T-SQL Parser - CREATE INDEX', () => {
                 .toBe('NONCLUSTERED');
         });
 
+        test('mixed-case nonclustered index keyword', () => {
+            const stmt = parseOne<any>(`
+                Create NonClustered Index [IX_MissedKafkaLogs_RequestId_IsProcessed]
+                ON [dbo].[MissedKafkaLogs] ([RequestId], [IsProcessed])
+            `);
+
+            expect(stmt.type)
+                .toBe('CreateIndexStatement');
+
+            expect(stmt.clustered)
+                .toBe('NONCLUSTERED');
+
+            expect(stmt.name)
+                .toBe('[IX_MissedKafkaLogs_RequestId_IsProcessed]');
+        });
+
         test('unique clustered index', () => {
             const stmt = parseOne<any>(`
                 CREATE UNIQUE CLUSTERED INDEX cx_Product_Code

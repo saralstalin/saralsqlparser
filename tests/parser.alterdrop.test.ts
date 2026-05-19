@@ -188,6 +188,18 @@ describe('T-SQL Parser - DDL Changes', () => {
             expect(stmt.action.constraint.name).toBe('[DF_GdoDuplicateMessage1_ATSReceivedOn]');
             expect(stmt.action.constraint.columns).toEqual(['[ATSReceivedOn]']);
         });
+
+        test('ADD DEFAULT ... FOR column without constraint name', () => {
+            const stmt = parseOne<any>(`
+                ALTER TABLE dbo.MissedKafkaLogs
+                ADD DEFAULT (GETUTCDATE()) FOR CreatedOnUTC
+            `);
+
+            expect(stmt.action.kind).toBe('ADD_CONSTRAINT');
+            expect(stmt.action.constraint.kind).toBe('DEFAULT');
+            expect(stmt.action.constraint.name).toBeUndefined();
+            expect(stmt.action.constraint.columns).toEqual(['CreatedOnUTC']);
+        });
     });
 
     describe('ALTER INDEX', () => {

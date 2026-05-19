@@ -94,6 +94,19 @@ describe('T-SQL Parser - partitioning and filegroups', () => {
         expect(stmt.filegroups.map((x: any) => x.name)).toEqual(['[PRIMARY]']);
     });
 
+    test('CREATE PARTITION SCHEME parses optional PARTITION keyword before function name', () => {
+        const stmt = parseOne<any>(`
+            CREATE PARTITION SCHEME [SomeScheme]
+            AS PARTITION [SomeFunction] ALL TO([PRIMARY])
+        `);
+
+        expect(stmt.type).toBe('CreateStatement');
+        expect(stmt.objectType).toBe('PARTITION_SCHEME');
+        expect(stmt.partitionFunction.name).toBe('[SomeFunction]');
+        expect(stmt.allTo).toBe(true);
+        expect(stmt.filegroups.map((x: any) => x.name)).toEqual(['[PRIMARY]']);
+    });
+
     test('partitioning batch parses without issues', () => {
         const sql = `
             CREATE PARTITION FUNCTION pfId (INT)

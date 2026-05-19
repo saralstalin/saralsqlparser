@@ -75,6 +75,23 @@ describe('T-SQL Lexer - Tests', () => {
         expect(sql.substring(t2.offset, t2.offset + 1)).toBe('*');
     });
 
+    test('Comments: Should skip nested block comments', () => {
+        const sql = `
+            /*
+                /* nested */
+                SELECT 1
+            */
+            SELECT 2
+        `;
+        const lexer = new Lexer(sql);
+
+        const t1 = lexer.nextToken();
+        const t2 = lexer.nextToken();
+
+        expect(t1.value.toLowerCase()).toBe('select');
+        expect(t2.value).toBe('2');
+    });
+
     test('Edge Case: Bracketed keywords should be Identifiers', () => {
         const sql = 'SELECT [FROM] FROM [SELECT]';
         const lexer = new Lexer(sql);

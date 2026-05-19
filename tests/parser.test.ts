@@ -785,6 +785,21 @@ describe('T-SQL Parser', () => {
         expect((node.columns[0].expression as any).name).toBe('OUTPUT');
     });
 
+    test('should parse LEFT and RIGHT as scalar function calls in projections', () => {
+        const sql = `
+            SELECT LEFT(colA, 1) AS LeftValue,
+                   RIGHT(colB, 2) AS RightValue
+            FROM dbo.SampleRows
+        `;
+
+        const node = parse(sql).body[0] as SelectNode;
+
+        expect(node.columns[0].expression.type).toBe('FunctionCall');
+        expect((node.columns[0].expression as any).name).toBe('LEFT');
+        expect(node.columns[1].expression.type).toBe('FunctionCall');
+        expect((node.columns[1].expression as any).name).toBe('RIGHT');
+    });
+
     // 30.5. DROP TABLE / VIEW / PROC
     test('should handle DROP TABLE', () => {
         const sql = `DROP TABLE #Sales`;
@@ -1429,6 +1444,58 @@ describe('T-SQL Parser - Deep Expression Validation', () => {
             expect(stmt.constraints?.[0].kind).toBe('PRIMARY KEY');
             expect(stmt.constraints?.[0].storage?.name).toBe('[PRIMARY]');
             expect(stmt.columns?.some(col => col.name === 'WITH')).toBe(false);
+        });
+
+        test('should keep named inline UNIQUE and DEFAULT constraints on their columns', () => {
+            const sql = `
+                CREATE TABLE [dbo].[Configuration]
+                (
+                    [Id] INT IDENTITY(1,1) NOT NULL,
+                    [ConfigName] VARCHAR(50) CONSTRAINT [UK_Configuration_ConfigName] UNIQUE NOT NULL,
+                    [ConfigValue] VARCHAR(2000) NOT NULL,
+                    [IsActive] BIT NOT NULL,
+                    [UpdatedBy] NVARCHAR(50) NULL,
+                    [UpdatedDate] DATETIME CONSTRAINT [DC_Configuration_UpdatedDate] DEFAULT (GETUTCDATE()) NOT NULL,
+                    [Comment] VARCHAR(255) NULL,
+                    CONSTRAINT PK_Configuration_Id PRIMARY KEY CLUSTERED(Id ASC)
+                );
+            `;
+
+            const result = new Parser(new Lexer(sql)).parse();
+            const stmt = result.ast.body[0] as CreateNode;
+            const configName = stmt.columns?.find(col => col.name === '[ConfigName]');
+            const updatedDate = stmt.columns?.find(col => col.name === '[UpdatedDate]');
+
+            expect(result.issues).toEqual([]);
+            expect(configName?.constraints?.some(c => c.kind === 'UNIQUE')).toBe(true);
+            expect(configName?.constraints?.some(c => c.kind === 'NOT NULL')).toBe(true);
+            expect(updatedDate?.constraints?.some(c => c.kind === 'DEFAULT')).toBe(true);
+            expect(updatedDate?.constraints?.some(c => c.kind === 'NOT NULL')).toBe(true);
+            expect(stmt.constraints).toHaveLength(1);
+            expect(stmt.columns?.some(col => col.name === 'NOT')).toBe(false);
+        });
+
+        test('should parse inline table indexes inside CREATE TABLE', () => {
+            const sql = `
+                CREATE TABLE [dbo].[ItemsSelected]
+                (
+                    [Id] BIGINT IDENTITY(1,1) NOT NULL,
+                    [ItemsId] BIGINT,
+                    [ContextId] BIGINT,
+                    CONSTRAINT [PK_ItemsSelected] PRIMARY KEY CLUSTERED ([Id] ASC),
+                    INDEX NC_ItemsSelected_ContextId_ItemsId NONCLUSTERED ([ContextId], [ItemsId])
+                )
+            `;
+
+            const result = new Parser(new Lexer(sql)).parse();
+            const stmt = result.ast.body[0] as CreateNode;
+
+            expect(result.issues).toEqual([]);
+            expect(stmt.indexes).toHaveLength(1);
+            expect(stmt.indexes?.[0].name).toBe('NC_ItemsSelected_ContextId_ItemsId');
+            expect(stmt.indexes?.[0].clustered).toBe('NONCLUSTERED');
+            expect(stmt.indexes?.[0].columns.map(c => c.name)).toEqual(['[ContextId]', '[ItemsId]']);
+            expect(stmt.columns?.some(col => col.name === 'INDEX')).toBe(false);
         });
 
         test('should handle legacy hint syntax without WITH keyword', () => {

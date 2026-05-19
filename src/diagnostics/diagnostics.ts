@@ -44,6 +44,8 @@ export enum DiagnosticCode {
     UnbracketedKeywordColumnName = 'NAM001',
 
     MissingCommaBeforeTableConstraint = 'DDL001',
+    UnnamedKeyConstraint = 'DDL002',
+    UnnamedDefaultConstraint = 'DDL003',
 
     UpdateWithoutWhere = 'DML001',
     DeleteWithoutWhere = 'DML002',
@@ -476,6 +478,8 @@ export class DiagnosticEngine {
                         end: constraint.end,
                     });
                 }
+
+                this.checkUnnamedConstraint(constraint);
             }
         }
 
@@ -485,6 +489,10 @@ export class DiagnosticEngine {
                 column.start,
                 column.start + column.name.length
             );
+
+            for (const constraint of column.constraints ?? []) {
+                this.checkUnnamedConstraint(constraint);
+            }
         }
 
         if (!stmt.body) return;
@@ -794,6 +802,39 @@ export class DiagnosticEngine {
                 column.start,
                 column.start + column.name.length
             );
+
+            for (const constraint of column.constraints ?? []) {
+                this.checkUnnamedConstraint(constraint);
+            }
+        }
+
+        if (stmt.action?.kind === 'ADD_CONSTRAINT') {
+            this.checkUnnamedConstraint(stmt.action.constraint);
+        }
+    }
+
+    private checkUnnamedConstraint(constraint: { kind: string; name?: string; start: number; end: number }): void {
+        if (
+            (constraint.kind === 'PRIMARY KEY' || constraint.kind === 'UNIQUE') &&
+            !constraint.name
+        ) {
+            this.emit({
+                code: DiagnosticCode.UnnamedKeyConstraint,
+                message: `${constraint.kind} constraint is unnamed; naming keys makes automated drop/recreate deployments safer`,
+                severity: 'warning',
+                start: constraint.start,
+                end: constraint.end,
+            });
+        }
+
+        if (constraint.kind === 'DEFAULT' && !constraint.name) {
+            this.emit({
+                code: DiagnosticCode.UnnamedDefaultConstraint,
+                message: `DEFAULT constraint is unnamed; naming defaults makes automated drop/recreate deployments safer`,
+                severity: 'warning',
+                start: constraint.start,
+                end: constraint.end,
+            });
         }
     }
 

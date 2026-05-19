@@ -450,6 +450,7 @@ export interface CreateNode extends NodeLocation, Recoverable {
     nameNode: IdentifierNode;
     columns?: ColumnDefinition[];
     constraints?: ConstraintNode[];
+    indexes?: TableIndexNode[];
     parameters?: ParameterDefinition[];
     body?: Statement | Statement[];
     isTableType?: boolean;
@@ -686,6 +687,15 @@ export interface CreateIndexNode extends NodeLocation, Recoverable {
     where?: Expression;
     options?: IndexOptionNode[];
     storage?: StorageTargetNode;
+}
+
+export interface TableIndexNode extends NodeLocation, Recoverable {
+    type: 'TableIndexDefinition';
+    unique: boolean;
+    clustered: 'CLUSTERED' | 'NONCLUSTERED' | null;
+    name: string;
+    nameNode: IdentifierNode | null;
+    columns: IndexColumnNode[];
 }
 
 // ===============================

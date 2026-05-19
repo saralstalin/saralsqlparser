@@ -468,12 +468,25 @@ export class Lexer {
             if (this.input.startsWith('/*', this.pos)) {
                 this.consume(); // /
                 this.consume(); // *
-                while (this.pos < this.input.length && !(this.peek() === '*' && this.peek(1) === '/')) {
+
+                let depth = 1;
+
+                while (this.pos < this.input.length && depth > 0) {
+                    if (this.input.startsWith('/*', this.pos)) {
+                        this.consume(); // /
+                        this.consume(); // *
+                        depth++;
+                        continue;
+                    }
+
+                    if (this.input.startsWith('*/', this.pos)) {
+                        this.consume(); // *
+                        this.consume(); // /
+                        depth--;
+                        continue;
+                    }
+
                     this.consume();
-                }
-                if (this.pos < this.input.length) {
-                    this.consume(); // *
-                    this.consume(); // /
                 }
                 continue;
             }

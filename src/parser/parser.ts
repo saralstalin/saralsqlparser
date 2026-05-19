@@ -35,6 +35,7 @@ import {
     ConstraintNode,
     WhileNode,
     CreateIndexNode,
+    TableIndexNode,
     IndexColumnNode,
     IndexOptionNode,
     StorageTargetNode,
@@ -5541,12 +5542,14 @@ export class Parser {
     private parseTableColumns(): {
         columns: ColumnDefinition[];
         constraints: ConstraintNode[];
+        indexes: TableIndexNode[];
         incomplete?: boolean;
     } {
         this.match(TokenType.OpenParen);
 
         const columns: ColumnDefinition[] = [];
         const constraints: ConstraintNode[] = [];
+        const indexes: TableIndexNode[] = [];
 
         let incomplete = false;
         let nextTableConstraintMissingComma = false;
@@ -5587,6 +5590,21 @@ export class Parser {
                     }
 
                     constraints.push(constraint);
+
+                    if (
+                        this.peek()?.type === TokenType.Comma
+                    ) {
+                        this.consume();
+                    }
+
+                    continue;
+                }
+
+                if (
+                    value === 'INDEX' ||
+                    (value === 'UNIQUE' && this.peek(1)?.value?.toUpperCase() === 'INDEX')
+                ) {
+                    indexes.push(this.parseInlineTableIndex());
 
                     if (
                         this.peek()?.type === TokenType.Comma
@@ -5819,9 +5837,86 @@ export class Parser {
         return {
             columns,
             constraints,
+            indexes,
             ...(incomplete
                 ? { incomplete: true }
                 : {})
+        };
+    }
+
+    private parseInlineTableIndex(): TableIndexNode {
+        const startToken = this.peek()!;
+        let unique = false;
+        let clustered: TableIndexNode['clustered'] = null;
+
+        if (this.peek()?.value?.toUpperCase() === 'UNIQUE') {
+            this.consume();
+            unique = true;
+        }
+
+        this.matchKeyword('INDEX');
+
+        let nameNode: IdentifierNode | null = null;
+        const nameExpr = this.parseMultipartIdentifier(
+            undefined,
+            { allowStructuralFirstSegment: true }
+        );
+
+        if (nameExpr.type === 'Identifier') {
+            nameNode = nameExpr;
+        } else {
+            throw new Error('Expected inline table index name');
+        }
+
+        if (this.peek()?.value?.toUpperCase() === 'CLUSTERED') {
+            this.consume();
+            clustered = 'CLUSTERED';
+        } else if (this.peek()?.value?.toUpperCase() === 'NONCLUSTERED') {
+            this.consume();
+            clustered = 'NONCLUSTERED';
+        }
+
+        this.match(TokenType.OpenParen);
+
+        const columns = this.parseList<IndexColumnNode>(() => {
+            const start = this.peek()!;
+            const columnExpr = this.parseMultipartIdentifier(
+                undefined,
+                { allowStructuralFirstSegment: true }
+            );
+
+            if (columnExpr.type !== 'Identifier') {
+                throw new Error('Expected index column name');
+            }
+
+            let direction: 'ASC' | 'DESC' = 'ASC';
+            const dir = this.peek()?.value?.toUpperCase();
+            if (dir === 'ASC' || dir === 'DESC') {
+                this.consume();
+                direction = dir;
+            }
+
+            return {
+                type: 'IndexColumn',
+                name: columnExpr.name,
+                nameNode: columnExpr,
+                direction,
+                start: start.offset,
+                end: this.lastConsumedEnd()
+            };
+        });
+
+        this.match(TokenType.CloseParen);
+
+        return {
+            type: 'TableIndexDefinition',
+            unique,
+            clustered,
+            name: nameNode.name,
+            nameNode,
+            columns,
+            start: startToken.offset,
+            end: this.lastConsumedEnd()
         };
     }
 
@@ -6102,6 +6197,7 @@ export class Parser {
         // body pieces
         let columns: ColumnDefinition[] | undefined;
         let constraints: ConstraintNode[] | undefined;
+        let indexes: TableIndexNode[] | undefined;
         let parameters: ParameterDefinition[] | undefined;
         let body: Statement | Statement[] | undefined;
         let isTableType: boolean | undefined;
@@ -6168,6 +6264,8 @@ export class Parser {
                 columns = tableDef.columns;
                 constraints =
                     tableDef.constraints;
+                indexes =
+                    tableDef.indexes;
 
                 endOffset =
                     this.lastConsumedEnd();
@@ -6188,6 +6286,7 @@ export class Parser {
                 incomplete = true;
                 columns = [];
                 constraints = [];
+                indexes = [];
 
                 this.addRecoverableError(
                     errors,
@@ -6567,6 +6666,10 @@ export class Parser {
                 }
                 this.consume();
 
+                if (this.peekKeyword('PARTITION')) {
+                    this.consume();
+                }
+
                 const functionExpr = this.parseMultipartIdentifier(
                     undefined,
                     { allowStructuralFirstSegment: true }
@@ -6616,6 +6719,7 @@ export class Parser {
             nameNode,
             columns,
             constraints,
+            ...(indexes?.length ? { indexes } : {}),
             parameters,
             body,
             isTableType,
@@ -6817,6 +6921,10 @@ export class Parser {
             const token = this.peek();
 
             if (token?.type !== TokenType.Keyword) {
+                return false;
+            }
+
+            if (this.peek(1)?.type === TokenType.OpenParen) {
                 return false;
             }
 
@@ -10931,7 +11039,14 @@ export class Parser {
             t0 === 'CONSTRAINT' &&
             (
                 (t2 === 'PRIMARY' && t3 === 'KEY') ||
-                t2 === 'UNIQUE' ||
+                (
+                    t2 === 'UNIQUE' &&
+                    (
+                        this.peek(3)?.value === 'CLUSTERED' ||
+                        this.peek(3)?.value === 'NONCLUSTERED' ||
+                        this.peek(3)?.type === TokenType.OpenParen
+                    )
+                ) ||
                 (t2 === 'FOREIGN' && t3 === 'KEY')
             )
         ) {
@@ -11308,7 +11423,22 @@ export class Parser {
                 ) {
                     try {
                         expression =
-                            this.parseExpression();
+                            this.parseExpression(
+                                Precedence.LOWEST,
+                                new Set([
+                                    'FOR',
+                                    'CONSTRAINT',
+                                    'PRIMARY',
+                                    'FOREIGN',
+                                    'UNIQUE',
+                                    'CHECK',
+                                    'DEFAULT',
+                                    'NOT',
+                                    'NULL',
+                                    'REFERENCES',
+                                    'IDENTITY'
+                                ])
+                            );
                     } catch {
                         fail(
                             'PARSE_CONSTRAINT_DEFAULT_EXPR',
@@ -11653,7 +11783,7 @@ export class Parser {
         // 1. UNIQUE (optional)
         // UNIQUE is a Keyword token — use value comparison for consistency
         let unique = false;
-        if (this.peek()?.value === 'UNIQUE') {
+        if (this.peek()?.value?.toUpperCase() === 'UNIQUE') {
             this.consume();
             unique = true;
             endOffset = this.lastConsumedEnd();
@@ -11662,11 +11792,11 @@ export class Parser {
         // 2. CLUSTERED / NONCLUSTERED (optional)
         // Not in the lexer keyword set — tokenize as Identifier, must use value check
         let clustered: CreateIndexNode['clustered'] = null;
-        if (this.peek()?.value === 'CLUSTERED') {
+        if (this.peek()?.value?.toUpperCase() === 'CLUSTERED') {
             this.consume();
             clustered = 'CLUSTERED';
             endOffset = this.lastConsumedEnd();
-        } else if (this.peek()?.value === 'NONCLUSTERED') {
+        } else if (this.peek()?.value?.toUpperCase() === 'NONCLUSTERED') {
             this.consume();
             clustered = 'NONCLUSTERED';
             endOffset = this.lastConsumedEnd();
@@ -11674,7 +11804,7 @@ export class Parser {
 
         // 3. INDEX keyword
         // INDEX is a Keyword token — value check consistent with above
-        if (this.peek()?.value === 'INDEX') {
+        if (this.peek()?.value?.toUpperCase() === 'INDEX') {
             this.consume();
             endOffset = this.lastConsumedEnd();
         } else {
@@ -12726,6 +12856,7 @@ export class Parser {
         const hasName =
             next &&
             next.type !== TokenType.Semicolon &&
+            this.peek(1)?.value !== ':' &&
             (
                 next.type === TokenType.Identifier ||
                 next.type === TokenType.Variable
@@ -12832,9 +12963,7 @@ export class Parser {
         let action: AlterTableAction;
 
         if (actionVal === 'ADD') {
-            if (this.peekKeyword('CONSTRAINT')) {
-                // FIX: Do NOT consume 'CONSTRAINT' here.
-                // parseConstraint() needs to see that token to correctly parse the name.
+            if (this.peekKeyword('CONSTRAINT') || this.peekKeyword('DEFAULT')) {
                 action = {
                     kind: 'ADD_CONSTRAINT',
                     constraint: this.parseConstraint(),

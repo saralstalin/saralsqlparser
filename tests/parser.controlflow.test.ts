@@ -260,6 +260,19 @@ describe('T-SQL Parser - RETURN', () => {
         expect(result.ast.body.filter((s: any) => s.type === 'LabelStatement')).toHaveLength(2);
     });
 
+    test('should not consume a following label as a transaction name', () => {
+        const result = parseResult(`
+            COMMIT TRANSACTION
+            GOTO EndSave
+            QuitWithRollback:
+                IF (@@TRANCOUNT > 0) ROLLBACK TRANSACTION
+            EndSave:
+        `);
+
+        expect(result.issues).toEqual([]);
+        expect(result.ast.body.filter((s: any) => s.type === 'LabelStatement')).toHaveLength(2);
+    });
+
     test('should parse WAITFOR TIME', () => {
         const stmt = parseOne<any>(`WAITFOR TIME '22:30:00'`);
 

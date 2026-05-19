@@ -949,6 +949,27 @@ describe('DDL001 â€” missing comma before table-level constraint', () => {
 
         expect(d.length).toBe(0);
     });
+
+    test('does NOT fire for named inline UNIQUE and DEFAULT column constraints', () => {
+        const d = only(
+            `
+            CREATE TABLE [dbo].[Configuration]
+            (
+                [Id] INT IDENTITY(1,1) NOT NULL,
+                [ConfigName] VARCHAR(50) CONSTRAINT [UK_Configuration_ConfigName] UNIQUE NOT NULL,
+                [ConfigValue] VARCHAR(2000) NOT NULL,
+                [IsActive] BIT NOT NULL,
+                [UpdatedBy] NVARCHAR(50) NULL,
+                [UpdatedDate] DATETIME CONSTRAINT [DC_Configuration_UpdatedDate] DEFAULT (GETUTCDATE()) NOT NULL,
+                [Comment] VARCHAR(255) NULL,
+                CONSTRAINT PK_Configuration_Id PRIMARY KEY CLUSTERED(Id ASC)
+            );
+            `,
+            DiagnosticCode.MissingCommaBeforeTableConstraint
+        );
+
+        expect(d.length).toBe(0);
+    });
 });
 
 describe('CUR001 â€” cursor usage', () => {
@@ -1227,5 +1248,99 @@ describe('combined real-world scenarios', () => {
         expect(codes).toContain(DiagnosticCode.UpdateWithoutWhere);
         expect(codes).toContain(DiagnosticCode.DeleteWithoutWhere);
         expect(codes).toContain(DiagnosticCode.InsertWithoutColumnList);
+    });
+});
+
+describe('DDL002 - unnamed key constraint', () => {
+    test('fires for inline unnamed PRIMARY KEY constraint', () => {
+        const d = only(
+            `
+            CREATE TABLE dbo.MissedKafkaLogs(
+                Id INT IDENTITY PRIMARY KEY,
+                RequestId VARCHAR(100) NULL
+            )
+            `,
+            DiagnosticCode.UnnamedKeyConstraint
+        );
+
+        expect(d.length).toBe(1);
+        expect(d[0].severity).toBe('warning');
+        expect(d[0].message).toContain('PRIMARY KEY');
+    });
+
+    test('does not fire for named table-level PRIMARY KEY constraint', () => {
+        const d = only(
+            `
+            CREATE TABLE dbo.MissedKafkaLogs(
+                Id INT NOT NULL,
+                CONSTRAINT PK_MissedKafkaLogs PRIMARY KEY (Id)
+            )
+            `,
+            DiagnosticCode.UnnamedKeyConstraint
+        );
+
+        expect(d.length).toBe(0);
+    });
+});
+
+describe('DDL003 - unnamed default constraint', () => {
+    test('fires for inline unnamed DEFAULT constraint', () => {
+        const d = only(
+            `
+            CREATE TABLE dbo.MissedKafkaLogs(
+                CreatedOnUTC DATETIME NOT NULL DEFAULT GETUTCDATE()
+            )
+            `,
+            DiagnosticCode.UnnamedDefaultConstraint
+        );
+
+        expect(d.length).toBe(1);
+        expect(d[0].severity).toBe('warning');
+        expect(d[0].message).toContain('DEFAULT');
+    });
+
+    test('does not fire for named inline DEFAULT constraint', () => {
+        const d = only(
+            `
+            CREATE TABLE dbo.MissedKafkaLogs(
+                CreatedOnUTC DATETIME CONSTRAINT DF_MissedKafkaLogs_CreatedOnUTC DEFAULT GETUTCDATE() NOT NULL
+            )
+            `,
+            DiagnosticCode.UnnamedDefaultConstraint
+        );
+
+        expect(d.length).toBe(0);
+    });
+
+    test('fires for unnamed ALTER TABLE ADD DEFAULT constraint', () => {
+        const d = only(
+            `
+            ALTER TABLE dbo.MissedKafkaLogs
+            ADD DEFAULT (GETUTCDATE()) FOR CreatedOnUTC
+            `,
+            DiagnosticCode.UnnamedDefaultConstraint
+        );
+
+        expect(d.length).toBe(1);
+    });
+});
+
+describe('inline table indexes in CREATE TABLE', () => {
+    test('do not trigger keyword-column diagnostics', () => {
+        const d = only(
+            `
+            CREATE TABLE [dbo].[ItemsSelected]
+            (
+                [Id] BIGINT IDENTITY(1,1) NOT NULL,
+                [ItemsId] BIGINT,
+                [ContextId] BIGINT,
+                CONSTRAINT [PK_ItemsSelected] PRIMARY KEY CLUSTERED ([Id] ASC),
+                INDEX NC_ItemsSelected_ContextId_ItemsId NONCLUSTERED ([ContextId], [ItemsId])
+            )
+            `,
+            DiagnosticCode.UnbracketedKeywordColumnName
+        );
+
+        expect(d.length).toBe(0);
     });
 });
