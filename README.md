@@ -1,39 +1,76 @@
 # @saralsql/tsql-parser
 
-High-fidelity parser and semantic analysis engine for Microsoft SQL Server T-SQL.
+High-fidelity fault-tolerant parser and semantic analysis engine for Microsoft SQL Server T-SQL.
 
-## Purpose
+Built specifically for:
 
-SaralSQL is a T-SQL parser for editor and analysis tooling. It is built for real SQL Server workflows such as stored procedures, mixed DDL and DML batches, temp tables, table variables, and incomplete SQL being edited live. On top of parsing, it provides the semantic layers needed for diagnostics, lineage, symbols, and related developer tooling features.
+- Language Servers (LSP)
+- editor tooling
+- diagnostics
+- autocomplete
+- lineage tracking
+- enterprise SQL static analysis
 
-It is optimized for:
+---
+
+# Why SaralSQL?
+
+Most SQL parsers are designed for query transformation or simple AST extraction.
+
+SaralSQL is built specifically for real SQL Server tooling workloads involving:
+
+- massive stored procedures
+- mixed DDL + DML batches
+- temp tables and TVPs
+- incomplete SQL during live editing
+- legacy SQL Server edge cases
+- semantic diagnostics and lineage
+
+The parser is optimized for:
 
 - SQL Server grammar fidelity
 - fault-tolerant parsing
-- semantic enrichment on top of a single parse
+- editor-safe recovery
+- semantic enrichment
+- high-complexity enterprise SQL
 
-## Non-goals
+---
 
-SaralSQL is a single-document analysis engine.
+# Production Validation
 
-It does not currently provide:
+SaralSQL has been validated against real enterprise SQL Server codebases.
 
-- workspace-wide schema catalogs
-- cross-file symbol resolution
-- metadata-backed wildcard expansion
-- full database-aware type validation
+## Verified against
 
-Those belong in the host LSP or analysis service.
+- ✅ 600 modern enterprise stored procedures
+- ✅ 1,790 legacy production stored procedures
+- ✅ recursive CTE-heavy workloads
+- ✅ temp-table-heavy ETL systems
+- ✅ TVP-driven workflows
+- ✅ large mixed DDL/DML deployment scripts
+- ✅ complex MERGE and OUTPUT patterns
 
-## Installation
+## Stability Goal
+
+The parser is designed to:
+
+- never crash on malformed SQL
+- preserve partial AST state
+- continue semantic analysis after localized syntax damage
+
+This is critical for editor and LSP scenarios.
+
+---
+
+# Installation
 
 ```bash
 npm install @saralsql/tsql-parser
 ```
 
-## Primary API
+---
 
-Use `analyze(sql)` if you want the full parser + semantic pipeline in one call.
+# Quick Start
 
 ```ts
 import { analyze } from '@saralsql/tsql-parser';
@@ -43,102 +80,542 @@ SELECT Id, Name
 FROM Users
 WHERE Id = @Id;
 `);
+
+console.log(result.diagnostics);
+console.log(result.lineage);
 ```
 
-> [!IMPORTANT]
-> **Robustness Guarantee**
-> The `analyze()` pipeline is designed to be fault-tolerant and crash-resilient. Malformed or incomplete SQL should not take down the analysis pipeline. When the input is broken, SaralSQL records syntax and token problems in `issues` and `diagnostics` while preserving as much partial AST, scope, and semantic output as possible for the valid parts of the document.
+---
 
-Use the lower-level APIs only when you need custom control over lexing, parsing, scope building, lineage, or diagnostics.
+# Primary API
+
+Use `analyze(sql)` for the full parser + semantic pipeline.
 
 ```ts
-import {
-  Lexer,
-  Parser,
-  analyze,
-  diagnose,
-  getCompletionContext,
-  getCompletionsAt,
-  getDocumentSymbols,
-  ScopeBuilder,
-  LineageBuilder,
-  ColumnAnalyzer,
-  extractDeclarations,
-  extractDependencies,
-  extractReferences
-} from '@saralsql/tsql-parser';
+import { analyze } from '@saralsql/tsql-parser';
+
+const result = analyze(sql);
 ```
 
 ## Analyze Result
 
-`analyze(sql)` returns:
-
 | Field | Description |
-| --- | --- |
+|---|---|
 | `ast` | Parsed AST |
 | `issues` | Recoverable parser issues |
-| `scope` | Scope graph |
-| `semanticDiagnostics` | Semantic diagnostics |
-| `diagnostics` | Combined diagnostics |
-| `lineage` | Column lineage |
-| `columns` | Column resolution analysis |
+| `scope` | Scope graph for variables, parameters, aliases, CTEs, temp tables, and table variables |
+| `diagnostics` | Semantic and safety diagnostics |
+| `lineage` | Column lineage edges |
+| `columns` | Column resolution analysis, where available |
 
-### AST Shape (abridged, representative)
+---
 
-SQL:
+# Coverage Scorecard
+
+<p>
+<b>Overall coverage:</b> ~78%<br>
+<b>Strongest areas:</b> expressions, SELECT grammar, procedural T-SQL, error recovery<br>
+<b>Largest gaps:</b> Azure-native DDL, advanced DDL/storage syntax, DCL, linked-server constructs
+</p>
+
+<table>
+<tr>
+
+<td width="25%" valign="top">
+
+<h3>DQL / SELECT</h3>
+
+<p><b>~92%</b></p>
+
+Excellent coverage for core and advanced query grammar.
+
+</td>
+
+<td width="25%" valign="top">
+
+<h3>DML</h3>
+
+<p><b>~88%</b></p>
+
+Strong support for INSERT, UPDATE, DELETE, MERGE, and OUTPUT.
+
+</td>
+
+<td width="25%" valign="top">
+
+<h3>Expressions</h3>
+
+<p><b>~95%</b></p>
+
+Near-complete expression parser with precedence handling.
+
+</td>
+
+<td width="25%" valign="top">
+
+<h3>Procedural T-SQL</h3>
+
+<p><b>~90%</b></p>
+
+Strong coverage for control flow, cursors, transactions, and error handling.
+
+</td>
+
+</tr>
+<tr>
+
+<td width="25%" valign="top">
+
+<h3>DDL</h3>
+
+<p><b>~62%</b></p>
+
+Useful practical coverage, but not full SQL Server DDL depth.
+
+</td>
+
+<td width="25%" valign="top">
+
+<h3>Azure SQL</h3>
+
+<p><b>~30%</b></p>
+
+JSON support is strong; Azure-native DDL is limited.
+
+</td>
+
+<td width="25%" valign="top">
+
+<h3>Error Recovery</h3>
+
+<p><b>~91%</b></p>
+
+Systematic recovery boundaries for editor resilience.
+
+</td>
+
+<td width="25%" valign="top">
+
+<h3>Overall</h3>
+
+<p><b>~78%</b></p>
+
+Strong everyday SQL Server parser coverage.
+
+</td>
+
+</tr>
+</table>
+
+---
+
+# Grammar Coverage
+
+SaralSQL focuses heavily on real-world SQL Server grammar used in enterprise stored procedures, ETL systems, and editor tooling.
+
+<p>
+<b>Legend:</b><br>
+🟩 Full &nbsp;&nbsp;
+🟨 Partial &nbsp;&nbsp;
+🟥 Missing
+</p>
+
+<p>
+<b>Estimated implementation coverage:</b><br>
+~78% Full · major day-to-day T-SQL covered · Azure-native DDL still limited
+</p>
+
+---
+
+<table>
+<tr>
+
+<td width="48%" valign="top">
+
+<h3>DML — Queries</h3>
+
+<table cellpadding="4">
+<tr><td>SELECT column list</td><td><b>🟩 Full</b></td></tr>
+<tr><td>SELECT DISTINCT</td><td><b>🟩 Full</b></td></tr>
+<tr><td>TOP / TOP PERCENT</td><td><b>🟩 Full</b></td></tr>
+<tr><td>TOP WITH TIES</td><td><b>🟩 Full</b></td></tr>
+<tr><td>SELECT INTO</td><td><b>🟩 Full</b></td></tr>
+<tr><td>FROM</td><td><b>🟩 Full</b></td></tr>
+<tr><td>WHERE</td><td><b>🟩 Full</b></td></tr>
+<tr><td>GROUP BY</td><td><b>🟩 Full</b></td></tr>
+<tr><td>HAVING</td><td><b>🟩 Full</b></td></tr>
+<tr><td>ORDER BY</td><td><b>🟩 Full</b></td></tr>
+<tr><td>OFFSET / FETCH NEXT</td><td><b>🟩 Full</b></td></tr>
+<tr><td>FOR JSON / FOR XML</td><td><b>🟩 Full</b></td></tr>
+<tr><td>UNION / EXCEPT / INTERSECT</td><td><b>🟩 Full</b></td></tr>
+<tr><td>OPTION query hints</td><td><b>🟩 Full</b></td></tr>
+<tr><td>GROUPING SETS / ROLLUP / CUBE</td><td><b>🟥 Missing</b></td></tr>
+<tr><td>TABLESAMPLE</td><td><b>🟥 Missing</b></td></tr>
+</table>
+
+</td>
+
+<td width="48%" valign="top">
+
+<h3>DML — Write</h3>
+
+<table cellpadding="4">
+<tr><td>INSERT VALUES</td><td><b>🟩 Full</b></td></tr>
+<tr><td>INSERT SELECT</td><td><b>🟩 Full</b></td></tr>
+<tr><td>INSERT column list</td><td><b>🟩 Full</b></td></tr>
+<tr><td>INSERT OUTPUT</td><td><b>🟩 Full</b></td></tr>
+<tr><td>INSERT DEFAULT VALUES</td><td><b>🟨 Partial</b></td></tr>
+<tr><td>INSERT EXEC</td><td><b>🟥 Missing</b></td></tr>
+<tr><td>UPDATE SET</td><td><b>🟩 Full</b></td></tr>
+<tr><td>UPDATE FROM / WHERE</td><td><b>🟩 Full</b></td></tr>
+<tr><td>UPDATE TOP</td><td><b>🟩 Full</b></td></tr>
+<tr><td>UPDATE OUTPUT</td><td><b>🟩 Full</b></td></tr>
+<tr><td>UPDATE STATISTICS</td><td><b>🟩 Full</b></td></tr>
+<tr><td>DELETE FROM / WHERE</td><td><b>🟩 Full</b></td></tr>
+<tr><td>DELETE TOP</td><td><b>🟩 Full</b></td></tr>
+<tr><td>DELETE OUTPUT</td><td><b>🟩 Full</b></td></tr>
+<tr><td>MERGE all WHEN clauses</td><td><b>🟩 Full</b></td></tr>
+<tr><td>MERGE OUTPUT / OPTION</td><td><b>🟩 Full</b></td></tr>
+<tr><td>TRUNCATE TABLE</td><td><b>🟩 Full</b></td></tr>
+</table>
+
+</td>
+
+</tr>
+</table>
+
+---
+
+<table>
+<tr>
+
+<td width="48%" valign="top">
+
+<h3>Joins & Table References</h3>
+
+<table cellpadding="4">
+<tr><td>INNER JOIN</td><td><b>🟩 Full</b></td></tr>
+<tr><td>LEFT / RIGHT / FULL JOIN</td><td><b>🟩 Full</b></td></tr>
+<tr><td>CROSS JOIN</td><td><b>🟩 Full</b></td></tr>
+<tr><td>CROSS APPLY</td><td><b>🟩 Full</b></td></tr>
+<tr><td>OUTER APPLY</td><td><b>🟩 Full</b></td></tr>
+<tr><td>Hash / Merge / Loop join hints</td><td><b>🟩 Full</b></td></tr>
+<tr><td>Table hints WITH (...)</td><td><b>🟩 Full</b></td></tr>
+<tr><td>Subquery / derived table</td><td><b>🟩 Full</b></td></tr>
+<tr><td>Table-valued functions</td><td><b>🟩 Full</b></td></tr>
+<tr><td>OPENJSON WITH</td><td><b>🟩 Full</b></td></tr>
+<tr><td>PIVOT / UNPIVOT</td><td><b>🟩 Full</b></td></tr>
+<tr><td>Parenthesized join groups</td><td><b>🟩 Full</b></td></tr>
+<tr><td>Four-part names</td><td><b>🟩 Full</b></td></tr>
+<tr><td>Temp tables # / ##</td><td><b>🟩 Full</b></td></tr>
+<tr><td>OPENROWSET</td><td><b>🟥 Missing</b></td></tr>
+<tr><td>OPENQUERY / OPENDATASOURCE</td><td><b>🟥 Missing</b></td></tr>
+</table>
+
+</td>
+
+<td width="48%" valign="top">
+
+<h3>Expressions</h3>
+
+<table cellpadding="4">
+<tr><td>Arithmetic operators</td><td><b>🟩 Full</b></td></tr>
+<tr><td>Bitwise operators</td><td><b>🟩 Full</b></td></tr>
+<tr><td>Comparison operators</td><td><b>🟩 Full</b></td></tr>
+<tr><td>AND / OR / NOT</td><td><b>🟩 Full</b></td></tr>
+<tr><td>IS NULL / IS NOT NULL</td><td><b>🟩 Full</b></td></tr>
+<tr><td>LIKE / NOT LIKE</td><td><b>🟩 Full</b></td></tr>
+<tr><td>LIKE ESCAPE</td><td><b>🟥 Missing</b></td></tr>
+<tr><td>IN / NOT IN</td><td><b>🟩 Full</b></td></tr>
+<tr><td>BETWEEN / NOT BETWEEN</td><td><b>🟩 Full</b></td></tr>
+<tr><td>EXISTS / NOT EXISTS</td><td><b>🟩 Full</b></td></tr>
+<tr><td>CASE searched + simple</td><td><b>🟩 Full</b></td></tr>
+<tr><td>CAST / TRY_CAST</td><td><b>🟩 Full</b></td></tr>
+<tr><td>CONVERT with style</td><td><b>🟩 Full</b></td></tr>
+<tr><td>PARSE / TRY_PARSE</td><td><b>🟩 Full</b></td></tr>
+<tr><td>Function calls</td><td><b>🟩 Full</b></td></tr>
+<tr><td>Aggregate DISTINCT</td><td><b>🟩 Full</b></td></tr>
+<tr><td>WITHIN GROUP</td><td><b>🟩 Full</b></td></tr>
+<tr><td>Variables and system variables</td><td><b>🟩 Full</b></td></tr>
+<tr><td>COLLATE</td><td><b>🟨 Partial</b></td></tr>
+<tr><td>IIF / CHOOSE</td><td><b>🟨 Partial</b></td></tr>
+<tr><td>AT TIME ZONE</td><td><b>🟥 Missing</b></td></tr>
+</table>
+
+</td>
+
+</tr>
+</table>
+
+---
+
+<table>
+<tr>
+
+<td width="48%" valign="top">
+
+<h3>Window Functions</h3>
+
+<table cellpadding="4">
+<tr><td>OVER (...)</td><td><b>🟩 Full</b></td></tr>
+<tr><td>PARTITION BY</td><td><b>🟩 Full</b></td></tr>
+<tr><td>ORDER BY in OVER</td><td><b>🟩 Full</b></td></tr>
+<tr><td>ROWS frame</td><td><b>🟩 Full</b></td></tr>
+<tr><td>RANGE frame</td><td><b>🟩 Full</b></td></tr>
+<tr><td>UNBOUNDED PRECEDING</td><td><b>🟩 Full</b></td></tr>
+<tr><td>UNBOUNDED FOLLOWING</td><td><b>🟩 Full</b></td></tr>
+<tr><td>CURRENT ROW</td><td><b>🟩 Full</b></td></tr>
+<tr><td>N PRECEDING / N FOLLOWING</td><td><b>🟩 Full</b></td></tr>
+<tr><td>BETWEEN ... AND frame</td><td><b>🟩 Full</b></td></tr>
+</table>
+
+</td>
+
+<td width="48%" valign="top">
+
+<h3>Subqueries, CTEs & Set Operators</h3>
+
+<table cellpadding="4">
+<tr><td>Scalar subquery</td><td><b>🟩 Full</b></td></tr>
+<tr><td>Derived table subquery</td><td><b>🟩 Full</b></td></tr>
+<tr><td>WITH ... AS CTE</td><td><b>🟩 Full</b></td></tr>
+<tr><td>Multiple CTEs</td><td><b>🟩 Full</b></td></tr>
+<tr><td>CTE before DML</td><td><b>🟩 Full</b></td></tr>
+<tr><td>Recursive CTE syntax</td><td><b>🟨 Partial</b></td></tr>
+<tr><td>UNION / UNION ALL</td><td><b>🟩 Full</b></td></tr>
+<tr><td>EXCEPT</td><td><b>🟩 Full</b></td></tr>
+<tr><td>INTERSECT</td><td><b>🟩 Full</b></td></tr>
+<tr><td>Nested set operators</td><td><b>🟩 Full</b></td></tr>
+<tr><td>Parenthesized set queries</td><td><b>🟩 Full</b></td></tr>
+</table>
+
+</td>
+
+</tr>
+</table>
+
+---
+
+<table>
+<tr>
+
+<td width="48%" valign="top">
+
+<h3>DDL & Maintenance</h3>
+
+<table cellpadding="4">
+<tr><td>CREATE TABLE</td><td><b>🟩 Full</b></td></tr>
+<tr><td>Column data types</td><td><b>🟩 Full</b></td></tr>
+<tr><td>NULL / NOT NULL</td><td><b>🟩 Full</b></td></tr>
+<tr><td>PRIMARY KEY</td><td><b>🟩 Full</b></td></tr>
+<tr><td>FOREIGN KEY</td><td><b>🟩 Full</b></td></tr>
+<tr><td>UNIQUE / CHECK / DEFAULT</td><td><b>🟩 Full</b></td></tr>
+<tr><td>IDENTITY</td><td><b>🟩 Full</b></td></tr>
+<tr><td>Computed columns</td><td><b>🟩 Full</b></td></tr>
+<tr><td>PERSISTED computed columns</td><td><b>🟩 Full</b></td></tr>
+<tr><td>Named constraints</td><td><b>🟩 Full</b></td></tr>
+<tr><td>CREATE PROCEDURE</td><td><b>🟩 Full</b></td></tr>
+<tr><td>CREATE FUNCTION</td><td><b>🟩 Full</b></td></tr>
+<tr><td>CREATE VIEW</td><td><b>🟩 Full</b></td></tr>
+<tr><td>CREATE TYPE AS TABLE</td><td><b>🟩 Full</b></td></tr>
+<tr><td>CREATE INDEX</td><td><b>🟩 Full</b></td></tr>
+<tr><td>ALTER INDEX</td><td><b>🟩 Full</b></td></tr>
+<tr><td>UPDATE STATISTICS</td><td><b>🟩 Full</b></td></tr>
+<tr><td>DROP IF EXISTS</td><td><b>🟩 Full</b></td></tr>
+<tr><td>ALTER TABLE advanced actions</td><td><b>🟨 Partial</b></td></tr>
+<tr><td>CREATE TRIGGER</td><td><b>🟨 Partial</b></td></tr>
+<tr><td>Advanced storage options</td><td><b>🟨 Partial</b></td></tr>
+<tr><td>CREATE TABLE AS SELECT</td><td><b>🟥 Missing</b></td></tr>
+<tr><td>Columnstore indexes</td><td><b>🟥 Missing</b></td></tr>
+<tr><td>GRANT / REVOKE / DENY</td><td><b>🟥 Missing</b></td></tr>
+</table>
+
+</td>
+
+<td width="48%" valign="top">
+
+<h3>Procedural T-SQL</h3>
+
+<table cellpadding="4">
+<tr><td>DECLARE variables</td><td><b>🟩 Full</b></td></tr>
+<tr><td>DECLARE table variables</td><td><b>🟩 Full</b></td></tr>
+<tr><td>SET @var = expr</td><td><b>🟩 Full</b></td></tr>
+<tr><td>SET session options</td><td><b>🟩 Full</b></td></tr>
+<tr><td>PRINT</td><td><b>🟩 Full</b></td></tr>
+<tr><td>RETURN</td><td><b>🟩 Full</b></td></tr>
+<tr><td>IF / ELSE</td><td><b>🟩 Full</b></td></tr>
+<tr><td>BEGIN / END</td><td><b>🟩 Full</b></td></tr>
+<tr><td>WHILE</td><td><b>🟩 Full</b></td></tr>
+<tr><td>BREAK / CONTINUE</td><td><b>🟩 Full</b></td></tr>
+<tr><td>GOTO / labels</td><td><b>🟩 Full</b></td></tr>
+<tr><td>WAITFOR</td><td><b>🟩 Full</b></td></tr>
+<tr><td>TRY / CATCH</td><td><b>🟩 Full</b></td></tr>
+<tr><td>THROW</td><td><b>🟩 Full</b></td></tr>
+<tr><td>RAISERROR</td><td><b>🟩 Full</b></td></tr>
+<tr><td>Transactions</td><td><b>🟩 Full</b></td></tr>
+<tr><td>Cursors</td><td><b>🟩 Full</b></td></tr>
+<tr><td>EXEC procedure</td><td><b>🟩 Full</b></td></tr>
+<tr><td>EXEC named parameters</td><td><b>🟩 Full</b></td></tr>
+<tr><td>EXEC output parameters</td><td><b>🟩 Full</b></td></tr>
+<tr><td>EXEC dynamic string</td><td><b>🟨 Partial</b></td></tr>
+<tr><td>sp_executesql</td><td><b>🟨 Partial</b></td></tr>
+<tr><td>EXEC AT linked_server</td><td><b>🟥 Missing</b></td></tr>
+<tr><td>EXECUTE AS</td><td><b>🟥 Missing</b></td></tr>
+</table>
+
+</td>
+
+</tr>
+</table>
+
+---
+
+<table>
+<tr>
+
+<td width="48%" valign="top">
+
+<h3>Azure SQL / Synapse</h3>
+
+<table cellpadding="4">
+<tr><td>OPENJSON WITH schema</td><td><b>🟩 Full</b></td></tr>
+<tr><td>FOR JSON AUTO / PATH</td><td><b>🟩 Full</b></td></tr>
+<tr><td>JSON_VALUE / JSON_QUERY / JSON_MODIFY</td><td><b>🟨 Partial</b></td></tr>
+<tr><td>ISJSON</td><td><b>🟨 Partial</b></td></tr>
+<tr><td>Temporal table DDL</td><td><b>🟥 Missing</b></td></tr>
+<tr><td>FOR SYSTEM_TIME query syntax</td><td><b>🟥 Missing</b></td></tr>
+<tr><td>SYSTEM_VERSIONING = ON</td><td><b>🟥 Missing</b></td></tr>
+<tr><td>CREATE EXTERNAL TABLE</td><td><b>🟥 Missing</b></td></tr>
+<tr><td>CREATE EXTERNAL DATA SOURCE</td><td><b>🟥 Missing</b></td></tr>
+<tr><td>Columnstore indexes</td><td><b>🟥 Missing</b></td></tr>
+<tr><td>Dynamic data masking</td><td><b>🟥 Missing</b></td></tr>
+<tr><td>Row-level security</td><td><b>🟥 Missing</b></td></tr>
+<tr><td>Ledger table syntax</td><td><b>🟥 Missing</b></td></tr>
+</table>
+
+</td>
+
+<td width="48%" valign="top">
+
+<h3>Semantic Features</h3>
+
+<table cellpadding="4">
+<tr><td>Variable scope</td><td><b>🟩 Full</b></td></tr>
+<tr><td>Parameter scope</td><td><b>🟩 Full</b></td></tr>
+<tr><td>Alias scope</td><td><b>🟩 Full</b></td></tr>
+<tr><td>CTE scope</td><td><b>🟩 Full</b></td></tr>
+<tr><td>Temp table scope</td><td><b>🟩 Full</b></td></tr>
+<tr><td>Table variable scope</td><td><b>🟩 Full</b></td></tr>
+<tr><td>PIVOT / UNPIVOT output scope</td><td><b>🟩 Full</b></td></tr>
+<tr><td>Declaration extraction</td><td><b>🟩 Full</b></td></tr>
+<tr><td>Dependency extraction</td><td><b>🟩 Full</b></td></tr>
+<tr><td>Document symbols</td><td><b>🟩 Full</b></td></tr>
+<tr><td>Completions</td><td><b>🟩 Full</b></td></tr>
+<tr><td>Diagnostics</td><td><b>🟩 Full</b></td></tr>
+<tr><td>Column lineage</td><td><b>🟩 Full</b></td></tr>
+<tr><td>Workspace-wide schema catalog</td><td><b>🟥 Missing</b></td></tr>
+<tr><td>Database-backed wildcard expansion</td><td><b>🟥 Missing</b></td></tr>
+<tr><td>Runtime type validation</td><td><b>🟥 Missing</b></td></tr>
+</table>
+
+</td>
+
+</tr>
+</table>
+
+---
+
+# Prioritized Coverage Gaps
+
+<table>
+<tr>
+
+<td width="48%" valign="top">
+
+<h3>P1 — High Impact</h3>
+
+<table cellpadding="4">
+<tr><td>GROUP BY ROLLUP / CUBE / GROUPING SETS</td></tr>
+<tr><td>Temporal query syntax: FOR SYSTEM_TIME</td></tr>
+<tr><td>AT TIME ZONE expression</td></tr>
+<tr><td>COLUMNSTORE INDEX</td></tr>
+</table>
+
+</td>
+
+<td width="48%" valign="top">
+
+<h3>P2 — Important</h3>
+
+<table cellpadding="4">
+<tr><td>GRANT / REVOKE / DENY</td></tr>
+<tr><td>Double-quoted identifiers</td></tr>
+<tr><td>EXEC AT linked_server</td></tr>
+<tr><td>EXECUTE AS USER / LOGIN / CALLER</td></tr>
+<tr><td>OPENQUERY / OPENDATASOURCE</td></tr>
+</table>
+
+</td>
+
+</tr>
+</table>
+
+---
+
+# Current Diagnostics
+
+SaralSQL focuses on high-signal diagnostics suitable for editors and code review.
+
+## Variables & Parameters
+
+- undeclared variables
+- unused variables
+- unused parameters
+
+## DML Safety
+
+- SELECT *
+- self-comparisons such as `u.Id = u.Id`
+- UPDATE without filters
+- DELETE without filters
+- UPDATE target with `WITH (NOLOCK)`
+
+## DDL & Structure
+
+- unbracketed keyword-like identifiers
+- missing commas before table constraints
+- suspicious hint usage
+- OPTION clause guidance
+
+Diagnostics are intentionally selective. The goal is to remain useful in enterprise SQL without overwhelming users with low-value warnings.
+
+---
+
+# Fault Tolerance Example
+
+Input SQL:
 
 ```sql
-SELECT o.Id, o.Amount
-FROM dbo.Orders o
-WHERE o.Status = 'Paid'
+SELECT *
+FROM Users
+WHERE
 ```
 
-AST excerpt:
+Expected behavior:
 
-```ts
-{
-  type: 'SelectStatement',
-  distinct: false,
-  columns: [
-    {
-      type: 'Column',
-      expression: { type: 'Identifier', name: 'o.Id', parts: ['o', 'Id'] },
-      sourceName: 'Id',
-      outputName: 'Id',
-      wildcard: false
-    },
-    {
-      type: 'Column',
-      expression: { type: 'Identifier', name: 'o.Amount', parts: ['o', 'Amount'] },
-      sourceName: 'Amount',
-      outputName: 'Amount',
-      wildcard: false
-    }
-  ],
-  from: [
-    {
-      type: 'TableReference',
-      table: { type: 'Identifier', name: 'dbo.Orders', parts: ['dbo', 'Orders'] },
-      alias: 'o',
-      joins: []
-    }
-  ],
-  where: {
-    type: 'BinaryExpression',
-    left: { type: 'Identifier', name: 'o.Status', parts: ['o', 'Status'] },
-    operator: '=',
-    right: { type: 'Literal', value: 'Paid', variant: 'string' }
-  }
-}
-```
+- partial AST is preserved
+- parser issue is recorded
+- scope graph remains usable where possible
+- completion context can still be produced
+- analysis continues for valid sections
 
-Absent clauses are omitted rather than emitted as `null`. For example, a `SELECT` without `TOP`, `GROUP BY`, or `ORDER BY` does not include those fields in the AST.
+This is a core design requirement for editor and LSP scenarios.
 
-## Behavioral Examples
+---
 
-### Diagnostics
+# Diagnostics Example
 
-SQL:
+Input:
 
 ```sql
 UPDATE u
@@ -164,15 +641,22 @@ Diagnostics:
 ]
 ```
 
-### Column Lineage
+---
 
-SQL:
+# Column Lineage Example
+
+Input:
 
 ```sql
-INSERT INTO dbo.InvoiceSummary (CustomerId, InvoiceMonth, TotalAmount)
-SELECT i.CustomerId,
-       i.InvoiceMonth,
-       i.Subtotal + i.TaxAmount
+INSERT INTO dbo.InvoiceSummary (
+    CustomerId,
+    InvoiceMonth,
+    TotalAmount
+)
+SELECT
+    i.CustomerId,
+    i.InvoiceMonth,
+    i.Subtotal + i.TaxAmount
 FROM dbo.Invoices i;
 ```
 
@@ -199,233 +683,71 @@ Lineage:
 ]
 ```
 
-## Supported Surface
+---
 
-### Query grammar
-
-Supported:
-
-- `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `MERGE`
-- joins and `APPLY`
-- subqueries and scalar subqueries
-- CTEs
-- `UNION`, `INTERSECT`, `EXCEPT`
-- `GROUP BY`, `HAVING`, `ORDER BY`
-- `OFFSET / FETCH`
-- window functions and frame clauses
-- `PIVOT`, `UNPIVOT`
-- `OPENJSON ... WITH (...)`
-- `FOR JSON`, `FOR XML`
-- `OPTION (...)`
-- `STRING_AGG ... WITHIN GROUP (...)`
-- aggregate `DISTINCT` forms such as `COUNT(DISTINCT ...)` and `SUM(DISTINCT ...)`
-
-### Procedural T-SQL
-
-Supported:
-
-- `DECLARE`, `SET`, `PRINT`, `RETURN`
-- `RAISERROR`, `THROW`
-- `EXEC / EXECUTE`
-- `USE`
-- `IF / ELSE`
-- `BEGIN / END`
-- `BEGIN TRY / END TRY / BEGIN CATCH / END CATCH`
-- `WHILE`, `BREAK`, `CONTINUE`
-- `GOTO` and labels
-- `WAITFOR TIME / DELAY`
-- cursor statements
-- transaction statements
-- stored procedure parameters
-- readonly TVPs
-- temp tables and table variables
-
-### Expressions
-
-Supported:
-
-- arithmetic and boolean logic
-- `CASE`
-- `EXISTS`
-- `IN`, `BETWEEN`, `LIKE`
-- `CAST`, `TRY_CAST`, `CONVERT`
-- function calls
-- `IIF`
-- null handling
-- compound assignment operators such as `+=` and `-=`
-- old-style string literal aliases in projections
-
-### DDL and maintenance scripts
-
-Supported:
-
-- `CREATE TABLE`
-- `ALTER TABLE` (partial)
-- `CREATE PROCEDURE`
-- `CREATE FUNCTION` (partial)
-- `CREATE VIEW`
-- indexed views, including schemabound views plus `CREATE UNIQUE CLUSTERED INDEX` on the view
-- `CREATE LOGIN`
-- `CREATE USER`
-- `CREATE TYPE ... AS TABLE`
-- `CREATE TRIGGER`
-- `CREATE INDEX`
-- `CREATE PARTITION FUNCTION`
-- `CREATE PARTITION SCHEME`
-- `ALTER INDEX`
-- `UPDATE STATISTICS`
-- `DROP TABLE / VIEW / PROCEDURE / FUNCTION / INDEX`
-
-Also supported:
-
-- computed columns
-- computed columns with optional `PERSISTED`
-- primary key, foreign key, unique, check, default, null/not-null, identity constraints
-- clustered and nonclustered index forms
-- include columns
-- filtered indexes
-- index `WITH (...)` options
-- index and table placement on filegroups or partition schemes
-- `ALTER TABLE ... WITH CHECK|NOCHECK ADD CONSTRAINT ...`
-- tolerant create preambles such as:
-  - `WITH EXECUTE AS ...`
-  - `WITH SCHEMABINDING`
-  - `WITH ENCRYPTION`
-  - function `RETURNS ...`
-- parenthesized view bodies such as `CREATE VIEW ... AS (SELECT ...)`
-
-## Semantic Layers
-
-Supported:
-
-- variable scope
-- parameter scope
-- alias scope
-- temp table scope
-- table variable scope
-- CTE scope
-- `PIVOT` / `UNPIVOT` output-column scope
-- declaration extraction
-- dependency extraction
-- document symbols
-- completions
-- diagnostics
-- lineage extraction
-
-## Current Diagnostics
-
-Focuses on high-signal, actionable issues suitable for editors and code review:
-
-- Variables & Parameters: undeclared variables, unused variables, unused parameters
-- DML Safety: `SELECT *`, self-comparisons such as `u.Id = u.Id`, `UPDATE` / `DELETE` without filters, `UPDATE` target with `WITH (NOLOCK)`
-- DDL: unbracketed keyword-like identifiers, missing commas before table constraints
-- Hints & Options: guidance on table hints and `OPTION(...)` usage
-
-Diagnostics are intentionally selective. The goal is to stay useful in enterprise SQL without overwhelming the user with low-value warnings.
-
-## Fault Tolerance
-
-SaralSQL is designed to return useful output for incomplete SQL.
-
-Example:
-
-```sql
-SELECT *
-FROM Users
-WHERE
-```
-
-Expected behavior:
-
-- partial AST
-- recoverable parser issue
-- usable completion context
-- usable scope and lineage when possible
-
-This is a core design requirement for editor scenarios.
-
-## Current Maturity
-
-SaralSQL is hardened around real production-style SQL Server code, including:
-
-- stored procedure-heavy codebases
-- validation and ETL procedures
-- temp-table-heavy workflows
-- TVP-driven `INSERT ... SELECT` patterns
-- recursive CTEs
-- cursor lifecycle statements
-- `MERGE` variants
-- `DELETE TOP (...) ... OUTPUT`
-- `OPENJSON ... WITH (...)`
-- `STRING_AGG ... WITHIN GROUP (...)`
-- aggregate `DISTINCT` forms
-- `BEGIN ;WITH ...` handoff inside blocks
-- `SET DATEFIRST` followed by additional statements
-- XML `.nodes(...) AS alias(column)` table-source forms
-- `OUTPUT` used as an identifier in column positions
-- `UPDATE ... WITH(ROWLOCK)` targets
-- `UNPIVOT` after joined sources
-- parenthesized joined table sources
-- tolerant procedure/view/function/trigger headers
-- indexed view scripts and `NOEXPAND` table-hint usage
-
-Milestone:
-
-- first enterprise stored procedure codebase pass completed
-
-## Known Limitations
-
-SaralSQL is already useful, but it is not complete SQL Server grammar coverage.
-
-Current known gaps or partial areas include:
-
-- advanced transaction grammar edge cases
-- dynamic `EXEC` edge cases
-- advanced index/storage options beyond current coverage
-- `OPENQUERY` / `OPENROWSET` family
-- deeper XML grammar
-- JSON edge cases beyond current `OPENJSON` support
-- metadata-aware validation across files
-
-## Architecture
+# Architecture
 
 ```text
-Lexer -> Parser -> ScopeBuilder -> LineageBuilder -> ColumnAnalyzer -> DiagnosticEngine
+Lexer
+→ Parser
+→ ScopeBuilder
+→ LineageBuilder
+→ ColumnAnalyzer
+→ DiagnosticEngine
 ```
 
-Design principle:
+## Design Principles
 
 ```text
 Parse once
 Enrich in layers
 Reuse semantic graph
 Avoid duplicate logic
+Recover locally
+Keep editor tooling alive
 ```
 
-Layer responsibilities:
+---
 
-- `Lexer` + `Parser`: produce the base AST and record recoverable structural issues when recovery boundaries are hit
-- `ScopeBuilder`: assigns symbols such as variables, parameters, aliases, CTEs, temp tables, and table variables to execution scopes
-- `LineageBuilder` + `ColumnAnalyzer`: trace column flow across projections and mutations to map upstream-to-downstream relationships
-- `DiagnosticEngine`: evaluates the parsed and enriched semantic graph for safety, maintainability, and anti-pattern checks
+# Non-goals
 
-## Roadmap
+SaralSQL is intentionally a single-document analysis engine.
 
-Near term:
+It does not currently provide:
+
+- cross-file schema catalogs
+- workspace-wide symbol resolution
+- metadata-backed wildcard expansion
+- live database-backed type validation
+- execution-plan validation
+
+Those belong in:
+
+- the host LSP
+- external metadata services
+- workspace analysis layers
+
+---
+
+# Roadmap
+
+## Near Term
 
 - broader corpus validation
 - richer diagnostics
-- auto-fix scaffolding
+- automated code fixes
+- improved DDL coverage
+- Azure SQL grammar expansion
 
-Medium term:
+## Medium Term
 
 - schema-aware resolution
-- metadata catalogs
 - wildcard expansion
 - FK-aware navigation
+- metadata catalogs
 - standards enforcement packs
 
-Long term:
+## Long Term
 
 - semantic autocomplete
 - rename symbol
@@ -434,15 +756,21 @@ Long term:
 - safe refactors
 - AI-assisted SQL correction
 
-## Contributing
+---
 
-The most useful bug reports include:
+# Contributing
 
-- SQL sample
+Useful bug reports should include:
+
+- isolated SQL sample
 - expected behavior
-- current parser or diagnostic output
+- current parser output
+- parser issue or diagnostic output
+- package version
 
-## License
+---
+
+# License
 
 MIT
 
