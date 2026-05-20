@@ -216,9 +216,11 @@ Supported:
 - `PIVOT`, `UNPIVOT`
 - `OPENJSON ... WITH (...)`
 - `FOR JSON`, `FOR XML`
+- `WITH XMLNAMESPACES (...)`
 - `OPTION (...)`
 - `STRING_AGG ... WITHIN GROUP (...)`
 - aggregate `DISTINCT` forms such as `COUNT(DISTINCT ...)` and `SUM(DISTINCT ...)`
+- `TOP (...)` with expressions, including scalar subqueries such as `TOP (SELECT @n)`
 
 ### Procedural T-SQL
 
@@ -236,6 +238,7 @@ Supported:
 - `WAITFOR TIME / DELAY`
 - cursor statements
 - transaction statements
+- `ALTER ROLE ... ADD MEMBER / DROP MEMBER`
 - stored procedure parameters
 - readonly TVPs
 - temp tables and table variables
@@ -272,9 +275,11 @@ Supported:
 - `CREATE INDEX`
 - `CREATE PARTITION FUNCTION`
 - `CREATE PARTITION SCHEME`
+- `ALTER DATABASE` (lightweight administrative forms such as `ADD FILEGROUP`)
 - `ALTER INDEX`
 - `UPDATE STATISTICS`
 - `DROP TABLE / VIEW / PROCEDURE / FUNCTION / INDEX`
+- `GRANT` and `DENY`
 
 Also supported:
 
@@ -286,6 +291,8 @@ Also supported:
 - filtered indexes
 - index `WITH (...)` options
 - index and table placement on filegroups or partition schemes
+- inline table indexes inside `CREATE TABLE`
+- inline indexes inside `CREATE TYPE ... AS TABLE`
 - `ALTER TABLE ... WITH CHECK|NOCHECK ADD CONSTRAINT ...`
 - tolerant create preambles such as:
   - `WITH EXECUTE AS ...`
@@ -319,7 +326,9 @@ Focuses on high-signal, actionable issues suitable for editors and code review:
 - Variables & Parameters: undeclared variables, unused variables, unused parameters
 - DML Safety: `SELECT *`, self-comparisons such as `u.Id = u.Id`, `UPDATE` / `DELETE` without filters, `UPDATE` target with `WITH (NOLOCK)`
 - DDL: unbracketed keyword-like identifiers, missing commas before table constraints
+- DDL: unnamed key constraints and unnamed default constraints
 - Hints & Options: guidance on table hints and `OPTION(...)` usage
+- Aliases: duplicate `SELECT` output aliases
 
 Diagnostics are intentionally selective. The goal is to stay useful in enterprise SQL without overwhelming the user with low-value warnings.
 
@@ -361,11 +370,15 @@ SaralSQL is hardened around real production-style SQL Server code, including:
 - aggregate `DISTINCT` forms
 - `BEGIN ;WITH ...` handoff inside blocks
 - `SET DATEFIRST` followed by additional statements
+- nested block comments
 - XML `.nodes(...) AS alias(column)` table-source forms
+- `WITH XMLNAMESPACES (...) SELECT ...`
 - `OUTPUT` used as an identifier in column positions
 - `UPDATE ... WITH(ROWLOCK)` targets
 - `UNPIVOT` after joined sources
 - parenthesized joined table sources
+- inline table indexes in both tables and table types
+- admin/security scripts with `ALTER ROLE`, `ALTER DATABASE`, `GRANT`, and `DENY`
 - tolerant procedure/view/function/trigger headers
 - indexed view scripts and `NOEXPAND` table-hint usage
 
@@ -382,6 +395,7 @@ Current known gaps or partial areas include:
 - advanced transaction grammar edge cases
 - dynamic `EXEC` edge cases
 - advanced index/storage options beyond current coverage
+- deep `ALTER DATABASE` grammar beyond current lightweight support
 - `OPENQUERY` / `OPENROWSET` family
 - deeper XML grammar
 - JSON edge cases beyond current `OPENJSON` support

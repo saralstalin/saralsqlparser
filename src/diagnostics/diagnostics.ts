@@ -62,6 +62,7 @@ export enum DiagnosticCode {
 
     DuplicateVariable = 'DUP001',
     DuplicateCte = 'DUP002',
+    DuplicateSelectAlias = 'DUP003',
 }
 
 // ─── Engine ───────────────────────────────────────────────────────────────────
@@ -128,6 +129,18 @@ export class DiagnosticEngine {
     private checkDuplicateDeclarations(result: ScopeBuilderResult): void {
         for (const dup of result.duplicates) {
             if (dup.scopeName === 'with') continue; // WITH clause duplicates are already reported by the CheckWith method
+
+            if (dup.scopeName === 'select-output') {
+                this.emit({
+                    code: DiagnosticCode.DuplicateSelectAlias,
+                    message: `SELECT output alias '${dup.name}' is used more than once`,
+                    severity: 'warning',
+                    start: dup.duplicate.start,
+                    end: dup.duplicate.end,
+                });
+                continue;
+            }
+
             this.emit({
                 code: DiagnosticCode.DuplicateVariable,
                 message: `'${dup.name}' is already declared in this scope`,

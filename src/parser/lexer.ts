@@ -96,6 +96,7 @@ export class Lexer {
         // ── DDL — CREATE ──────────────────────────────────────────────────────────
         'CREATE',
         'ALTER',                             // standalone ALTER and CREATE OR ALTER
+        'DATABASE',
         'DROP',
         'TRUNCATE',                          // TRUNCATE TABLE
 
@@ -105,6 +106,7 @@ export class Lexer {
         'FUNCTION', 'RETURNS',
         'TYPE',                              // CREATE TYPE ... AS TABLE
         'TRIGGER', 'SCHEMA', 'SEQUENCE', 'SYNONYM',
+        'ROLE', 'MEMBER',
         'INDEX',
 
         // ── DDL — Column / constraint modifiers ───────────────────────────────────
@@ -143,6 +145,7 @@ export class Lexer {
 
         // ── Execution ────────────────────────────────────────────────────────────
         'EXEC', 'EXECUTE',
+        'GRANT', 'DENY', 'TO',
 
         // ── CTEs and subquery hints ───────────────────────────────────────────────
         'WITH',

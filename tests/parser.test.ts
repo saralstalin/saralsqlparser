@@ -1498,6 +1498,33 @@ describe('T-SQL Parser - Deep Expression Validation', () => {
             expect(stmt.columns?.some(col => col.name === 'INDEX')).toBe(false);
         });
 
+        test('should parse inline indexes inside CREATE TYPE AS TABLE', () => {
+            const sql = `
+                CREATE TYPE [dbo].[SomeTableType] AS TABLE (
+                    [Name] NVARCHAR(30) NOT NULL,
+                    [ModelId] VARCHAR(20) NULL,
+                    [IsService] BIT NOT NULL,
+                    [IsNonSelected] BIT NOT NULL,
+                    INDEX [ix_nc_1] ([ModelId]),
+                    INDEX [ix_nc_2] ([Name], [IsService]),
+                    INDEX [ix_nc_3] ([IsNonSelected])
+                );
+            `;
+
+            const result = new Parser(new Lexer(sql)).parse();
+            const stmt = result.ast.body[0] as CreateNode;
+
+            expect(result.issues).toEqual([]);
+            expect(stmt.objectType).toBe('TYPE');
+            expect(stmt.isTableType).toBe(true);
+            expect(stmt.indexes).toHaveLength(3);
+            expect(stmt.indexes?.map(i => i.name)).toEqual([
+                '[ix_nc_1]',
+                '[ix_nc_2]',
+                '[ix_nc_3]'
+            ]);
+        });
+
         test('should handle legacy hint syntax without WITH keyword', () => {
             // T-SQL supports FROM Table (HINT) if an alias is present
             const sql = "SELECT * FROM Orders o (ROWLOCK)";
@@ -2122,6 +2149,26 @@ INTO @NewRows (KeyValue, DisplayValue, TargetId);`;
 
             expect(stmt.output).toBeDefined();
             expect(stmt.output!.columns.length).toBeGreaterThanOrEqual(0);
+        });
+
+        test('should parse WITH XMLNAMESPACES followed by SELECT', () => {
+            const sql = `
+                DECLARE @Message XML;
+                ;WITH XMLNAMESPACES (
+                    'http://example.com/service' AS svc,
+                    'http://example.com/data' AS data
+                )
+                SELECT @Message.value('(/svc:Root/data:Value)[1]', 'varchar(20)');
+            `;
+
+            const result = new Parser(new Lexer(sql)).parse();
+            const stmt = result.ast.body[1] as WithNode;
+
+            expect(result.issues).toEqual([]);
+            expect(stmt.type).toBe('WithStatement');
+            expect(stmt.xmlNamespaces).toHaveLength(2);
+            expect(stmt.xmlNamespaces?.[0].prefix).toBe('svc');
+            expect((stmt.body as SelectNode).type).toBe('SelectStatement');
         });
     });
 

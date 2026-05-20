@@ -565,4 +565,67 @@ describe('T-SQL Parser - DDL Changes', () => {
                 .toBe('SelectStatement');
         });
     });
+
+    describe('ALTER ROLE', () => {
+        test('ADD MEMBER', () => {
+            const stmt = parseOne<any>(
+                'ALTER ROLE [db_owner] ADD MEMBER [AMERICAS\\ProdSvcDevelopers]'
+            );
+
+            expect(stmt.type).toBe('AlterRoleStatement');
+            expect(stmt.role.name).toBe('[db_owner]');
+            expect(stmt.action.kind).toBe('ADD_MEMBER');
+            expect(stmt.action.member.name).toBe('[AMERICAS\\ProdSvcDevelopers]');
+        });
+    });
+
+    describe('ALTER DATABASE', () => {
+        test('ADD FILEGROUP with memory optimized data', () => {
+            const stmt = parseOne<any>(`
+                ALTER DATABASE [$(DatabaseName)]
+                ADD FILEGROUP [SomeFileGroup] CONTAINS MEMORY_OPTIMIZED_DATA
+            `);
+
+            expect(stmt.type).toBe('AlterDatabaseStatement');
+            expect(stmt.database.name).toBe('[$(DatabaseName)]');
+            expect(stmt.actionTokens).toEqual([
+                'ADD',
+                'FILEGROUP',
+                '[SomeFileGroup]',
+                'CONTAINS',
+                'MEMORY_OPTIMIZED_DATA'
+            ]);
+        });
+    });
+
+    describe('GRANT / DENY', () => {
+        test('GRANT permission on object to principal as grantor', () => {
+            const stmt = parseOne<any>(`
+                GRANT VIEW DEFINITION
+                    ON OBJECT::[dbo].[SomeView] TO [service_sna]
+                    AS [dbo]
+            `);
+
+            expect(stmt.type).toBe('PermissionStatement');
+            expect(stmt.action).toBe('GRANT');
+            expect(stmt.permissions).toEqual(['VIEW DEFINITION']);
+            expect(stmt.securableClass).toBe('OBJECT');
+            expect(stmt.securable.name).toBe('[dbo].[SomeView]');
+            expect(stmt.principal.name).toBe('[service_sna]');
+            expect(stmt.asPrincipal.name).toBe('[dbo]');
+        });
+
+        test('DENY permission on object to principal', () => {
+            const stmt = parseOne<any>(`
+                DENY SELECT
+                    ON OBJECT::[dbo].[SomeView] TO [service_sna]
+            `);
+
+            expect(stmt.type).toBe('PermissionStatement');
+            expect(stmt.action).toBe('DENY');
+            expect(stmt.permissions).toEqual(['SELECT']);
+            expect(stmt.securable.name).toBe('[dbo].[SomeView]');
+            expect(stmt.principal.name).toBe('[service_sna]');
+        });
+    });
 });

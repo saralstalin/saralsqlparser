@@ -37,6 +37,16 @@ describe('T-SQL Parser - TOP clause', () => {
             expect(stmt.top).not.toBeNull();
             expectSql(stmt.top.quantity, '@n');
         });
+
+        test('TOP with scalar subquery expression', () => {
+            const stmt = parseOne<any>(`
+                SELECT TOP (SELECT @TakeCount) Id
+                FROM dbo.Employee
+            `);
+
+            expect(stmt.top).not.toBeNull();
+            expect(stmt.top.quantity.type).toBe('SubqueryExpression');
+        });
     });
 
     describe('TOP PERCENT', () => {

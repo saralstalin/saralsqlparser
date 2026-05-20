@@ -235,7 +235,10 @@ export type Statement = (
     CloseCursorNode |
     DeallocateCursorNode |
     CreateIndexNode |
+    PermissionNode |
     TransactionNode |
+    AlterDatabaseNode |
+    AlterRoleNode |
     AlterTableNode |
     AlterIndexNode |
     TruncateNode
@@ -487,9 +490,16 @@ export interface CTENode extends NodeLocation, Recoverable {
     query: QueryStatement;
 }
 
+export interface XmlNamespaceNode extends NodeLocation, Recoverable {
+    uri: string;
+    prefix?: string;
+    isDefault?: boolean;
+}
+
 export interface WithNode extends NodeLocation, Recoverable {
     type: 'WithStatement';
     ctes: CTENode[];
+    xmlNamespaces?: XmlNamespaceNode[];
     body: Statement;
 }
 
@@ -608,6 +618,22 @@ export interface ExecuteNode extends NodeLocation, Recoverable {
 export interface UseNode extends NodeLocation, Recoverable {
     type: 'UseStatement';
     database: Expression | null;
+}
+
+export interface PermissionNode extends NodeLocation, Recoverable {
+    type: 'PermissionStatement';
+    action: 'GRANT' | 'DENY';
+    permissions: string[];
+    securableClass?: string;
+    securable?: IdentifierNode | null;
+    principal?: IdentifierNode | null;
+    asPrincipal?: IdentifierNode | null;
+}
+
+export interface AlterDatabaseNode extends NodeLocation, Recoverable {
+    type: 'AlterDatabaseStatement';
+    database: IdentifierNode | null;
+    actionTokens: string[];
 }
 
 export interface CastExpression extends NodeLocation, Recoverable {
@@ -898,6 +924,16 @@ export interface AlterTableNode extends NodeLocation, Recoverable {
     type: 'AlterTableStatement';
     table: IdentifierNode;
     action: AlterTableAction | null;
+}
+
+export type AlterRoleAction =
+    | { kind: 'ADD_MEMBER'; member: IdentifierNode | null }
+    | { kind: 'DROP_MEMBER'; member: IdentifierNode | null };
+
+export interface AlterRoleNode extends NodeLocation, Recoverable {
+    type: 'AlterRoleStatement';
+    role: IdentifierNode | null;
+    action: AlterRoleAction | null;
 }
 
 export type AlterIndexAction =

@@ -31,11 +31,14 @@ import {
     ErrorNode,
     RaiseErrorNode,
     ExecuteNode,
+    PermissionNode,
+    AlterDatabaseNode,
     UseNode,
     ConstraintNode,
     WhileNode,
     CreateIndexNode,
     TableIndexNode,
+    AlterRoleNode,
     IndexColumnNode,
     IndexOptionNode,
     StorageTargetNode,
@@ -87,6 +90,7 @@ import {
     ColumnDefinition,
     ParameterDefinition,
     CTENode,
+    XmlNamespaceNode,
 
     // OUTPUT clause
     OutputClauseNode,
@@ -1341,6 +1345,10 @@ export class Parser {
                     // Check if this is an ALTER TABLE statement
                     if (this.peek(1)?.value.toUpperCase() === 'TABLE') {
                         stmt = this.parseAlterTable();
+                    } else if (this.peek(1)?.value.toUpperCase() === 'DATABASE') {
+                        stmt = this.parseAlterDatabase();
+                    } else if (this.peek(1)?.value.toUpperCase() === 'ROLE') {
+                        stmt = this.parseAlterRole();
                     } else if (this.peek(1)?.value.toUpperCase() === 'INDEX') {
                         stmt = this.parseAlterIndex();
                     } else {
@@ -1356,6 +1364,8 @@ export class Parser {
                 case 'RAISERROR': stmt = this.parseRaiseError(); break;
                 case 'EXEC':
                 case 'EXECUTE': stmt = this.parseExecute(); break;
+                case 'GRANT':
+                case 'DENY': stmt = this.parsePermission(); break;
                 case 'USE': stmt = this.parseUse(); break;
                 case 'WHILE': stmt = this.parseWhile(); break;
                 case 'TRY': stmt = this.parseTryCatch(); break;
@@ -1611,6 +1621,182 @@ export class Parser {
         };
     }
 
+    private parsePermission(): PermissionNode {
+        const actionToken = this.consume();
+        const action =
+            actionToken.value.toUpperCase() as PermissionNode['action'];
+        let endOffset = actionToken.offset + actionToken.value.length;
+        let incomplete = false;
+        const errors: string[] = [];
+
+        const permissions: string[] = [];
+        let currentPermission: string[] = [];
+
+        while (this.peek()) {
+            const token = this.peek()!;
+            const upper = token.value.toUpperCase();
+
+            if (upper === 'ON') {
+                break;
+            }
+
+            this.consume();
+            endOffset = token.offset + token.value.length;
+
+            if (token.type === TokenType.Comma) {
+                if (currentPermission.length) {
+                    permissions.push(currentPermission.join(' '));
+                    currentPermission = [];
+                }
+                continue;
+            }
+
+            currentPermission.push(token.value);
+        }
+
+        if (currentPermission.length) {
+            permissions.push(currentPermission.join(' '));
+        }
+
+        let securableClass: string | undefined;
+        let securable: IdentifierNode | null | undefined;
+        let principal: IdentifierNode | null | undefined;
+        let asPrincipal: IdentifierNode | null | undefined;
+
+        try {
+            if (!this.peekKeyword('ON')) {
+                throw new Error(`Expected ON in ${action}`);
+            }
+            this.consume();
+
+            const classParts: string[] = [];
+            while (this.peek()) {
+                const token = this.peek()!;
+                if (token.value.toUpperCase() === 'TO') {
+                    break;
+                }
+
+                if (token.value === '::') {
+                    this.consume();
+                    endOffset = token.offset + token.value.length;
+                    break;
+                }
+
+                classParts.push(this.consume().value);
+                endOffset = token.offset + token.value.length;
+            }
+
+            if (classParts.length) {
+                securableClass = classParts.join(' ').trim();
+            }
+
+            const securableExpr = this.parseMultipartIdentifier(
+                undefined,
+                { allowStructuralFirstSegment: true }
+            );
+            securable = securableExpr.type === 'Identifier' ? securableExpr : null;
+            endOffset = this.lastConsumedEnd();
+
+            this.matchKeyword('TO');
+
+            const principalExpr = this.parseMultipartIdentifier(
+                undefined,
+                { allowStructuralFirstSegment: true }
+            );
+            principal = principalExpr.type === 'Identifier' ? principalExpr : null;
+            endOffset = this.lastConsumedEnd();
+
+            if (this.peekKeyword('AS')) {
+                this.consume();
+                const asExpr = this.parseMultipartIdentifier(
+                    undefined,
+                    { allowStructuralFirstSegment: true }
+                );
+                asPrincipal = asExpr.type === 'Identifier' ? asExpr : null;
+                endOffset = this.lastConsumedEnd();
+            }
+        } catch (e) {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_PERMISSION',
+                e instanceof Error ? e.message : String(e),
+                endOffset
+            );
+        }
+
+        return {
+            type: 'PermissionStatement',
+            action,
+            permissions,
+            ...(securableClass ? { securableClass } : {}),
+            ...(securable !== undefined ? { securable } : {}),
+            ...(principal !== undefined ? { principal } : {}),
+            ...(asPrincipal !== undefined ? { asPrincipal } : {}),
+            start: actionToken.offset,
+            end: endOffset,
+            ...(incomplete ? { incomplete: true } : {}),
+            ...(errors.length ? { errors } : {})
+        };
+    }
+
+    private parseAlterDatabase(): AlterDatabaseNode {
+        const startToken = this.matchKeyword('ALTER');
+        this.matchKeyword('DATABASE');
+
+        let incomplete = false;
+        const errors: string[] = [];
+        let endOffset = this.lastConsumedEnd();
+
+        let database: IdentifierNode | null = null;
+        const actionTokens: string[] = [];
+
+        try {
+            const databaseExpr = this.parseMultipartIdentifier(
+                undefined,
+                { allowStructuralFirstSegment: true }
+            );
+
+            if (databaseExpr.type !== 'Identifier') {
+                throw new Error('Expected database name');
+            }
+
+            database = databaseExpr;
+            endOffset = databaseExpr.end;
+
+            while (this.peek()) {
+                const token = this.peek()!;
+                if (
+                    token.type === TokenType.Semicolon ||
+                    token.value === 'GO'
+                ) {
+                    break;
+                }
+
+                actionTokens.push(this.consume().value);
+                endOffset = token.offset + token.value.length;
+            }
+        } catch (e) {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_ALTER_DATABASE',
+                e instanceof Error ? e.message : String(e),
+                endOffset
+            );
+        }
+
+        return {
+            type: 'AlterDatabaseStatement',
+            database,
+            actionTokens,
+            start: startToken.offset,
+            end: endOffset,
+            ...(incomplete ? { incomplete: true } : {}),
+            ...(errors.length ? { errors } : {})
+        };
+    }
+
     private isLabelStatementStart(): boolean {
         const token = this.peek();
         const next = this.peek(1);
@@ -1709,7 +1895,8 @@ export class Parser {
                     next.type === TokenType.Semicolon ||
                     (
                         next.type === TokenType.Keyword &&
-                        RESYNC_KEYWORDS.has(next.value)
+                        RESYNC_KEYWORDS.has(next.value) &&
+                        (!hasParens || (next.value !== 'SELECT' && next.value !== 'WITH'))
                     )
                 ) {
                     // nothing after TOP or TOP (
@@ -1733,7 +1920,17 @@ export class Parser {
                     );
                 } else if (hasParens) {
                     // full expression allowed inside parens: TOP (@n), TOP (10 + 5)
-                    quantity = this.parseExpression();
+                    if (this.peekKeyword('SELECT') || this.peekKeyword('WITH')) {
+                        const query = this.parseQueryExpression() as QueryStatement;
+                        quantity = {
+                            type: 'SubqueryExpression',
+                            query,
+                            start: query.start,
+                            end: query.end
+                        };
+                    } else {
+                        quantity = this.parseExpression();
+                    }
                     topEnd = quantity.end;
                 } else {
                     // bare TOP n — exactly one token, no operators
@@ -4347,7 +4544,8 @@ export class Parser {
                 next.type === TokenType.Semicolon ||
                 (
                     next.type === TokenType.Keyword &&
-                    RESYNC_KEYWORDS.has(next.value)
+                    RESYNC_KEYWORDS.has(next.value) &&
+                    (!hasParens || (next.value !== 'SELECT' && next.value !== 'WITH'))
                 )
             ) {
                 incomplete = true;
@@ -4370,7 +4568,17 @@ export class Parser {
                     endOffset
                 );
             } else if (hasParens) {
-                quantity = this.parseExpression();
+                if (this.peekKeyword('SELECT') || this.peekKeyword('WITH')) {
+                    const query = this.parseQueryExpression() as QueryStatement;
+                    quantity = {
+                        type: 'SubqueryExpression',
+                        query,
+                        start: query.start,
+                        end: query.end
+                    };
+                } else {
+                    quantity = this.parseExpression();
+                }
                 endOffset = quantity.end;
                 topEnd = endOffset;
             } else {
@@ -5729,6 +5937,8 @@ export class Parser {
                         next.type === TokenType.Comma ||
                         next.type === TokenType.CloseParen ||
                         next.type === TokenType.Semicolon ||
+                        nextVal === 'INDEX' ||
+                        (nextVal === 'UNIQUE' && this.peek(1)?.value?.toUpperCase() === 'INDEX') ||
                         (
                             next.type === TokenType.Keyword &&
                             RESYNC_KEYWORDS.has(next.value)
@@ -6234,6 +6444,8 @@ export class Parser {
                         columns = tableDef.columns;
                         constraints =
                             tableDef.constraints;
+                        indexes =
+                            tableDef.indexes;
 
                         isTableType = true;
                         endOffset =
@@ -6286,6 +6498,7 @@ export class Parser {
                 incomplete = true;
                 columns = [];
                 constraints = [];
+                indexes = [];
                 indexes = [];
 
                 this.addRecoverableError(
@@ -8869,8 +9082,88 @@ export class Parser {
         // Capture the 'WITH' token that was just peeked/consumed
         const startToken = this.matchKeyword('WITH');
         const ctes: CTENode[] = [];
+        let xmlNamespaces: XmlNamespaceNode[] | undefined;
         let incomplete = false;
         const errors: string[] = [];
+
+        if (this.peek()?.value?.toUpperCase() === 'XMLNAMESPACES') {
+            this.consume();
+            this.match(TokenType.OpenParen);
+
+            xmlNamespaces = this.parseList<XmlNamespaceNode>(() => {
+                const declStart = this.peek()?.offset ?? this.lastConsumedEnd();
+
+                if (this.peekKeyword('DEFAULT')) {
+                    this.consume();
+                    const uriToken = this.match(TokenType.String);
+
+                    return {
+                        uri: uriToken.value,
+                        isDefault: true,
+                        start: declStart,
+                        end: uriToken.offset + uriToken.value.length
+                    };
+                }
+
+                const uriToken = this.match(TokenType.String);
+
+                this.matchKeyword('AS');
+
+                const prefixExpr = this.parseMultipartIdentifier(
+                    undefined,
+                    { allowStructuralFirstSegment: true }
+                );
+
+                if (prefixExpr.type !== 'Identifier') {
+                    throw new Error('Expected XML namespace prefix');
+                }
+
+                return {
+                    uri: uriToken.value,
+                    prefix: prefixExpr.name,
+                    start: declStart,
+                    end: prefixExpr.end
+                };
+            });
+
+            this.match(TokenType.CloseParen);
+
+            const bodyStart = this.peek()?.offset ?? this.lastConsumedEnd();
+            let body = this.parseStatement();
+
+            if (!body) {
+                incomplete = true;
+
+                const message =
+                    'XMLNAMESPACES must be followed by a query or DML statement.';
+
+                this.addRecoverableError(
+                    errors,
+                    'PARSE_WITH_XMLNAMESPACES_BODY',
+                    message,
+                    bodyStart,
+                    bodyStart + 1
+                );
+
+                body = {
+                    type: 'ErrorStatement',
+                    message,
+                    start: bodyStart,
+                    end: bodyStart + 1
+                };
+            }
+
+            return {
+                type: 'WithStatement',
+                ctes,
+                xmlNamespaces,
+                body,
+                start: startToken.offset,
+                end: body.end,
+                ...(incomplete ? { incomplete: true } : {}),
+                ...(errors.length ? { errors } : {})
+            };
+        }
 
         while (true) {
             // Use the multipart identifier for the CTE name
@@ -8971,6 +9264,7 @@ export class Parser {
         return {
             type: 'WithStatement',
             ctes,
+            ...(xmlNamespaces ? { xmlNamespaces } : {}),
             body,
             start: startToken.offset,
             end: body.end,
@@ -13030,6 +13324,82 @@ export class Parser {
             action,
             start: startToken.offset,
             end: this.lastConsumedEnd(),
+            ...(incomplete ? { incomplete: true } : {}),
+            ...(errors.length ? { errors } : {})
+        };
+    }
+
+    private parseAlterRole(): AlterRoleNode {
+        const startToken = this.matchKeyword('ALTER');
+        this.matchKeyword('ROLE');
+
+        let incomplete = false;
+        const errors: string[] = [];
+        let endOffset = this.lastConsumedEnd();
+
+        let role: IdentifierNode | null = null;
+        let action: AlterRoleNode['action'] = null;
+
+        try {
+            const roleExpr = this.parseMultipartIdentifier(
+                undefined,
+                { allowStructuralFirstSegment: true }
+            );
+
+            if (roleExpr.type === 'Identifier') {
+                role = roleExpr;
+                endOffset = roleExpr.end;
+            } else {
+                throw new Error('Expected role name');
+            }
+
+            if (this.peekKeyword('ADD')) {
+                this.consume();
+                this.matchKeyword('MEMBER');
+
+                const memberExpr = this.parseMultipartIdentifier(
+                    undefined,
+                    { allowStructuralFirstSegment: true }
+                );
+
+                action = {
+                    kind: 'ADD_MEMBER',
+                    member: memberExpr.type === 'Identifier' ? memberExpr : null
+                };
+                endOffset = this.lastConsumedEnd();
+            } else if (this.peekKeyword('DROP')) {
+                this.consume();
+                this.matchKeyword('MEMBER');
+
+                const memberExpr = this.parseMultipartIdentifier(
+                    undefined,
+                    { allowStructuralFirstSegment: true }
+                );
+
+                action = {
+                    kind: 'DROP_MEMBER',
+                    member: memberExpr.type === 'Identifier' ? memberExpr : null
+                };
+                endOffset = this.lastConsumedEnd();
+            } else {
+                throw new Error('Expected ADD MEMBER or DROP MEMBER in ALTER ROLE');
+            }
+        } catch (e) {
+            incomplete = true;
+            this.addRecoverableError(
+                errors,
+                'PARSE_ALTER_ROLE',
+                e instanceof Error ? e.message : String(e),
+                endOffset
+            );
+        }
+
+        return {
+            type: 'AlterRoleStatement',
+            role,
+            action,
+            start: startToken.offset,
+            end: endOffset,
             ...(incomplete ? { incomplete: true } : {}),
             ...(errors.length ? { errors } : {})
         };

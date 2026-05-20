@@ -771,6 +771,29 @@ describe('DUP001 â€” duplicate declaration', () => {
     });
 });
 
+describe('DUP003 — duplicate SELECT output alias', () => {
+    test('fires as a warning when the same select alias is used twice', () => {
+        const d = only(`
+            SELECT
+                (SELECT 1 FOR XML PATH('')) PlatformCodes,
+                (SELECT 2 FOR XML PATH('')) PlatformCodes
+        `, DiagnosticCode.DuplicateSelectAlias);
+
+        expect(d.length).toBe(1);
+        expect(d[0].severity).toBe('warning');
+    });
+
+    test('does not also fire DUP001 for duplicate select aliases', () => {
+        const d = only(`
+            SELECT
+                (SELECT 1 FOR XML PATH('')) PlatformCodes,
+                (SELECT 2 FOR XML PATH('')) PlatformCodes
+        `, DiagnosticCode.DuplicateVariable);
+
+        expect(d.length).toBe(0);
+    });
+});
+
 describe('diagnostic ordering', () => {
     test('diagnostics are sorted by start offset', () => {
         const d = run(`
