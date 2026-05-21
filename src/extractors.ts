@@ -4,6 +4,7 @@ import {
     DeclareNode,
     DeleteNode,
     Expression,
+    ExecuteNode,
     IdentifierNode,
     InsertNode,
     NodeLocation,
@@ -55,6 +56,7 @@ export type ExtractedReferenceContext =
     | 'update-target'
     | 'delete-target'
     | 'output-into'
+    | 'execute-target'
     | 'expression';
 
 export interface ExtractedReference {
@@ -165,6 +167,9 @@ function collectDeclarationsFromStatement(
     declarations: ExtractedDeclaration[]
 ): void {
     switch (stmt.type) {
+        case 'BatchSeparatorStatement':
+            return;
+
         case 'CreateStatement':
             declarations.push(createObjectDeclaration(stmt));
 
@@ -307,6 +312,9 @@ function referencesForStatement(stmt: Statement): ExtractedReference[] {
     const references: ExtractedReference[] = [];
 
     switch (stmt.type) {
+        case 'BatchSeparatorStatement':
+            break;
+
         case 'SelectStatement':
             collectReferencesFromSelect(stmt, references);
             break;
@@ -351,6 +359,10 @@ function referencesForStatement(stmt: Statement): ExtractedReference[] {
 
         case 'PrintStatement':
             collectReferencesFromExpression(stmt.value, references);
+            break;
+
+        case 'ExecuteStatement':
+            collectReferencesFromExecute(stmt, references);
             break;
 
         case 'IfStatement':
@@ -481,6 +493,17 @@ function collectReferencesFromDelete(
 
     collectReferencesFromExpression(stmt.where, references);
     collectReferencesFromOutput(stmt.output, references);
+}
+
+function collectReferencesFromExecute(
+    stmt: ExecuteNode,
+    references: ExtractedReference[]
+): void {
+    addObjectReference(stmt.target, references, 'execute-target');
+
+    for (const arg of stmt.args ?? []) {
+        collectReferencesFromExpression(arg.value, references);
+    }
 }
 
 function collectReferencesFromOutput(

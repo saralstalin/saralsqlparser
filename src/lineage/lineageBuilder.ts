@@ -28,7 +28,11 @@ import {
     DerivedColumn,
     VirtualSource,
     LineageEdge,
-    LineageResult
+    LineageResult,
+    LineageSourceKind,
+    SourceExposure,
+    AmbiguityDiagnostic,
+    MutationTarget
 } from './lineage';
 
 type SourceMap = Map<string, VirtualSource>;
@@ -36,10 +40,16 @@ type SourceMap = Map<string, VirtualSource>;
 export class LineageBuilder {
     private columns: DerivedColumn[] = [];
     private sources: SourceMap[] = [];
+    private sourceExposure = new Map<string, SourceExposure>();
+    private ambiguities: AmbiguityDiagnostic[] = [];
+    private mutations: MutationTarget[] = [];
 
     build(program: Program): LineageResult {
         this.columns = [];
         this.sources = [new Map()];
+        this.sourceExposure = new Map();
+        this.ambiguities = [];
+        this.mutations = [];
 
         for (const stmt of program.body) {
             this.visitStatement(stmt);
@@ -47,7 +57,10 @@ export class LineageBuilder {
 
         return {
             columns: this.columns,
-            edges: this.buildEdges(this.columns)
+            edges: this.buildEdges(this.columns),
+            sources: [...this.sourceExposure.values()],
+            ambiguities: this.ambiguities,
+            mutations: this.mutations
         };
     }
 
@@ -69,6 +82,21 @@ export class LineageBuilder {
 
     private defineSource(name: string, source: VirtualSource): void {
         this.currentSources().set(name.toLowerCase(), source);
+
+        const key = `${source.name.toLowerCase()}::${(source.alias ?? '').toLowerCase()}::${source.kind}`;
+        if (!this.sourceExposure.has(key)) {
+            this.sourceExposure.set(key, {
+                name: source.name,
+                alias: source.alias,
+                kind: source.kind,
+                baseName: source.baseName,
+                location: source.definedAt,
+                projection: [...source.columns.values()].map(col => ({
+                    name: col.name,
+                    location: col.location
+                }))
+            });
+        }
     }
 
     private resolveSource(name: string): VirtualSource | undefined {
@@ -88,6 +116,9 @@ export class LineageBuilder {
 
     private visitStatement(stmt: Statement): void {
         switch (stmt.type) {
+            case 'BatchSeparatorStatement':
+                break;
+
             case 'SelectStatement':
                 this.visitSelect(stmt, true);
                 break;
@@ -145,6 +176,8 @@ export class LineageBuilder {
             const name = stmt.nameNode.name;
             const source: VirtualSource = {
                 name,
+                kind: 'table',
+                definedAt: stmt.nameNode,
                 columns: new Map(
                     stmt.columns.map(col => [
                         col.name.toLowerCase(),
@@ -160,6 +193,8 @@ export class LineageBuilder {
                         kind: 'column',
                         name: `${name}.*`,
                         source: name,
+                        sourceKind: 'table',
+                        resolution: 'resolved',
                         wildcard: true,
                         location: stmt.nameNode
                     }
@@ -217,12 +252,15 @@ export class LineageBuilder {
         for (const name of ['INSERTED', 'DELETED']) {
             this.defineSource(name, {
                 name,
+                kind: 'pseudo_output',
                 columns: new Map(),
                 wildcardSources: [
                     {
                         kind: 'column',
                         name: `${name}.*`,
                         source: name,
+                        sourceKind: 'pseudo_output',
+                        resolution: 'resolved',
                         wildcard: true
                     }
                 ]
@@ -320,6 +358,10 @@ export class LineageBuilder {
             for (const ref of stmt.from) {
                 this.registerTableReference(ref);
             }
+        }
+
+        if (stmt.target && stmt.target.type === 'Identifier') {
+            this.recordMutationTarget('DELETE', stmt, stmt.target.name);
         }
 
         this.visitOutputClause(stmt.output);
@@ -455,6 +497,9 @@ export class LineageBuilder {
 
             this.defineSource(cte.name, {
                 name: cte.name,
+                kind: 'cte',
+                alias: cte.name,
+                definedAt: cte,
                 columns: new Map(
                     cols.map(c => [c.name.toLowerCase(), c])
                 ),
@@ -527,7 +572,23 @@ export class LineageBuilder {
     }
 
     private registerTableReference(ref: TableReference): void {
-        this.registerSource(ref.table, ref.alias);
+        const forcedKind: LineageSourceKind | undefined =
+            ref.pivot
+                ? 'pivot'
+                : ref.unpivot
+                    ? 'unpivot'
+                    : undefined;
+        const projectionColumns =
+            ref.aliasColumns?.length
+                ? ref.aliasColumns
+                : this.getTableReferenceProjectionColumns(ref);
+        this.registerSource(
+            ref.table,
+            ref.alias,
+            projectionColumns,
+            forcedKind,
+            ref
+        );
 
         for (const join of ref.joins) {
             this.registerJoin(join);
@@ -535,12 +596,23 @@ export class LineageBuilder {
     }
 
     private registerJoin(join: JoinNode): void {
-        this.registerSource(join.table, join.alias);
+        this.registerSource(
+            join.table,
+            join.alias,
+            join.aliasColumns,
+            join.type === 'CROSS APPLY' || join.type === 'OUTER APPLY'
+                ? 'derived_apply'
+                : undefined,
+            join
+        );
     }
 
     private registerSource(
         expr: Expression | TableReference | null,
-        alias?: string
+        alias?: string,
+        aliasColumns?: string[],
+        forcedKind?: LineageSourceKind,
+        location?: { start: number; end: number }
     ): void {
         if (!expr) {
             return;
@@ -556,11 +628,18 @@ export class LineageBuilder {
         // ------------------------------------------------------------
         if (expr.type === 'SubqueryExpression') {
             const bindName = alias ?? '__subquery';
+            const kind = forcedKind ?? 'derived_subquery';
 
-            const cols = this.visitQuery(expr.query, false);
+            const cols = this.applyAliasColumns(
+                this.visitQuery(expr.query, false),
+                aliasColumns
+            );
 
             this.defineSource(bindName, {
                 name: bindName,
+                alias,
+                kind,
+                definedAt: location ?? expr,
                 columns: new Map(
                     cols.map(c => [c.name.toLowerCase(), c])
                 ),
@@ -589,7 +668,8 @@ export class LineageBuilder {
                 // preserve original underlying name
                 this.defineSource(bindName, {
                     ...existing,
-                    name: existing.name
+                    name: existing.name,
+                    alias: alias ?? existing.alias
                 });
                 return;
             }
@@ -597,12 +677,18 @@ export class LineageBuilder {
             // physical table
             const physical: VirtualSource = {
                 name: objectName,
+                kind: forcedKind ?? 'table',
+                alias,
+                baseName: objectName,
+                definedAt: location ?? expr,
                 columns: new Map(),
                 wildcardSources: [
                     {
                         kind: 'column',
                         name: `${objectName}.*`,
                         source: objectName,
+                        sourceKind: forcedKind ?? 'table',
+                        resolution: 'resolved',
                         wildcard: true,
                         location: expr
                     }
@@ -617,7 +703,88 @@ export class LineageBuilder {
             if (bindName.toLowerCase() !== objectName.toLowerCase()) {
                 this.defineSource(objectName, physical);
             }
+
+            return;
         }
+
+        if (
+            expr.type === 'FunctionCall' ||
+            expr.type === 'ValuesTableExpression'
+        ) {
+            const bindName = alias ?? '__derived';
+            const kind: LineageSourceKind =
+                forcedKind ??
+                (expr.type === 'FunctionCall'
+                    ? 'function'
+                    : 'derived_values');
+
+            const projected = aliasColumns
+                ? new Map(
+                    aliasColumns.map(name => [
+                        name.toLowerCase(),
+                        {
+                            name,
+                            inputs: [],
+                            location: expr
+                        } as DerivedColumn
+                    ])
+                )
+                : new Map<string, DerivedColumn>();
+
+            this.defineSource(bindName, {
+                name: bindName,
+                alias,
+                kind,
+                definedAt: location ?? expr,
+                columns: projected,
+                wildcardSources: [
+                    {
+                        kind: 'column',
+                        name: `${bindName}.*`,
+                        source: bindName,
+                        sourceKind: kind,
+                        resolution: 'resolved',
+                        wildcard: true,
+                        location: expr
+                    }
+                ]
+            });
+        }
+    }
+
+    private applyAliasColumns(
+        columns: DerivedColumn[],
+        aliasColumns?: string[]
+    ): DerivedColumn[] {
+        if (!aliasColumns?.length) {
+            return columns;
+        }
+
+        return columns.map((column, index) => ({
+            ...column,
+            name: aliasColumns[index] ?? column.name
+        }));
+    }
+
+    private getTableReferenceProjectionColumns(
+        ref: TableReference
+    ): string[] | undefined {
+        if (ref.pivot) {
+            return ref.pivot.inColumns.map(col => col.name);
+        }
+
+        if (ref.unpivot) {
+            const cols: string[] = [];
+            if (ref.unpivot.valueColumn) {
+                cols.push(ref.unpivot.valueColumn.name);
+            }
+            if (ref.unpivot.forColumn) {
+                cols.push(ref.unpivot.forColumn.name);
+            }
+            return cols.length ? cols : undefined;
+        }
+
+        return undefined;
     }
 
     // ============================================================
@@ -732,6 +899,7 @@ export class LineageBuilder {
         }
 
         const target = stmt.target.name;
+        this.recordMutationTarget('UPDATE', stmt, target);
 
         for (const assignment of stmt.assignments ?? []) {
             this.columns.push({
@@ -924,9 +1092,18 @@ export class LineageBuilder {
                     kind: 'column',
                     name: `${source.name}.${column}`,
                     source: source.name,
+                    sourceKind: source.kind,
+                    resolution: 'resolved',
                     location: expr
                 }];
             }
+
+            return [{
+                kind: 'column',
+                name: expr.name,
+                resolution: 'unresolved',
+                location: expr
+            }];
         }
 
         // ------------------------------------------------------------
@@ -954,16 +1131,43 @@ export class LineageBuilder {
                 kind: 'column',
                 name: `${source.name}.${expr.name}`,
                 source: source.name,
+                sourceKind: source.kind,
+                resolution: 'resolved',
                 location: expr
             }];
+        }
+
+        const candidates = this.getCandidateSourceNames(expr.name);
+
+        if (candidates.length > 1) {
+            this.ambiguities.push({
+                name: expr.name,
+                location: expr,
+                candidates
+            });
         }
 
         // ambiguous / unknown
         return [{
             kind: 'column',
             name: expr.name,
+            resolution: candidates.length > 1 ? 'ambiguous' : 'unresolved',
+            candidateSources: candidates.length > 1 ? candidates : undefined,
             location: expr
         }];
+    }
+
+    private getCandidateSourceNames(columnName: string): string[] {
+        const normalized = columnName.toLowerCase();
+        const candidates = new Map<string, true>();
+
+        for (const source of this.currentSources().values()) {
+            if (source.columns.size === 0 || source.columns.has(normalized)) {
+                candidates.set(source.name, true);
+            }
+        }
+
+        return [...candidates.keys()];
     }
 
     private resolveWildcard(
@@ -1094,6 +1298,21 @@ export class LineageBuilder {
         expr: Expression | null | undefined
     ): LineageNode[] {
         return this.resolveExpression(expr);
+    }
+
+    private recordMutationTarget(
+        statement: 'UPDATE' | 'DELETE',
+        stmt: UpdateNode | DeleteNode,
+        targetName: string
+    ): void {
+        const source = this.resolveSource(targetName);
+        this.mutations.push({
+            statement,
+            targetName,
+            targetAlias: source?.alias,
+            resolvedSourceName: source?.name,
+            location: stmt
+        });
     }
 
     private resolveUpdateTargetName(stmt: UpdateNode): string {

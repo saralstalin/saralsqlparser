@@ -46,6 +46,7 @@ import {
     TruncateNode,
     AlterTableNode,
     AlterIndexNode,
+    BatchSeparatorNode,
 
 
     // Expressions
@@ -200,7 +201,7 @@ export class Parser {
 
             // Handle T-SQL batch separator
             if (token?.value === 'GO') {
-                this.consume();
+                statements.push(this.parseBatchSeparator());
                 continue;
             }
 
@@ -261,6 +262,25 @@ export class Parser {
         return {
             ast,
             issues: this.issues
+        };
+    }
+
+    private parseBatchSeparator(): BatchSeparatorNode {
+        const goToken = this.matchValue('GO');
+        let end = goToken.offset + goToken.value.length;
+        let count: number | undefined;
+
+        if (this.peek()?.type === TokenType.Number) {
+            const countToken = this.consume();
+            count = Number(countToken.value);
+            end = countToken.offset + countToken.value.length;
+        }
+
+        return {
+            type: 'BatchSeparatorStatement',
+            start: goToken.offset,
+            end,
+            ...(count !== undefined ? { count } : {})
         };
     }
 
@@ -11418,6 +11438,8 @@ export class Parser {
         let expression: Expression | null | undefined;
         let referencesTable: string | undefined;
         let referencesColumns: string[] | undefined;
+        let onDelete: ConstraintNode['onDelete'];
+        let onUpdate: ConstraintNode['onUpdate'];
         let storage: StorageTargetNode | undefined;
 
         const fail = (
@@ -11602,6 +11624,54 @@ export class Parser {
                         'PARSE_CONSTRAINT_REFERENCES',
                         'Expected REFERENCES clause'
                     );
+                }
+
+                // Optional FK referential actions:
+                // ON DELETE { CASCADE | SET NULL | SET DEFAULT | NO ACTION }
+                // ON UPDATE { CASCADE | SET NULL | SET DEFAULT | NO ACTION }
+                while (
+                    this.peek()?.value?.toUpperCase() === 'ON' &&
+                    (
+                        this.peek(1)?.value?.toUpperCase() === 'DELETE' ||
+                        this.peek(1)?.value?.toUpperCase() === 'UPDATE'
+                    )
+                ) {
+                    this.consume(); // ON
+                    const target = this.consume().value.toUpperCase(); // DELETE|UPDATE
+
+                    let action: ConstraintNode['onDelete'] | undefined;
+                    const first = this.peek()?.value?.toUpperCase();
+                    const second = this.peek(1)?.value?.toUpperCase();
+
+                    if (first === 'CASCADE') {
+                        this.consume();
+                        action = 'CASCADE';
+                    } else if (first === 'NO' && second === 'ACTION') {
+                        this.consume();
+                        this.consume();
+                        action = 'NO ACTION';
+                    } else if (first === 'SET' && second === 'NULL') {
+                        this.consume();
+                        this.consume();
+                        action = 'SET NULL';
+                    } else if (first === 'SET' && second === 'DEFAULT') {
+                        this.consume();
+                        this.consume();
+                        action = 'SET DEFAULT';
+                    } else {
+                        fail(
+                            'PARSE_CONSTRAINT_FK_ACTION',
+                            `Expected referential action after ON ${target}`
+                        );
+                    }
+
+                    if (target === 'DELETE' && action) {
+                        onDelete = action;
+                    }
+
+                    if (target === 'UPDATE' && action) {
+                        onUpdate = action;
+                    }
                 }
             }
 
@@ -11935,6 +12005,8 @@ export class Parser {
             ...(referencesColumns?.length
                 ? { referencesColumns }
                 : {}),
+            ...(onDelete ? { onDelete } : {}),
+            ...(onUpdate ? { onUpdate } : {}),
             ...(storage ? { storage } : {}),
             start,
             end: this.lastConsumedEnd(),

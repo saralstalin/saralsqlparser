@@ -42,17 +42,19 @@ describe('tSQLt open-source corpus', () => {
     test('selected example batches parse cleanly', () => {
         const result = parseResult(tsqltCorpus);
         const body = result.ast.body as any[];
+        const executableBody = body.filter(stmt => stmt.type !== 'BatchSeparatorStatement');
 
         expect(result.issues).toEqual([]);
-        expect(body.map(stmt => stmt.type)).toEqual([
+        expect(body.filter(stmt => stmt.type === 'BatchSeparatorStatement')).toHaveLength(3);
+        expect(executableBody.map(stmt => stmt.type)).toEqual([
             'CreateStatement',
             'CreateStatement',
             'ExecuteStatement',
             'CreateStatement'
         ]);
 
-        expect(body[0].objectType).toBe('PROCEDURE');
-        expect(body[1].objectType).toBe('PROCEDURE');
-        expect(body[3].objectType).toBe('PROCEDURE');
+        expect(executableBody[0].objectType).toBe('PROCEDURE');
+        expect(executableBody[1].objectType).toBe('PROCEDURE');
+        expect(executableBody[3].objectType).toBe('PROCEDURE');
     });
 });

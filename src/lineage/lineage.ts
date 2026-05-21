@@ -1,5 +1,17 @@
 import { Expression, NodeLocation } from '../ast/types';
 
+export type LineageSourceKind =
+    | 'table'
+    | 'cte'
+    | 'derived_subquery'
+    | 'derived_values'
+    | 'derived_apply'
+    | 'function'
+    | 'pivot'
+    | 'unpivot'
+    | 'pseudo_output'
+    | 'unknown';
+
 export type LineageNodeKind =
     | 'table'
     | 'column'
@@ -25,12 +37,15 @@ export interface LineageNode {
      *  Customer
      */
     source?: string;
+    sourceKind?: LineageSourceKind;
 
     /**
      * True for:
      *  Orders.*
      */
     wildcard?: boolean;
+    resolution?: 'resolved' | 'ambiguous' | 'unresolved';
+    candidateSources?: string[];
 
     location?: NodeLocation;
 }
@@ -56,8 +71,40 @@ export interface DerivedColumn {
 
 export interface VirtualSource {
     name: string;
+    kind: LineageSourceKind;
+    alias?: string;
+    definedAt?: NodeLocation;
+    baseName?: string;
     columns: Map<string, DerivedColumn>;
     wildcardSources: LineageNode[];
+}
+
+export interface SourceProjectionColumn {
+    name: string;
+    location?: NodeLocation;
+}
+
+export interface SourceExposure {
+    name: string;
+    alias?: string;
+    kind: LineageSourceKind;
+    baseName?: string;
+    location?: NodeLocation;
+    projection: SourceProjectionColumn[];
+}
+
+export interface AmbiguityDiagnostic {
+    name: string;
+    location: NodeLocation;
+    candidates: string[];
+}
+
+export interface MutationTarget {
+    statement: 'UPDATE' | 'DELETE';
+    targetName: string;
+    targetAlias?: string;
+    resolvedSourceName?: string;
+    location: NodeLocation;
 }
 
 export interface LineageEdge {
@@ -69,4 +116,7 @@ export interface LineageEdge {
 export interface LineageResult {
     columns: DerivedColumn[];
     edges: LineageEdge[];
+    sources: SourceExposure[];
+    ambiguities: AmbiguityDiagnostic[];
+    mutations: MutationTarget[];
 }

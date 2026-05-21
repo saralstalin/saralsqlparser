@@ -202,6 +202,9 @@ export class DiagnosticEngine {
 
     private visitStatement(stmt: Statement, insideView: boolean): void {
         switch (stmt.type) {
+            case 'BatchSeparatorStatement':
+                break;
+
             case 'SelectStatement':
                 this.checkSelect(stmt, insideView);
                 break;

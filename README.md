@@ -105,8 +105,8 @@ const result = analyze(sql);
 | `issues` | Recoverable parser issues |
 | `scope` | Scope graph for variables, parameters, aliases, CTEs, temp tables, and table variables |
 | `diagnostics` | Semantic and safety diagnostics |
-| `lineage` | Column lineage edges |
-| `columns` | Column resolution analysis, where available |
+| `lineage` | Column lineage edges plus source exposure, ambiguity metadata, and mutation target metadata |
+| `columns` | Column resolution analysis including ambiguity candidates and correlation flags where available |
 
 ---
 
@@ -411,6 +411,7 @@ SaralSQL focuses heavily on real-world SQL Server grammar used in enterprise sto
 <tr><td>NULL / NOT NULL</td><td><b>🟩 Full</b></td></tr>
 <tr><td>PRIMARY KEY</td><td><b>🟩 Full</b></td></tr>
 <tr><td>FOREIGN KEY</td><td><b>🟩 Full</b></td></tr>
+<tr><td>FK ON DELETE / ON UPDATE actions</td><td><b>🟩 Full</b></td></tr>
 <tr><td>UNIQUE / CHECK / DEFAULT</td><td><b>🟩 Full</b></td></tr>
 <tr><td>IDENTITY</td><td><b>🟩 Full</b></td></tr>
 <tr><td>Computed columns</td><td><b>🟩 Full</b></td></tr>
@@ -683,6 +684,40 @@ Lineage:
     "target": "dbo.InvoiceSummary.TotalAmount"
   }
 ]
+```
+
+---
+
+# Lineage Metadata Example
+
+`analyze(sql).lineage` also provides source exposure, ambiguity metadata, and mutation target metadata.
+
+```json
+{
+  "sources": [
+    {
+      "name": "a",
+      "alias": "a",
+      "kind": "derived_subquery",
+      "projection": [
+        { "name": "SomeName" }
+      ]
+    }
+  ],
+  "ambiguities": [
+    {
+      "name": "Id",
+      "candidates": ["Employee", "Department"]
+    }
+  ],
+  "mutations": [
+    {
+      "statement": "UPDATE",
+      "targetName": "e",
+      "resolvedSourceName": "Employee"
+    }
+  ]
+}
 ```
 
 ---

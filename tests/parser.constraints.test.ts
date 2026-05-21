@@ -599,6 +599,40 @@ describe('unnamed table constraints', () => {
         ]);
     });
 
+    test('FOREIGN KEY with ON DELETE/ON UPDATE CASCADE', () => {
+        const stmt = parseOne<any>(`
+            CREATE TABLE SalaryCreditLog(
+                EmployeeId INT,
+                FOREIGN KEY (EmployeeId)
+                REFERENCES Employee(EmployeeId)
+                ON DELETE CASCADE
+                ON UPDATE CASCADE
+            )
+        `);
+
+        const fk = stmt.constraints[0];
+        expect(fk.kind).toBe('FOREIGN KEY');
+        expect(fk.onDelete).toBe('CASCADE');
+        expect(fk.onUpdate).toBe('CASCADE');
+    });
+
+    test('FOREIGN KEY with mixed referential action variants in any order', () => {
+        const stmt = parseOne<any>(`
+            CREATE TABLE SalaryCreditLog(
+                EmployeeId INT,
+                FOREIGN KEY (EmployeeId)
+                REFERENCES Employee(EmployeeId)
+                ON UPDATE SET NULL
+                ON DELETE NO ACTION
+            )
+        `);
+
+        const fk = stmt.constraints[0];
+        expect(fk.kind).toBe('FOREIGN KEY');
+        expect(fk.onDelete).toBe('NO ACTION');
+        expect(fk.onUpdate).toBe('SET NULL');
+    });
+
     test('multiple unnamed table constraints', () => {
         const stmt = parseOne<any>(`
             CREATE TABLE X(

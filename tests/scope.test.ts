@@ -57,6 +57,23 @@ describe('DECLARE', () => {
         const baseSym = result.root.resolve('@Base');
         expect(baseSym?.references.length).toBeGreaterThan(0);
     });
+
+    test('GO separates variable declaration scopes', () => {
+        const result = build(`
+            DECLARE @ID INT = 20
+            GO
+            DECLARE @ID INT = 30
+        `);
+
+        const batches = result.root.getChildren()
+            .filter(scope => scope.name === 'batch');
+
+        expect(result.duplicates).toHaveLength(0);
+        expect(batches).toHaveLength(2);
+        expect(batches[0].resolveLocal('@ID')).toBeDefined();
+        expect(batches[1].resolveLocal('@ID')).toBeDefined();
+        expect(result.root.resolveLocal('@ID')).toBeUndefined();
+    });
 });
 
 // ─── 2. CREATE ────────────────────────────────────────────────────────────────

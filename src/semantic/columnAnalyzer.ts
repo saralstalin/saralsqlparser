@@ -13,6 +13,8 @@ import { LineageNode } from '../lineage/lineage';
 export interface ColumnResolution {
     location: IdentifierNode;
     inputs: LineageNode[];
+    ambiguityCandidates?: string[];
+    isCorrelated?: boolean;
 }
 
 export interface ColumnAnalysisResult {
@@ -36,16 +38,61 @@ export class ColumnAnalyzer {
             if (!col.expression) continue;
 
             this.collectIdentifiers(col.expression, (id) => {
-                const inputs = this.builder.resolveExpressionPublic(id);
+                const inputs =
+                    this.getIdentifierInputs(id, col.inputs);
+                const ambiguityCandidates =
+                    this.collectAmbiguityCandidates(inputs);
 
                 resolutions.push({
                     location: id,
-                    inputs
+                    inputs,
+                    ...(ambiguityCandidates.length
+                        ? { ambiguityCandidates }
+                        : {}),
+                    isCorrelated:
+                        id.parts.length >= 2 &&
+                        inputs.some(input => input.resolution === 'resolved')
                 });
             });
         }
 
         return { resolutions };
+    }
+
+    private collectAmbiguityCandidates(inputs: LineageNode[]): string[] {
+        const seen = new Set<string>();
+        const candidates: string[] = [];
+
+        for (const input of inputs) {
+            for (const candidate of input.candidateSources ?? []) {
+                const key = candidate.toLowerCase();
+                if (seen.has(key)) {
+                    continue;
+                }
+
+                seen.add(key);
+                candidates.push(candidate);
+            }
+        }
+
+        return candidates;
+    }
+
+    private getIdentifierInputs(
+        identifier: IdentifierNode,
+        columnInputs: LineageNode[]
+    ): LineageNode[] {
+        const matched = columnInputs.filter(input =>
+            input.location &&
+            input.location.start === identifier.start &&
+            input.location.end === identifier.end
+        );
+
+        if (matched.length > 0) {
+            return matched;
+        }
+
+        return columnInputs;
     }
 
     // -----------------------------------------

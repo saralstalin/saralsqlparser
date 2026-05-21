@@ -978,3 +978,61 @@ describe('LineageBuilder', () => {
     });
 
 });
+
+describe('Lineage metadata', () => {
+    test('exposes derived subquery projection for outer alias', () => {
+        const result = lineage(`
+            SELECT a.SomeName
+            FROM (
+                SELECT e.FirstName AS SomeName
+                FROM Employee e
+            ) a
+        `);
+
+        const source = result.sources.find(x => x.alias === 'a');
+        expect(source?.kind).toBe('derived_subquery');
+        expect(source?.projection.map(p => p.name)).toContain('SomeName');
+    });
+
+    test('classifies CROSS APPLY function alias as derived_apply source', () => {
+        const result = lineage(`
+            SELECT ss.value
+            FROM Employee e
+            CROSS APPLY STRING_SPLIT(e.FirstName, ',') ss
+        `);
+
+        const source = result.sources.find(x => x.alias === 'ss');
+        expect(source).toBeDefined();
+        expect(source?.kind).toBe('derived_apply');
+    });
+
+    test('reports ambiguity candidates for bare columns', () => {
+        const result = lineage(`
+            SELECT Id
+            FROM Employee e
+            JOIN Department d ON d.Id = e.DepartmentId
+        `);
+
+        expect(result.ambiguities.length).toBeGreaterThan(0);
+        expect(result.ambiguities[0].name).toBe('Id');
+        expect(result.ambiguities[0].candidates.length).toBeGreaterThan(1);
+    });
+
+    test('exposes mutation target metadata for update/delete aliases', () => {
+        const result = lineage(`
+            UPDATE e
+            SET e.FirstName = d.Name
+            FROM Employee e
+            JOIN Department d ON d.Id = e.DepartmentId;
+
+            DELETE e
+            FROM Employee e
+            JOIN Department d ON d.Id = e.DepartmentId;
+        `);
+
+        const update = result.mutations.find(x => x.statement === 'UPDATE');
+        const del = result.mutations.find(x => x.statement === 'DELETE');
+        expect(update?.targetName).toBe('e');
+        expect(del?.targetName).toBe('e');
+    });
+});

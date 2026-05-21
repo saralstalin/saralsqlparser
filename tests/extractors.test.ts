@@ -75,6 +75,35 @@ describe('AST fact extractors', () => {
         );
     });
 
+    test('extractReferences includes execute target context', () => {
+        const sql = `EXEC dbo.SyncUsers @BatchId = 1;`;
+        const references = extractReferences(analyze(sql).ast);
+
+        expect(references).toContainEqual(
+            expect.objectContaining({
+                kind: 'table',
+                context: 'execute-target',
+                name: 'dbo.SyncUsers',
+                normalizedName: 'dbo.syncusers'
+            })
+        );
+    });
+
+    test('derived table alias does not emit invalid object reference names', () => {
+        const sql = `
+            SELECT d.SomeName
+            FROM (
+                SELECT e.FirstName AS SomeName
+                FROM Employee e
+            ) d
+        `;
+        const references = extractReferences(analyze(sql).ast);
+        const names = references.map(r => r.name);
+
+        expect(names).not.toContain('[object Object]');
+        expect(references.some(r => r.context === 'from' && r.name === 'Employee')).toBe(true);
+    });
+
     test('extractDependencies links created objects to referenced objects', () => {
         const sql = `
             CREATE VIEW dbo.ActiveUsers AS

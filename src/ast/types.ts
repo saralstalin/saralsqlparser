@@ -241,8 +241,14 @@ export type Statement = (
     AlterRoleNode |
     AlterTableNode |
     AlterIndexNode |
+    BatchSeparatorNode |
     TruncateNode
 ) & NodeLocation;
+
+export interface BatchSeparatorNode extends NodeLocation {
+    type: 'BatchSeparatorStatement';
+    count?: number;
+}
 
 // ===============================
 // SELECT
@@ -664,6 +670,8 @@ export interface ConstraintNode extends NodeLocation, Recoverable {
 
     referencesTable?: string;
     referencesColumns?: string[];
+    onDelete?: 'CASCADE' | 'SET NULL' | 'SET DEFAULT' | 'NO ACTION';
+    onUpdate?: 'CASCADE' | 'SET NULL' | 'SET DEFAULT' | 'NO ACTION';
     storage?: StorageTargetNode;
 
     seed?: number;

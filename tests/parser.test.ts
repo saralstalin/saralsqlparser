@@ -766,14 +766,29 @@ describe('T-SQL Parser', () => {
         `;
 
         const ast = parse(sql);
-        const viewStmt = ast.body[0] as CreateNode;
-        const indexStmt = ast.body[1] as CreateIndexNode;
+        const statements = ast.body.filter(stmt => stmt.type !== 'BatchSeparatorStatement');
+        const viewStmt = statements[0] as CreateNode;
+        const indexStmt = statements[1] as CreateIndexNode;
 
         expect(viewStmt.objectType).toBe('VIEW');
         expect(indexStmt.type).toBe('CreateIndexStatement');
         expect(indexStmt.unique).toBe(true);
         expect(indexStmt.clustered).toBe('CLUSTERED');
         expect(indexStmt.table.name).toBe('dbo.SalesByCustomer');
+    });
+
+    test('should preserve GO as a batch separator statement', () => {
+        const ast = parse(`
+            DECLARE @ID INT = 20
+            GO
+            DECLARE @ID INT = 30
+        `);
+
+        expect(ast.body.map(stmt => stmt.type)).toEqual([
+            'DeclareStatement',
+            'BatchSeparatorStatement',
+            'DeclareStatement'
+        ]);
     });
 
     test('should handle keyword column name in SELECT projection', () => {

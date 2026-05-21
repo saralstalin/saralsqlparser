@@ -77,8 +77,12 @@ export class ScopeBuilder {
         this.root = new Scope(0, Number.MAX_SAFE_INTEGER, null, 'root');
         this.current = this.root;
 
-        for (const stmt of program.body) {
-            this.visitStatement(stmt);
+        if (program.body.some(stmt => stmt.type === 'BatchSeparatorStatement')) {
+            this.visitBatches(program);
+        } else {
+            for (const stmt of program.body) {
+                this.visitStatement(stmt);
+            }
         }
 
         return {
@@ -87,6 +91,40 @@ export class ScopeBuilder {
             undeclared: this.undeclared,
             duplicates: this.duplicates,
         };
+    }
+
+    private visitBatches(program: Program): void {
+        for (let i = 0; i < program.body.length; i++) {
+            const stmt = program.body[i];
+
+            if (stmt.type === 'BatchSeparatorStatement') {
+                if (this.current !== this.root) {
+                    this.popScope();
+                }
+                continue;
+            }
+
+            if (this.current === this.root) {
+                this.pushScope(stmt.start, this.findBatchEnd(program, i), 'batch');
+            }
+
+            this.visitStatement(stmt);
+        }
+
+        if (this.current !== this.root) {
+            this.popScope();
+        }
+    }
+
+    private findBatchEnd(program: Program, startIndex: number): number {
+        for (let i = startIndex + 1; i < program.body.length; i++) {
+            const stmt = program.body[i];
+            if (stmt.type === 'BatchSeparatorStatement') {
+                return stmt.start;
+            }
+        }
+
+        return program.end;
     }
 
     // ── Scope stack ───────────────────────────────────────────────────────────
@@ -141,6 +179,9 @@ export class ScopeBuilder {
 
     private visitStatement(stmt: Statement): void {
         switch (stmt.type) {
+            case 'BatchSeparatorStatement':
+                break;
+
             case 'DeclareStatement':
                 this.visitDeclare(stmt);
                 break;
@@ -768,35 +809,32 @@ export class ScopeBuilder {
     private visitTableReference(ref: TableReference): void {
         const table = ref.table;
 
-        // -----------------------------------------
-        // Alias (WITH metadata)
-        // -----------------------------------------
         if (ref.alias) {
-            let tableName: string | undefined;
             const columns =
                 this.getTableReferenceAliasColumns(ref);
 
-            if (table?.type === 'Identifier') {
-                tableName = table.name;
-            }
-
             this.declare({
                 name: ref.alias,
-                kind: SymbolKind.Alias, // ✅ DO NOT CHANGE
+                kind: SymbolKind.Alias,
                 location: ref,
                 references: [],
-                ...(columns?.length
-                    ? { columns }
-                    : {}),
-                metadata: tableName
-                    ? { tableName }
-                    : undefined,
+                ...(columns?.length ? { columns } : {}),
+                metadata:
+                    table?.type === 'Identifier'
+                        ? { tableName: table.name, sourceKind: 'table' }
+                        : {
+                            sourceKind:
+                                table?.type === 'SubqueryExpression'
+                                    ? 'derived_subquery'
+                                    : table?.type === 'FunctionCall'
+                                        ? 'function'
+                                        : table?.type === 'ValuesTableExpression'
+                                            ? 'derived_values'
+                                            : 'derived'
+                        }
             });
         }
 
-        // -----------------------------------------
-        // Visit table
-        // -----------------------------------------
         if (table) {
             if (table.type === 'TableReference') {
                 this.visitTableReference(table);
@@ -807,22 +845,26 @@ export class ScopeBuilder {
             }
         }
 
-        // -----------------------------------------
-        // Joins
-        // -----------------------------------------
         for (const join of ref.joins) {
             this.visitJoin(join);
         }
     }
 
-
     private visitJoin(join: JoinNode): void {
         if (join.alias) {
+            const isApply =
+                join.type === 'CROSS APPLY' || join.type === 'OUTER APPLY';
+
             this.declare({
                 name: join.alias,
                 kind: SymbolKind.Alias,
                 location: join,
                 references: [],
+                ...(join.aliasColumns?.length ? { columns: join.aliasColumns } : {}),
+                metadata:
+                    join.table?.type === 'Identifier'
+                        ? { tableName: join.table.name, sourceKind: 'table', joinType: join.type }
+                        : { sourceKind: isApply ? 'derived_apply' : 'derived', joinType: join.type }
             });
         }
 
@@ -1270,3 +1312,4 @@ export class ScopeBuilder {
 
 
 }
+

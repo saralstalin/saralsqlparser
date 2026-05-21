@@ -58,6 +58,9 @@ export function getDocumentSymbols(program: Program): DocumentSymbol[] {
 
 function statementSymbols(stmt: Statement): DocumentSymbol[] {
     switch (stmt.type) {
+        case 'BatchSeparatorStatement':
+            return [];
+
         case 'CreateStatement':
             return [createSymbol(stmt)];
 

@@ -1367,3 +1367,15 @@ describe('inline table indexes in CREATE TABLE', () => {
         expect(d.length).toBe(0);
     });
 });
+
+describe('DUP001 batch separators', () => {
+    test('does not fire across GO batch separators', () => {
+        const d = only(`
+            DECLARE @ID INT = 20
+            GO
+            DECLARE @ID INT = 30
+        `, DiagnosticCode.DuplicateVariable);
+
+        expect(d.length).toBe(0);
+    });
+});

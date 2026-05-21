@@ -100,14 +100,16 @@ describe('AdventureWorks open-source corpus', () => {
     test('selected official batches parse cleanly', () => {
         const result = parseResult(adventureWorksCorpus);
         const body = result.ast.body as any[];
+        const executableBody = body.filter(stmt => stmt.type !== 'BatchSeparatorStatement');
 
         expect(result.issues).toEqual([]);
-        expect(body.map(stmt => stmt.type)).toEqual([
+        expect(body.map(stmt => stmt.type)).toContain('BatchSeparatorStatement');
+        expect(executableBody.map(stmt => stmt.type)).toEqual([
             'CreateStatement',
             'CreateStatement'
         ]);
 
-        expect(body[0].objectType).toBe('PROCEDURE');
-        expect(body[1].objectType).toBe('VIEW');
+        expect(executableBody[0].objectType).toBe('PROCEDURE');
+        expect(executableBody[1].objectType).toBe('VIEW');
     });
 });

@@ -156,4 +156,56 @@ describe('ColumnAnalyzer', () => {
         expect(Array.isArray(result.resolutions)).toBe(true);
     });
 
+    test('marks correlated resolution in APPLY subquery expression', () => {
+        const sql = `
+            SELECT a.SomeName
+            FROM Employee e
+            CROSS APPLY (
+                SELECT e.FirstName AS SomeName
+            ) a
+        `;
+        const ast = parse(sql);
+
+        const analyzer = new ColumnAnalyzer();
+        const result = analyzer.analyze(ast);
+
+        expect(result.resolutions.some(r =>
+            r.location.name === 'a.SomeName' &&
+            r.isCorrelated
+        )).toBe(true);
+    });
+
+    test('emits ambiguity candidates for bare columns', () => {
+        const sql = `
+            SELECT Id
+            FROM Employee e
+            JOIN Department d ON d.Id = e.DepartmentId
+        `;
+        const ast = parse(sql);
+
+        const analyzer = new ColumnAnalyzer();
+        const result = analyzer.analyze(ast);
+        const idResolution = result.resolutions.find(r => r.location.name === 'Id');
+
+        expect(idResolution?.ambiguityCandidates?.length).toBeGreaterThan(1);
+    });
+
+    test('keeps qualified alias resolution scoped per statement', () => {
+        const sql = `
+            SELECT t.DepartmentId
+            INTO #t
+            FROM TempDepartment t;
+
+            SELECT e.DepartmentId
+            FROM DepartmentSalaryInfo e;
+        `;
+        const ast = parse(sql);
+        const analyzer = new ColumnAnalyzer();
+        const result = analyzer.analyze(ast);
+
+        const eResolution = result.resolutions.find(r => r.location.name === 'e.DepartmentId');
+        expect(eResolution).toBeDefined();
+        expect(eResolution?.inputs[0]?.source).toBe('DepartmentSalaryInfo');
+    });
+
 });

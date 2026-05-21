@@ -83,6 +83,10 @@ export type {
     LineageNode,
     DerivedColumn,
     VirtualSource,
+    LineageSourceKind,
+    SourceExposure,
+    AmbiguityDiagnostic,
+    MutationTarget,
     LineageEdge,
     LineageResult
 } from './lineage/lineage';
