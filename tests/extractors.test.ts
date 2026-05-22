@@ -75,6 +75,46 @@ describe('AST fact extractors', () => {
         );
     });
 
+    test('extractReferences emits qualified OUTPUT pseudo-table references', () => {
+        const sql = `
+            UPDATE dbo.Users
+            SET Name = 'A'
+            OUTPUT inserted.Id, deleted.Name
+            INTO dbo.Audit(UserId, OldName)
+            WHERE Id = 1;
+        `;
+        const references = extractReferences(analyze(sql).ast);
+
+        expect(references).toContainEqual(
+            expect.objectContaining({
+                kind: 'column',
+                context: 'expression',
+                name: 'INSERTED.Id',
+                normalizedName: 'inserted.id'
+            })
+        );
+        expect(references).toContainEqual(
+            expect.objectContaining({
+                kind: 'column',
+                context: 'expression',
+                name: 'DELETED.Name',
+                normalizedName: 'deleted.name'
+            })
+        );
+    });
+
+    test('insert-target reference remains anchored to target table token', () => {
+        const sql = `INSERT INTO dbo.TargetTable (FirstCol, SecondCol) VALUES (1, 2);`;
+        const references = extractReferences(analyze(sql).ast);
+        const insertTarget = references.find(r => r.context === 'insert-target');
+        const firstColOffset = sql.indexOf('FirstCol');
+
+        expect(insertTarget).toBeDefined();
+        expect(insertTarget?.name).toBe('dbo.TargetTable');
+        expect(insertTarget?.location.start).toBe(sql.indexOf('dbo.TargetTable'));
+        expect(insertTarget!.location.start).toBeLessThan(firstColOffset);
+    });
+
     test('extractReferences includes execute target context', () => {
         const sql = `EXEC dbo.SyncUsers @BatchId = 1;`;
         const references = extractReferences(analyze(sql).ast);

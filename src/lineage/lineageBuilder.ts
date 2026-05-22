@@ -302,23 +302,25 @@ export class LineageBuilder {
                 // ------------------------------------------------------------
                 // 3. Restore INSERTED / DELETED prefix
                 // ------------------------------------------------------------
-                if (out.sourceTable) {
-                    const source = out.sourceTable; // narrowed to non-null
+            if (out.sourceTable) {
+                const source = out.sourceTable; // narrowed to non-null
 
-                    inputs = inputs.map(node => {
-                        if (
-                            node.kind === 'column' &&
-                            !node.source
-                        ) {
-                            return {
-                                ...node,
-                                name: `${source}.${node.name}`,
-                                source
-                            } as LineageNode;
-                        }
+                inputs = inputs.map(node => {
+                    if (
+                        node.kind === 'column' &&
+                        !node.source
+                    ) {
+                        return {
+                            ...node,
+                            name: `${source}.${node.name}`,
+                            source,
+                            sourceKind: 'pseudo_output',
+                            resolution: 'resolved'
+                        } as LineageNode;
+                    }
 
-                        return node;
-                    });
+                    return node;
+                });
                 }
             }
 
@@ -1139,6 +1141,31 @@ export class LineageBuilder {
 
         const candidates = this.getCandidateSourceNames(expr.name);
 
+        // exactly one viable owner for this column in scope -> promote directly
+        if (candidates.length === 1) {
+            const source =
+                this.resolveSource(candidates[0]);
+
+            if (source) {
+                const derived =
+                    source.columns.get(expr.name.toLowerCase());
+
+                if (derived) {
+                    return derived.inputs;
+                }
+
+                return [{
+                    kind: 'column',
+                    name: `${source.name}.${expr.name}`,
+                    source: source.name,
+                    sourceKind: source.kind,
+                    resolution: 'resolved',
+                    candidateSources: candidates,
+                    location: expr
+                }];
+            }
+        }
+
         if (candidates.length > 1) {
             this.ambiguities.push({
                 name: expr.name,
@@ -1152,7 +1179,7 @@ export class LineageBuilder {
             kind: 'column',
             name: expr.name,
             resolution: candidates.length > 1 ? 'ambiguous' : 'unresolved',
-            candidateSources: candidates.length > 1 ? candidates : undefined,
+            candidateSources: candidates.length > 0 ? candidates : undefined,
             location: expr
         }];
     }

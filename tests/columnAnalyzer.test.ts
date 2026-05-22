@@ -208,4 +208,26 @@ describe('ColumnAnalyzer', () => {
         expect(eResolution?.inputs[0]?.source).toBe('DepartmentSalaryInfo');
     });
 
+    test('emits resolved OUTPUT inserted/deleted qualified lineage inputs', () => {
+        const sql = `
+            UPDATE Users
+            SET Name = 'John'
+            OUTPUT inserted.Name, deleted.Name
+            WHERE Id = 1;
+        `;
+        const ast = parse(sql);
+        const analyzer = new ColumnAnalyzer();
+        const result = analyzer.analyze(ast);
+
+        const hasInserted = result.resolutions.some(r =>
+            r.inputs.some(i => i.name === 'INSERTED.Name' && i.resolution === 'resolved')
+        );
+        const hasDeleted = result.resolutions.some(r =>
+            r.inputs.some(i => i.name === 'DELETED.Name' && i.resolution === 'resolved')
+        );
+
+        expect(hasInserted).toBe(true);
+        expect(hasDeleted).toBe(true);
+    });
+
 });

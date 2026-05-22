@@ -1018,6 +1018,21 @@ describe('Lineage metadata', () => {
         expect(result.ambiguities[0].candidates.length).toBeGreaterThan(1);
     });
 
+    test('promotes bare column to single viable candidate source', () => {
+        const result = lineage(`
+            SELECT Name
+            FROM Users u
+            JOIN (SELECT 1 AS Id) b ON 1 = 1
+        `);
+        const projected = result.columns.find(c => c.name === 'Name');
+        const promotedInput = projected?.inputs.find(i => i.source === 'Users');
+
+        expect(projected).toBeDefined();
+        expect(promotedInput).toBeDefined();
+        expect(promotedInput?.resolution).toBe('resolved');
+        expect(promotedInput?.candidateSources).toEqual(['Users']);
+    });
+
     test('exposes mutation target metadata for update/delete aliases', () => {
         const result = lineage(`
             UPDATE e

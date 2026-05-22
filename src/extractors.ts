@@ -515,6 +515,27 @@ function collectReferencesFromOutput(
     addObjectReference(output.intoTable, references, 'output-into');
 
     for (const col of output.columns) {
+        if (col.sourceTable) {
+            const expr = col.column.expression;
+            let member = col.column.outputName;
+
+            if (expr.type === 'Identifier' && expr.parts.length > 0) {
+                member = expr.parts[expr.parts.length - 1];
+            } else if (col.column.wildcard) {
+                member = '*';
+            }
+
+            const qualifiedName = `${col.sourceTable}.${member}`;
+            references.push({
+                kind: 'column',
+                context: 'expression',
+                name: qualifiedName,
+                normalizedName: normalizeName(qualifiedName),
+                location: col.sourceLocation ?? expr,
+                parts: [col.sourceTable, member]
+            });
+        }
+
         collectReferencesFromExpression(col.column.expression, references);
     }
 }
