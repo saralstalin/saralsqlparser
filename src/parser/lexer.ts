@@ -19,6 +19,7 @@ export enum TokenType {
 export interface Token {
     type: TokenType;
     value: string;
+    raw?: string;
     line: number;
     col: number;
     offset: number; // Absolute character position for LSP integration
@@ -397,7 +398,14 @@ export class Lexer {
         if (opener === "" && !content.startsWith('@') && !content.startsWith('#')) {
             const upper = content.toUpperCase();
             if (this.KEYWORDS.has(upper)) {
-                return { type: TokenType.Keyword, value: upper, line, col, offset: startOffset };
+                return {
+                    type: TokenType.Keyword,
+                    value: upper,
+                    raw: content,
+                    line,
+                    col,
+                    offset: startOffset
+                };
             }
         }
 

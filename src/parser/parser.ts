@@ -352,7 +352,7 @@ export class Parser {
             if (this.peek()?.value === '*') {
                 const star = this.consume();
 
-                const prefixParts = segments.map(t => t.value);
+                const prefixParts = segments.map((t, i) => this.getIdentifierSegmentText(t, i > 0));
 
                 const prefixNode: IdentifierNode = {
                     type: 'Identifier',
@@ -399,8 +399,8 @@ export class Parser {
                 return {
                     type: 'Identifier',
                     name:
-                        segments.map(t => t.value).join('.') + '.',
-                    parts: [...segments.map(t => t.value), ''],
+                        segments.map((t, i) => this.getIdentifierSegmentText(t, i > 0)).join('.') + '.',
+                    parts: [...segments.map((t, i) => this.getIdentifierSegmentText(t, i > 0)), ''],
                     start: startOffset,
                     end: endOffset,
                     incomplete: true,
@@ -420,11 +420,18 @@ export class Parser {
 
         return {
             type: 'Identifier',
-            name: segments.map(t => t.value).join('.'),
-            parts: segments.map(t => t.value),
+            name: segments.map((t, i) => this.getIdentifierSegmentText(t, i > 0)).join('.'),
+            parts: segments.map((t, i) => this.getIdentifierSegmentText(t, i > 0)),
             start: startOffset,
             end: last.offset + last.value.length
         } as IdentifierNode;
+    }
+
+    private getIdentifierSegmentText(token: Token, preserveRawKeyword = false): string {
+        if (preserveRawKeyword && token.type === TokenType.Keyword && token.raw) {
+            return token.raw;
+        }
+        return token.value;
     }
 
     private parseTableValuedFunction(

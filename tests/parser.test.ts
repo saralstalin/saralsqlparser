@@ -1070,6 +1070,15 @@ END`;
         expect(expr.parts).toEqual(['#Temp', 'Id']);
     });
 
+    test('should preserve source casing for keyword-like multipart segments', () => {
+        const stmt = parse('SELECT dbo.Target FROM dbo.Source;').body[0] as SelectNode;
+        const expr = stmt.columns[0].expression as IdentifierNode;
+
+        expect(expr.type).toBe('Identifier');
+        expect(expr.name).toBe('dbo.Target');
+        expect(expr.parts).toEqual(['dbo', 'Target']);
+    });
+
     test('should parse static member call with double colon', () => {
         const stmt = parse(`SELECT GEOGRAPHY::Point(@Latitude, @Longitude, 4326) AS GeoLocation`).body[0] as SelectNode;
         const expr = stmt.columns[0].expression as any;
@@ -1587,6 +1596,18 @@ describe('T-SQL Parser - Deep Expression Validation', () => {
     });
 
     describe('T-SQL Parser - MERGE Statement', () => {
+        test('should preserve source casing for MERGE target multipart identifier', () => {
+            const sql = `MERGE dbo.Target AS T
+USING dbo.Source AS S
+ON T.Id = S.Id
+WHEN MATCHED THEN UPDATE SET Name = S.Name;`;
+            const stmt = parse(sql).body[0] as any;
+
+            expect(stmt.target?.type).toBe('Identifier');
+            expect(stmt.target?.name).toBe('dbo.Target');
+            expect(stmt.target?.parts).toEqual(['dbo', 'Target']);
+        });
+
         test('should parse MERGE with UPDATE and INSERT actions', () => {
             const sql = `MERGE dbo.Target AS T
 USING dbo.Source AS S

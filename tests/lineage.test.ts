@@ -306,7 +306,7 @@ describe('LineageBuilder', () => {
                 WHEN NOT MATCHED THEN INSERT (Name) VALUES (S.Name);
             `)
         ).toEqual([
-            'dbo.SOURCE.Name -> T.Name'
+            'dbo.Source.Name -> T.Name'
         ]);
     });
 

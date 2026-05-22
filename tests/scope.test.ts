@@ -100,6 +100,27 @@ describe('CREATE', () => {
         expect(scope.resolve('dbo.ActiveUsers')?.kind).toBe(SymbolKind.Table);
     });
 
+    test('CREATE VIEW body WITH CTE is scoped and visited', () => {
+        const result = build(`
+            CREATE VIEW dbo.vEmployeeDepartment
+            AS
+            WITH cteEmp AS (
+                SELECT EmployeeId, DepartmentId FROM Employee
+            )
+            SELECT c.EmployeeId
+            FROM cteEmp c;
+        `);
+
+        const viewScope = result.root.getChildren()
+            .find(x => x.name === 'dbo.vEmployeeDepartment');
+        expect(viewScope).toBeDefined();
+
+        const withScope = viewScope?.getChildren()
+            .find(x => x.name === 'with');
+        expect(withScope).toBeDefined();
+        expect(withScope?.resolveLocal('cteEmp')?.kind).toBe(SymbolKind.CTE);
+    });
+
     test('CREATE TYPE AS TABLE', () => {
         const scope = rootScope(`
             CREATE TYPE dbo.UserType AS TABLE(

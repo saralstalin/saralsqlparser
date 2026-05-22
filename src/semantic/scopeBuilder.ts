@@ -612,6 +612,15 @@ export class ScopeBuilder {
     private visitCreate(stmt: CreateNode): void {
         switch (stmt.objectType) {
             case 'TABLE':
+                this.declare({
+                    name: stmt.name,
+                    kind: SymbolKind.Table,
+                    columns: stmt.columns?.map(c => c.name),
+                    location: stmt,
+                    references: [],
+                });
+                return;
+
             case 'VIEW':
                 this.declare({
                     name: stmt.name,
@@ -620,6 +629,18 @@ export class ScopeBuilder {
                     location: stmt,
                     references: [],
                 });
+
+                this.pushScope(stmt.start, stmt.end, stmt.name);
+
+                if (Array.isArray(stmt.body)) {
+                    for (const child of stmt.body) {
+                        this.visitStatement(child);
+                    }
+                } else if (stmt.body) {
+                    this.visitStatement(stmt.body);
+                }
+
+                this.popScope();
                 return;
 
             case 'TYPE':
