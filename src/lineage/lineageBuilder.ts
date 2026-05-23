@@ -302,22 +302,25 @@ export class LineageBuilder {
                 // ------------------------------------------------------------
                 // 3. Restore INSERTED / DELETED prefix
                 // ------------------------------------------------------------
-            if (out.sourceTable) {
-                const source = out.sourceTable; // narrowed to non-null
+                if (out.sourceTable) {
+                    const source = out.sourceTable; // narrowed to non-null
 
-                inputs = inputs.map(node => {
-                    if (
-                        node.kind === 'column' &&
-                        !node.source
-                    ) {
-                        return {
-                            ...node,
-                            name: `${source}.${node.name}`,
-                            source,
-                            sourceKind: 'pseudo_output',
-                            resolution: 'resolved'
-                        } as LineageNode;
-                    }
+                    inputs = inputs.map(node => {
+                        if (
+                            node.kind === 'column' &&
+                            node.location?.type === 'Identifier' &&
+                            node.location.parts.length === 1
+                        ) {
+                            const localName =
+                                node.location.parts[0] ?? node.name;
+                            return {
+                                ...node,
+                                name: `${source}.${localName}`,
+                                source,
+                                sourceKind: 'pseudo_output',
+                                resolution: 'resolved'
+                            } as LineageNode;
+                        }
 
                     return node;
                 });
@@ -899,9 +902,11 @@ export class LineageBuilder {
                 this.registerTableReference(ref);
             }
         }
+        this.registerSource(stmt.target, undefined, undefined, 'table');
 
         const target = stmt.target.name;
-        this.recordMutationTarget('UPDATE', stmt, target);
+        const predicateInputs = this.resolveExpression(stmt.where);
+        this.recordMutationTarget('UPDATE', stmt, target, predicateInputs);
 
         for (const assignment of stmt.assignments ?? []) {
             this.columns.push({
@@ -1112,8 +1117,9 @@ export class LineageBuilder {
         // unqualified reference: infer source if exactly one visible
         // ------------------------------------------------------------
         const unique = new Map<string, VirtualSource>();
+        const visibleSources = this.getCandidateBearingSources();
 
-        for (const source of this.currentSources().values()) {
+        for (const source of visibleSources) {
             unique.set(source.name.toLowerCase(), source);
         }
 
@@ -1188,13 +1194,24 @@ export class LineageBuilder {
         const normalized = columnName.toLowerCase();
         const candidates = new Map<string, true>();
 
-        for (const source of this.currentSources().values()) {
+        for (const source of this.getCandidateBearingSources()) {
             if (source.columns.size === 0 || source.columns.has(normalized)) {
                 candidates.set(source.name, true);
             }
         }
 
         return [...candidates.keys()];
+    }
+
+    private getCandidateBearingSources(): VirtualSource[] {
+        const sources: VirtualSource[] = [];
+        for (const source of this.currentSources().values()) {
+            if (source.kind === 'pseudo_output') {
+                continue;
+            }
+            sources.push(source);
+        }
+        return sources;
     }
 
     private resolveWildcard(
@@ -1330,7 +1347,8 @@ export class LineageBuilder {
     private recordMutationTarget(
         statement: 'UPDATE' | 'DELETE',
         stmt: UpdateNode | DeleteNode,
-        targetName: string
+        targetName: string,
+        predicateInputs?: LineageNode[]
     ): void {
         const source = this.resolveSource(targetName);
         this.mutations.push({
@@ -1338,6 +1356,9 @@ export class LineageBuilder {
             targetName,
             targetAlias: source?.alias,
             resolvedSourceName: source?.name,
+            ...(predicateInputs && predicateInputs.length
+                ? { predicateInputs }
+                : {}),
             location: stmt
         });
     }

@@ -24,6 +24,9 @@ export function stringifyExpression(expr: Expression | null): string {
         case 'Variable':
             return expr.name;
 
+        case 'BuiltInArgument':
+            return expr.value;
+
         case 'SubqueryExpression':
             return 'derived_table';
 

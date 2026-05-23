@@ -121,6 +121,30 @@ describe('CREATE', () => {
         expect(withScope?.resolveLocal('cteEmp')?.kind).toBe(SymbolKind.CTE);
     });
 
+    test('FUNCTION RETURN body WITH CTE is scoped and visited', () => {
+        const result = build(`
+            CREATE FUNCTION dbo.fnInline()
+            RETURNS TABLE
+            AS
+            RETURN (
+                WITH cteX AS (
+                    SELECT 1 AS Id
+                )
+                SELECT Id
+                FROM cteX
+            )
+        `);
+
+        const fnScope = result.root.getChildren()
+            .find(x => x.name === 'dbo.fnInline');
+        expect(fnScope).toBeDefined();
+
+        const withScope = fnScope?.getChildren()
+            .find(x => x.name === 'with');
+        expect(withScope).toBeDefined();
+        expect(withScope?.resolveLocal('cteX')?.kind).toBe(SymbolKind.CTE);
+    });
+
     test('CREATE TYPE AS TABLE', () => {
         const scope = rootScope(`
             CREATE TYPE dbo.UserType AS TABLE(
@@ -372,6 +396,34 @@ describe('MERGE scope', () => {
         expect(mergeScope?.resolveLocal('S')?.kind).toBe(SymbolKind.Alias);
         expect(scope.resolveLocal('T')).toBeUndefined();
         expect(scope.resolveLocal('S')).toBeUndefined();
+    });
+});
+
+describe('unverifiable sources', () => {
+    test('select scope is marked unverifiable if it queries an undeclared table variable', () => {
+        const scope = rootScope(`
+            SELECT * FROM @UnknownTVP;
+        `);
+        const selectScope = scope.getChildren().find(x => x.name === 'select');
+        expect(selectScope?.hasUnverifiableSources).toBe(true);
+    });
+
+    test('select scope is marked unverifiable if it queries a TVP without known columns', () => {
+        const scope = rootScope(`
+            DECLARE @T TABLE; -- malformed/no columns
+            SELECT * FROM @T;
+        `);
+        const selectScope = scope.getChildren().find(x => x.name === 'select');
+        expect(selectScope?.hasUnverifiableSources).toBe(true);
+    });
+
+    test('select scope is verifiable if it queries a fully declared table variable', () => {
+        const scope = rootScope(`
+            DECLARE @T TABLE (Id INT);
+            SELECT Id FROM @T;
+        `);
+        const selectScope = scope.getChildren().find(x => x.name === 'select');
+        expect(selectScope?.hasUnverifiableSources).toBe(false);
     });
 });
 

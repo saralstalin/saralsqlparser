@@ -41,4 +41,19 @@ describe('analyze facade', () => {
         const offsets = result.diagnostics.map(d => d.start);
         expect(offsets).toEqual([...offsets].sort((a, b) => a - b));
     });
+
+    test('SQLCMD preprocessing maps AST and diagnostic offsets correctly', () => {
+        const sql = `:setvar TableName "Users"\nSELECT Id FROM $(TableName) WHERE Id = @Missing;`;
+        const result = analyze(sql);
+
+        expect(result.diagnostics.length).toBeGreaterThan(0);
+        
+        const diag = result.diagnostics.find(d => d.code === DiagnosticCode.UndeclaredVariable);
+        expect(diag).toBeDefined();
+        
+        // Ensure offset points to @Missing in the original text, regardless of
+        // the fact that $(TableName) was expanded behind the scenes!
+        const missingOffset = sql.indexOf('@Missing');
+        expect(diag!.start).toBe(missingOffset);
+    });
 });

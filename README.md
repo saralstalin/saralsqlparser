@@ -10,6 +10,7 @@ Built specifically for:
 - autocomplete
 - lineage tracking
 - enterprise SQL static analysis
+- SQLCMD preprocessing
 
 ---
 
@@ -75,11 +76,13 @@ npm install @saralsql/tsql-parser
 ```ts
 import { analyze } from '@saralsql/tsql-parser';
 
-const result = analyze(`
+const sql = `
 SELECT Id, Name
 FROM Users
 WHERE Id = @Id;
-`);
+`;
+
+const result = analyze(sql);
 
 console.log(result.diagnostics);
 console.log(result.lineage);
@@ -89,7 +92,7 @@ console.log(result.lineage);
 
 # Primary API
 
-Use `analyze(sql)` for the full parser + semantic pipeline.
+Use `analyze(sql)` for the full parser and semantic pipeline.
 
 ```ts
 import { analyze } from '@saralsql/tsql-parser';
@@ -718,6 +721,34 @@ Lineage:
     }
   ]
 }
+```
+
+---
+
+# SQLCMD Preprocessing
+
+SaralSQL natively supports SQLCMD directives (`:setvar`, `:r`) and variable expansions (`$(Var)`).
+
+All AST node coordinates and diagnostic offsets are automatically mapped back to the raw, unexpanded text, ensuring perfect LSP integration.
+
+```ts
+import { analyze, SqlCmdOptions } from '@saralsql/tsql-parser';
+
+const sql = `
+:setvar TableName "Users"
+
+SELECT Id, Name
+FROM $(TableName)
+WHERE Id = @Id;
+`;
+
+const options: SqlCmdOptions = { 
+  initialVariables: { 
+    Environment: 'PROD' 
+  } 
+};
+
+const result = analyze(sql, options);
 ```
 
 ---

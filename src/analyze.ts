@@ -6,8 +6,9 @@ import { LineageResult } from './lineage/lineage';
 import { LineageBuilder } from './lineage/lineageBuilder';
 import { ColumnAnalysisResult, ColumnAnalyzer } from './semantic/columnAnalyzer';
 import { ScopeBuilder, ScopeBuilderResult } from './semantic/scopeBuilder';
+import { SqlCmdPreprocessor, SqlCmdOptions } from './parser/sqlcmdPreprocessor';
 
-export type AnalysisDiagnosticSource = 'parser' | 'semantic';
+export type AnalysisDiagnosticSource = 'parser' | 'semantic' | 'sqlcmd';
 
 export interface AnalysisDiagnostic {
     source: AnalysisDiagnosticSource;
@@ -28,30 +29,51 @@ export interface AnalysisResult {
     columns: ColumnAnalysisResult;
 }
 
-export function analyze(sql: string): AnalysisResult {
-    const parseResult = new Parser(new Lexer(sql)).parse();
+export function analyze(sql: string, options?: SqlCmdOptions): AnalysisResult {
+    const preprocessor = new SqlCmdPreprocessor();
+    const preprocessResult = preprocessor.process(sql, options);
+
+    const parseResult = new Parser(new Lexer(preprocessResult.text)).parse();
     const scope = new ScopeBuilder().build(parseResult.ast);
     const semanticDiagnostics = diagnose(parseResult.ast, scope);
     const lineage = new LineageBuilder().build(parseResult.ast);
-    const columns = new ColumnAnalyzer().analyze(parseResult.ast);
+    const columns = new ColumnAnalyzer().analyze(parseResult.ast, scope);
     const issues = parseResult.issues ?? [];
 
-    return {
+    const diagnostics = combineDiagnostics(
+        preprocessResult.issues,
+        issues,
+        semanticDiagnostics
+    );
+
+    const result: AnalysisResult = {
         ast: parseResult.ast,
         issues,
         scope,
         semanticDiagnostics,
-        diagnostics: combineDiagnostics(issues, semanticDiagnostics),
+        diagnostics,
         lineage,
         columns
     };
+
+    applyOffsetMapping(result, preprocessResult.mapOffset);
+    return result;
 }
 
 function combineDiagnostics(
+    cmdIssues: ParseIssue[],
     issues: ParseIssue[],
     semanticDiagnostics: Diagnostic[]
 ): AnalysisDiagnostic[] {
     return [
+        ...cmdIssues.map(issue => ({
+            source: 'sqlcmd' as const,
+            code: issue.code,
+            message: issue.message,
+            severity: 'warning' as const,
+            start: issue.start,
+            end: issue.end
+        })),
         ...issues.map(issue => ({
             source: 'parser' as const,
             code: issue.code,
@@ -73,4 +95,29 @@ function combineDiagnostics(
         if (a.end !== b.end) return a.end - b.end;
         return a.source.localeCompare(b.source);
     });
+}
+
+function applyOffsetMapping(
+    obj: any, 
+    mapOffset: (o: number) => number, 
+    visited = new Set<any>()
+): void {
+    if (!obj || typeof obj !== 'object') return;
+    if (visited.has(obj)) return;
+    visited.add(obj);
+
+    if (typeof obj.start === 'number') obj.start = mapOffset(obj.start);
+    if (typeof obj.end === 'number') obj.end = mapOffset(obj.end);
+    if (typeof obj.selectionStart === 'number') obj.selectionStart = mapOffset(obj.selectionStart);
+    if (typeof obj.selectionEnd === 'number') obj.selectionEnd = mapOffset(obj.selectionEnd);
+    if (typeof obj.variableStart === 'number') obj.variableStart = mapOffset(obj.variableStart);
+    if (typeof obj.variableEnd === 'number') obj.variableEnd = mapOffset(obj.variableEnd);
+
+    if (Array.isArray(obj)) {
+        for (let i = 0; i < obj.length; i++) applyOffsetMapping(obj[i], mapOffset, visited);
+    } else if (obj instanceof Map) {
+        for (const value of obj.values()) applyOffsetMapping(value, mapOffset, visited);
+    } else {
+        for (const key of Object.keys(obj)) applyOffsetMapping(obj[key], mapOffset, visited);
+    }
 }

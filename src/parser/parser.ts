@@ -73,6 +73,7 @@ import {
     OptionClause,
     QueryHint,
     OpenJsonColumnDefinition,
+    BuiltInArgumentNode,
 
     // Table / relational
     TableReference,
@@ -8163,6 +8164,29 @@ export class Parser {
 
                     // normal args
                     else {
+                        const upperName = idNode.name.toUpperCase();
+                        const isBuiltInKeywordArgFunc = 
+                            upperName === 'DATEDIFF' || 
+                            upperName === 'DATEADD' || 
+                            upperName === 'DATEPART' || 
+                            upperName === 'DATENAME';
+
+                        if (isBuiltInKeywordArgFunc && this.peek()) {
+                            const next = this.peek()!;
+                            if (next.type === TokenType.Identifier || next.type === TokenType.Keyword) {
+                                const kwArg = this.consume();
+                                args.push({
+                                    type: 'BuiltInArgument',
+                                    value: kwArg.value,
+                                    start: kwArg.offset,
+                                    end: kwArg.offset + kwArg.value.length
+                                } as BuiltInArgumentNode);
+
+                                if (this.peek()?.type === TokenType.Comma) {
+                                    this.consume();
+                                }
+                            }
+                        }
 
                         args.push(
                             ...this.parseList(() =>
@@ -10606,7 +10630,35 @@ export class Parser {
         const start = this.matchKeyword('RETURN');
 
         let value: Expression | null = null;
+        let query: Statement | null = null;
         let end = start.offset + start.value.length;
+
+        // RETURN (SELECT ...) / RETURN (WITH ... SELECT ...)
+        if (
+            this.peek()?.type === TokenType.OpenParen &&
+            (this.peek(1)?.value?.toUpperCase() === 'SELECT' ||
+                this.peek(1)?.value?.toUpperCase() === 'WITH')
+        ) {
+            this.consume(); // (
+
+            query = this.peekKeyword('WITH')
+                ? this.parseWith()
+                : this.parseQueryExpression();
+
+            end = query.end;
+
+            if (this.peek()?.type === TokenType.CloseParen) {
+                const close = this.consume();
+                end = close.offset + close.value.length;
+            }
+
+            return {
+                type: 'ReturnStatement',
+                ...(query ? { query } : {}),
+                start: start.offset,
+                end
+            };
+        }
 
         if (
             this.peek() &&

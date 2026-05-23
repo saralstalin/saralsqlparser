@@ -415,6 +415,34 @@ describe('T-SQL Parser', () => {
         expect(result.issues).toEqual([]);
     });
 
+    test('should parse inline table function RETURN with CTE query body', () => {
+        const sql = `
+            CREATE FUNCTION dbo.fnInline()
+            RETURNS TABLE
+            AS
+            RETURN (
+                WITH cteX AS (
+                    SELECT 1 AS Id
+                )
+                SELECT Id
+                FROM cteX
+            )
+        `;
+
+        const result = new Parser(new Lexer(sql)).parse();
+        const stmt = result.ast.body[0];
+
+        expect(result.issues).toEqual([]);
+        expect(stmt.type).toBe('CreateStatement');
+        if (stmt.type !== 'CreateStatement') {
+            throw new Error('Expected CreateStatement');
+        }
+
+        const ret = (stmt.body as any[]).find(x => x.type === 'ReturnStatement');
+        expect(ret).toBeDefined();
+        expect(ret.query?.type).toBe('WithStatement');
+    });
+
     test('should parse trigger and retain body after header clauses', () => {
         const sql = `
             CREATE TRIGGER dbo.trgUsersAudit
@@ -1837,6 +1865,24 @@ INTO @NewRows (KeyValue, DisplayValue, TargetId);`;
         });
     });
 
+    describe('T-SQL Parser - Built-in Function Arguments', () => {
+        test('should parse built-in keyword arguments in DATEDIFF correctly', () => {
+            const sql = "SELECT DATEDIFF(day, StartDate, EndDate) FROM Dates";
+            const ast = parse(sql);
+            const stmt = ast.body[0] as SelectNode;
+            const funcCall = stmt.columns[0].expression as any;
+
+            expect(funcCall.type).toBe('FunctionCall');
+            expect(funcCall.name).toBe('DATEDIFF');
+            expect(funcCall.args).toHaveLength(3);
+            
+            expect(funcCall.args[0].type).toBe('BuiltInArgument');
+            expect(funcCall.args[0].value).toBe('day');
+            expect(funcCall.args[1].type).toBe('Identifier');
+            expect(funcCall.args[2].type).toBe('Identifier');
+        });
+    });
+
     describe('OUTPUT clause', () => {
         test('should parse INSERT OUTPUT inserted.Id', () => {
             const sql = `
@@ -2211,4 +2257,3 @@ INTO @NewRows (KeyValue, DisplayValue, TargetId);`;
 
 
 });
-

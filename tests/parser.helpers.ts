@@ -104,6 +104,9 @@ export function toSql(expr: any): string {
         case 'Variable':
             return expr.name;
 
+        case 'BuiltInArgument':
+            return expr.value;
+
         case 'BinaryExpression':
             return `${toSql(expr.left)} ${expr.operator} ${toSql(expr.right)}`;
 

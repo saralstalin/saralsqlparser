@@ -6,6 +6,7 @@ import {
 
 import { LineageBuilder } from '../lineage/lineageBuilder';
 import { LineageNode } from '../lineage/lineage';
+import { ScopeBuilderResult } from './scopeBuilder';
 
 // ---------------------------------------------
 // Public types
@@ -15,6 +16,7 @@ export interface ColumnResolution {
     inputs: LineageNode[];
     ambiguityCandidates?: string[];
     isCorrelated?: boolean;
+    isUnverifiable?: boolean;
 }
 
 export interface ColumnAnalysisResult {
@@ -27,7 +29,7 @@ export interface ColumnAnalysisResult {
 export class ColumnAnalyzer {
     private builder = new LineageBuilder();
 
-    analyze(program: Program): ColumnAnalysisResult {
+    analyze(program: Program, scopeResult?: ScopeBuilderResult): ColumnAnalysisResult {
         // Build lineage once (important for performance + correctness)
         const lineage = this.builder.build(program);
 
@@ -43,6 +45,18 @@ export class ColumnAnalyzer {
                 const ambiguityCandidates =
                     this.collectAmbiguityCandidates(inputs);
 
+                let isUnverifiable = false;
+                if (scopeResult && id.parts.length === 1) {
+                    let scope: any = scopeResult.root.findInnermost(id.start);
+                    while (scope) {
+                        if (scope.hasUnverifiableSources) {
+                            isUnverifiable = true;
+                            break;
+                        }
+                        scope = scope.parent;
+                    }
+                }
+
                 resolutions.push({
                     location: id,
                     inputs,
@@ -51,7 +65,8 @@ export class ColumnAnalyzer {
                         : {}),
                     isCorrelated:
                         id.parts.length >= 2 &&
-                        inputs.some(input => input.resolution === 'resolved')
+                        inputs.some(input => input.resolution === 'resolved'),
+                    ...(isUnverifiable ? { isUnverifiable } : {})
                 });
             });
         }

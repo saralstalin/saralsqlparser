@@ -213,6 +213,17 @@ function collectDeclarationsFromStatement(
             collectDeclarationsFromBranch(stmt.elseBranch, declarations);
             return;
 
+        case 'TryCatchStatement':
+            collectDeclarationsFromStatement(stmt.tryBlock, declarations);
+            collectDeclarationsFromStatement(stmt.catchBlock, declarations);
+            return;
+
+        case 'WhileStatement':
+            if (stmt.body) {
+                collectDeclarationsFromStatement(stmt.body, declarations);
+            }
+            return;
+
         default:
             return;
     }
@@ -369,6 +380,37 @@ function referencesForStatement(stmt: Statement): ExtractedReference[] {
             collectReferencesFromExpression(stmt.condition, references);
             collectReferencesFromBranch(stmt.thenBranch, references);
             collectReferencesFromBranch(stmt.elseBranch, references);
+            break;
+
+        case 'WhileStatement':
+            collectReferencesFromExpression(stmt.condition, references);
+            if (stmt.body) collectReferencesFromStatement(stmt.body, references);
+            break;
+
+        case 'TryCatchStatement':
+            collectReferencesFromStatement(stmt.tryBlock, references);
+            collectReferencesFromStatement(stmt.catchBlock, references);
+            break;
+
+        case 'ReturnStatement':
+            collectReferencesFromExpression(stmt.value, references);
+            if (stmt.query) collectReferencesFromStatement(stmt.query, references);
+            break;
+
+        case 'ThrowStatement':
+            collectReferencesFromExpression(stmt.errorNumber, references);
+            collectReferencesFromExpression(stmt.message, references);
+            collectReferencesFromExpression(stmt.state, references);
+            break;
+
+        case 'RaiseErrorStatement':
+            for (const arg of stmt.args) {
+                collectReferencesFromExpression(arg, references);
+            }
+            break;
+
+        case 'WaitForStatement':
+            collectReferencesFromExpression(stmt.value, references);
             break;
 
         case 'BlockStatement':

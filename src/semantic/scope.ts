@@ -35,6 +35,7 @@ export interface Symbol {
 export class Scope {
     private readonly symbols = new Map<string, Symbol>();
     private readonly children: Scope[] = [];
+    public hasUnverifiableSources: boolean = false;
 
     getChildren(): readonly Scope[] { return this.children; }
 
@@ -115,6 +116,7 @@ export class Scope {
             start: this.start,
             end: this.end,
             name: this.name,
+            hasUnverifiableSources: this.hasUnverifiableSources,
             symbols: Object.fromEntries(this.symbols),
             children: this.children
         };

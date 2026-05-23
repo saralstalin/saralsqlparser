@@ -58,7 +58,8 @@ export type Expression =
     | WildcardExpression
     | CastExpression
     | ExistsExpression
-    | ValuesTableExpression;
+    | ValuesTableExpression
+    | BuiltInArgumentNode;
 
 export interface BinaryExpression extends NodeLocation, Recoverable {
     type: 'BinaryExpression';
@@ -176,6 +177,11 @@ export interface MemberExpression extends NodeLocation {
 export interface WildcardExpression extends NodeLocation {
     type: 'WildcardExpression';
     tablePrefix?: IdentifierNode;
+}
+
+export interface BuiltInArgumentNode extends NodeLocation {
+    type: 'BuiltInArgument';
+    value: string;
 }
 
 // ===============================
@@ -601,6 +607,7 @@ export interface OutputClauseNode extends NodeLocation, Recoverable {
 export interface ReturnNode extends NodeLocation, Recoverable {
     type: 'ReturnStatement';
     value?: Expression | null;
+    query?: Statement | null;
 }
 
 export interface RaiseErrorNode extends NodeLocation, Recoverable {

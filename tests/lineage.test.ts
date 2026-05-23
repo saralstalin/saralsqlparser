@@ -1050,4 +1050,20 @@ describe('Lineage metadata', () => {
         expect(update?.targetName).toBe('e');
         expect(del?.targetName).toBe('e');
     });
+
+    test('captures update predicate inputs against update target source', () => {
+        const result = lineage(`
+            UPDATE HackathonWinners
+            SET Prize = @GoodieName
+            WHERE WinnerId = @WinnerId;
+        `);
+
+        const update = result.mutations.find(x => x.statement === 'UPDATE');
+        const winnerPredicate = update?.predicateInputs?.find(
+            x => x.kind === 'column' && x.name === 'HackathonWinners.WinnerId'
+        );
+
+        expect(winnerPredicate).toBeDefined();
+        expect(winnerPredicate?.resolution).toBe('resolved');
+    });
 });

@@ -1,6 +1,7 @@
 import { Lexer } from '../src/parser/lexer';
 import { Parser } from '../src/parser/parser';
 import { ColumnAnalyzer } from '../src/semantic/columnAnalyzer';
+import { ScopeBuilder } from '../src/semantic/scopeBuilder';
 
 const parse = (sql: string) => {
     const lexer = new Lexer(sql);
@@ -230,4 +231,18 @@ describe('ColumnAnalyzer', () => {
         expect(hasDeleted).toBe(true);
     });
 
+    test('flags bare column as unverifiable when scope has unresolved table variable', () => {
+        const sql = `
+            DECLARE @T TABLE;
+            SELECT Id FROM @T;
+        `;
+        const ast = parse(sql);
+        const scope = new ScopeBuilder().build(ast);
+
+        const analyzer = new ColumnAnalyzer();
+        const result = analyzer.analyze(ast, scope);
+
+        const idResolution = result.resolutions.find(r => r.location.name === 'Id');
+        expect(idResolution?.isUnverifiable).toBe(true);
+    });
 });

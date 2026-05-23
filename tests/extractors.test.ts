@@ -144,6 +144,42 @@ describe('AST fact extractors', () => {
         expect(references.some(r => r.context === 'from' && r.name === 'Employee')).toBe(true);
     });
 
+    test('extractReferences includes references inside TRY...CATCH blocks', () => {
+        const sql = `
+            BEGIN TRY
+                INSERT INTO dbo.Audit(Id) VALUES (1);
+            END TRY
+            BEGIN CATCH
+                SELECT Id FROM dbo.ErrorLog;
+            END CATCH
+        `;
+        const references = extractReferences(analyze(sql).ast);
+
+        expect(references).toContainEqual(
+            expect.objectContaining({ name: 'dbo.Audit', context: 'insert-target' })
+        );
+        expect(references).toContainEqual(
+            expect.objectContaining({ name: 'dbo.ErrorLog', context: 'from' })
+        );
+    });
+
+    test('extractReferences includes references inside control flow blocks', () => {
+        const sql = `
+            WHILE @Count < 10
+            BEGIN
+                EXEC dbo.DoWork @Count;
+            END
+        `;
+        const references = extractReferences(analyze(sql).ast);
+
+        expect(references).toContainEqual(
+            expect.objectContaining({ name: 'dbo.DoWork', context: 'execute-target' })
+        );
+        expect(references).toContainEqual(
+            expect.objectContaining({ name: '@Count', context: 'expression' })
+        );
+    });
+
     test('extractDependencies links created objects to referenced objects', () => {
         const sql = `
             CREATE VIEW dbo.ActiveUsers AS

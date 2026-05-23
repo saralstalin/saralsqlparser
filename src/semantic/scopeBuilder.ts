@@ -392,6 +392,10 @@ export class ScopeBuilder {
     }
 
     private visitReturn(stmt: ReturnNode): void {
+        if (stmt.query) {
+            this.visitStatement(stmt.query);
+        }
+
         if (stmt.value) {
             this.visitExpression(stmt.value);
         }
@@ -829,6 +833,18 @@ export class ScopeBuilder {
 
     private visitTableReference(ref: TableReference): void {
         const table = ref.table;
+
+        if (table?.type === 'Identifier') {
+            const name = table.name;
+            if (name.startsWith('@') || name.startsWith('#')) {
+                const sym = this.current.resolve(name);
+                if (!sym || !sym.columns || sym.columns.length === 0) {
+                    this.current.hasUnverifiableSources = true;
+                }
+            }
+        } else if (table?.type === 'FunctionCall') {
+            this.current.hasUnverifiableSources = true;
+        }
 
         if (ref.alias) {
             const columns =
@@ -1333,4 +1349,3 @@ export class ScopeBuilder {
 
 
 }
-

@@ -38,4 +38,37 @@ describe('document symbols', () => {
         expect(symbols.map(symbol => symbol.name)).toContain('RecentUsers');
         expect(symbols.map(symbol => symbol.name)).toContain('SELECT');
     });
+
+    test('returns symbols from TryCatch blocks', () => {
+        const sql = `
+            BEGIN TRY
+                DECLARE @TryVar INT;
+            END TRY
+            BEGIN CATCH
+                DECLARE @CatchVar INT;
+            END CATCH
+        `;
+        const symbols = getDocumentSymbols(analyze(sql).ast);
+        expect(symbols.map(s => s.name)).toContain('@TryVar');
+        expect(symbols.map(s => s.name)).toContain('@CatchVar');
+    });
+
+    test('returns symbols from ReturnStatement queries (ITVFs)', () => {
+        const sql = `
+            CREATE FUNCTION dbo.GetUsers()
+            RETURNS TABLE
+            AS
+            RETURN (
+                WITH cteX AS (SELECT Id FROM dbo.Users)
+                SELECT Id FROM cteX
+            )
+        `;
+        const symbols = getDocumentSymbols(analyze(sql).ast);
+        
+        const func = symbols.find(s => s.name === 'dbo.GetUsers');
+        expect(func).toBeDefined();
+        
+        expect(func!.children?.map(c => c.name)).toContain('cteX');
+        expect(func!.children?.map(c => c.name)).toContain('SELECT');
+    });
 });

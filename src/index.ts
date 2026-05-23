@@ -93,3 +93,6 @@ export type {
 
 export { ColumnAnalyzer } from './semantic/columnAnalyzer';
 export type { ColumnAnalysisResult, ColumnResolution } from './semantic/columnAnalyzer';
+
+export { SqlCmdPreprocessor } from './parser/sqlcmdPreprocessor';
+export type { SqlCmdOptions, PreprocessResult } from './parser/sqlcmdPreprocessor';

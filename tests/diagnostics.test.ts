@@ -893,6 +893,16 @@ describe('COL001 â€” unknown column', () => {
 
         expect(d.length).toBe(0);
     });
+
+    test('does not emit COL001 UnknownColumn for date parts in DATEDIFF', () => {
+        const d = run(`
+            DECLARE @StartDate DATETIME = GETDATE();
+            DECLARE @EndDate DATETIME = GETDATE();
+            SELECT DATEDIFF(day, @StartDate, @EndDate);
+        `);
+        const cols = d.filter(x => x.code === DiagnosticCode.UnknownColumn);
+        expect(cols.length).toBe(0);
+    });
 });
 
 describe('LOG001 â€” self comparison', () => {

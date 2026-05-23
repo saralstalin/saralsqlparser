@@ -4,6 +4,8 @@ import {
     DeclareNode,
     Program,
     SelectNode,
+    ReturnNode,
+    TryCatchNode,
     Statement,
     WithNode
 } from './ast/types';
@@ -87,6 +89,15 @@ function statementSymbols(stmt: Statement): DocumentSymbol[] {
                 ...branchSymbols(stmt.thenBranch),
                 ...branchSymbols(stmt.elseBranch)
             ];
+            
+        case 'TryCatchStatement':
+            return [
+                ...blockSymbols((stmt as TryCatchNode).tryBlock),
+                ...blockSymbols((stmt as TryCatchNode).catchBlock)
+            ];
+            
+        case 'ReturnStatement':
+            return (stmt as ReturnNode).query ? statementSymbols((stmt as ReturnNode).query!) : [];
 
         default:
             return [];
