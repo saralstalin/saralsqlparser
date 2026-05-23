@@ -306,13 +306,14 @@ export class LineageBuilder {
                     const source = out.sourceTable; // narrowed to non-null
 
                     inputs = inputs.map(node => {
+                        const loc = node.location as IdentifierNode | undefined;
                         if (
                             node.kind === 'column' &&
-                            node.location?.type === 'Identifier' &&
-                            node.location.parts.length === 1
+                            loc?.type === 'Identifier' &&
+                            loc.parts.length === 1
                         ) {
                             const localName =
-                                node.location.parts[0] ?? node.name;
+                                loc.parts[0] ?? node.name;
                             return {
                                 ...node,
                                 name: `${source}.${localName}`,
@@ -1375,4 +1376,3 @@ export class LineageBuilder {
         return source?.name ?? targetName;
     }
 }
-
