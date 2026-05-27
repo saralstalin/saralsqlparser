@@ -1051,6 +1051,54 @@ describe('Lineage metadata', () => {
         expect(del?.targetName).toBe('e');
     });
 
+    test('exposes INSERT read-scope sources separately from mutation semantics', () => {
+        const result = lineage(`
+            INSERT INTO dbo.Audit(Id)
+            SELECT u.Id
+            FROM dbo.Users u
+            JOIN dbo.Roles r ON r.Id = u.RoleId;
+        `);
+
+        const insertRead = result.readScopes.find(x => x.statement === 'INSERT');
+        expect(insertRead).toBeDefined();
+        expect(insertRead?.sources.map(s => s.name)).toEqual(
+            expect.arrayContaining(['dbo.Users', 'dbo.Roles'])
+        );
+    });
+
+    test('exposes UPDATE read-scope sources without leaking write target', () => {
+        const result = lineage(`
+            UPDATE u
+            SET u.Name = r.Name
+            FROM dbo.Users u
+            JOIN dbo.Roles r ON r.Id = u.RoleId;
+        `);
+
+        const update = result.mutations.find(x => x.statement === 'UPDATE');
+        const updateRead = result.readScopes.find(x => x.statement === 'UPDATE');
+        expect(update?.targetName).toBe('u');
+        expect(updateRead).toBeDefined();
+        expect(updateRead?.sources.map(s => s.name)).toEqual(
+            expect.arrayContaining(['dbo.Users', 'dbo.Roles'])
+        );
+    });
+
+    test('exposes DELETE read-scope sources without leaking write target', () => {
+        const result = lineage(`
+            DELETE u
+            FROM dbo.Users u
+            JOIN dbo.Roles r ON r.Id = u.RoleId;
+        `);
+
+        const del = result.mutations.find(x => x.statement === 'DELETE');
+        const delRead = result.readScopes.find(x => x.statement === 'DELETE');
+        expect(del?.targetName).toBe('u');
+        expect(delRead).toBeDefined();
+        expect(delRead?.sources.map(s => s.name)).toEqual(
+            expect.arrayContaining(['dbo.Users', 'dbo.Roles'])
+        );
+    });
+
     test('captures update predicate inputs against update target source', () => {
         const result = lineage(`
             UPDATE HackathonWinners

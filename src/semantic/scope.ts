@@ -21,11 +21,26 @@ export interface SymbolReference {
     kind: ReferenceKind;
 }
 
+export interface SymbolColumn {
+    rawName: string;
+    normalizedName: string;
+    dataType?: string;
+    typeMembers?: TypeMember[];
+    location?: NodeLocation;
+}
+
+export interface TypeMember {
+    name: string;
+    kind: 'property' | 'method';
+    returnType: string;
+}
+
 export interface Symbol {
     name: string;
     kind: SymbolKind;
     dataType?: string;
     columns?: string[];
+    localColumns?: SymbolColumn[];
     location: NodeLocation;
     /** Every place in the AST where this symbol is referenced after declaration. */
     references: SymbolReference[];

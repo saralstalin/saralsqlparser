@@ -73,7 +73,7 @@ export { ScopeBuilder } from './semantic/scopeBuilder';
 export type { ScopeBuilderResult, DuplicateDeclaration } from './semantic/scopeBuilder';
 
 export { Scope } from './semantic/scope';
-export type { Symbol, SymbolKind, SymbolReference, ReferenceKind } from './semantic/scope';
+export type { Symbol, SymbolKind, SymbolReference, ReferenceKind, SymbolColumn, TypeMember } from './semantic/scope';
 
 export { DiagnosticCode, diagnose } from './diagnostics/diagnostics';
 export type { Diagnostic, DiagnosticSeverity } from './diagnostics/diagnostics';
@@ -87,12 +87,14 @@ export type {
     SourceExposure,
     AmbiguityDiagnostic,
     MutationTarget,
+    ReadScopeSource,
+    ReadScopeExposure,
     LineageEdge,
     LineageResult
 } from './lineage/lineage';
 
 export { ColumnAnalyzer } from './semantic/columnAnalyzer';
-export type { ColumnAnalysisResult, ColumnResolution } from './semantic/columnAnalyzer';
+export type { ColumnAnalysisResult, ColumnResolution, PropertyAccessResolution } from './semantic/columnAnalyzer';
 
 export { SqlCmdPreprocessor } from './parser/sqlcmdPreprocessor';
 export type { SqlCmdOptions, PreprocessResult } from './parser/sqlcmdPreprocessor';

@@ -213,12 +213,6 @@ export class Lexer {
         return char;
     }
 
-    private consumeWhitespace(): void {
-        while (this.pos < this.input.length && /\s/.test(this.input[this.pos])) {
-            this.consume();
-        }
-    }
-
     public nextToken(): Token {
         this.skipWhitespaceAndComments();
 
@@ -287,16 +281,6 @@ export class Lexer {
             if (COMPOSITE_OPERATORS.has(combined)) {
                 op = combined;
                 this.consume();
-            } else if (/\s/.test(next ?? '')) {
-                this.consumeWhitespace();
-
-                const nextAfterWhitespace = this.peek();
-                combined = op + nextAfterWhitespace;
-
-                if (COMPOSITE_OPERATORS.has(combined)) {
-                    op = combined;
-                    this.consume();
-                }
             }
             return {
                 type: TokenType.Operator,
@@ -382,10 +366,21 @@ export class Lexer {
 
         if (this.peek() === '[') {
             opener = this.consume(); // [
-            while (this.pos < this.input.length && this.peek() !== ']') {
+            while (this.pos < this.input.length) {
+                // Escaped closing bracket inside bracketed identifier: ]]
+                if (this.peek() === ']' && this.peek(1) === ']') {
+                    content += this.consume();
+                    content += this.consume();
+                    continue;
+                }
+
+                if (this.peek() === ']') {
+                    closer = this.consume(); // ]
+                    break;
+                }
+
                 content += this.consume();
             }
-            closer = this.consume() || ""; // ]
         } else {
             while (this.pos < this.input.length && /[a-zA-Z0-9_@#$]/.test(this.peek())) {
                 content += this.consume();

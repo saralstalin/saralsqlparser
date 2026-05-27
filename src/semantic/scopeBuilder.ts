@@ -35,7 +35,8 @@ import {
     IdentifierNode
 } from '../ast/types';
 
-import { Scope, Symbol, SymbolKind, SymbolReference, ReferenceKind } from './scope';
+import { Scope, Symbol, SymbolKind, SymbolReference, ReferenceKind, SymbolColumn } from './scope';
+import { getTypeMembers } from './typeMembers';
 
 
 export interface DuplicateDeclaration {
@@ -291,6 +292,11 @@ export class ScopeBuilder {
 
     private visitDeclare(stmt: DeclareNode): void {
         for (const variable of stmt.variables) {
+            const localColumns =
+                variable.columns?.map(c =>
+                    this.makeSymbolColumn(c.name, c.dataType, c)
+                );
+
             this.declare({
                 name: variable.name,
                 kind:
@@ -299,6 +305,7 @@ export class ScopeBuilder {
                         : SymbolKind.Variable,
                 dataType: variable.dataType,
                 columns: variable.columns?.map(c => c.name),
+                ...(localColumns?.length ? { localColumns } : {}),
                 location: { start: variable.start, end: variable.end },
                 references: [],
             });
@@ -616,20 +623,33 @@ export class ScopeBuilder {
     private visitCreate(stmt: CreateNode): void {
         switch (stmt.objectType) {
             case 'TABLE':
+                {
+                    const localColumns =
+                        stmt.columns?.map(c =>
+                            this.makeSymbolColumn(c.name, c.dataType, c)
+                        );
                 this.declare({
                     name: stmt.name,
                     kind: SymbolKind.Table,
                     columns: stmt.columns?.map(c => c.name),
+                    ...(localColumns?.length ? { localColumns } : {}),
                     location: stmt,
                     references: [],
                 });
                 return;
+                }
 
             case 'VIEW':
+                {
+                    const localColumns =
+                        stmt.columns?.map(c =>
+                            this.makeSymbolColumn(c.name, c.dataType, c)
+                        );
                 this.declare({
                     name: stmt.name,
                     kind: SymbolKind.Table,
                     columns: stmt.columns?.map(c => c.name),
+                    ...(localColumns?.length ? { localColumns } : {}),
                     location: stmt,
                     references: [],
                 });
@@ -646,16 +666,24 @@ export class ScopeBuilder {
 
                 this.popScope();
                 return;
+                }
 
             case 'TYPE':
+                {
+                    const localColumns =
+                        stmt.columns?.map(c =>
+                            this.makeSymbolColumn(c.name, c.dataType, c)
+                        );
                 this.declare({
                     name: stmt.name,
                     kind: SymbolKind.Type,
                     columns: stmt.columns?.map(c => c.name),
+                    ...(localColumns?.length ? { localColumns } : {}),
                     location: stmt,
                     references: [],
                 });
                 return;
+                }
 
             case 'PROCEDURE':
             case 'FUNCTION':
@@ -847,8 +875,13 @@ export class ScopeBuilder {
         }
 
         if (ref.alias) {
-            const columns =
+            let columns =
                 this.getTableReferenceAliasColumns(ref);
+            const localColumns =
+                this.getTableReferenceAliasLocalColumns(ref);
+            if (!columns?.length && localColumns?.length) {
+                columns = localColumns.map(c => c.rawName);
+            }
 
             this.declare({
                 name: ref.alias,
@@ -856,6 +889,7 @@ export class ScopeBuilder {
                 location: ref,
                 references: [],
                 ...(columns?.length ? { columns } : {}),
+                ...(localColumns?.length ? { localColumns } : {}),
                 metadata:
                     table?.type === 'Identifier'
                         ? { tableName: table.name, sourceKind: 'table' }
@@ -891,13 +925,20 @@ export class ScopeBuilder {
         if (join.alias) {
             const isApply =
                 join.type === 'CROSS APPLY' || join.type === 'OUTER APPLY';
+            let columns = join.aliasColumns;
+            const localColumns =
+                this.getJoinAliasLocalColumns(join);
+            if (!columns?.length && localColumns?.length) {
+                columns = localColumns.map(c => c.rawName);
+            }
 
             this.declare({
                 name: join.alias,
                 kind: SymbolKind.Alias,
                 location: join,
                 references: [],
-                ...(join.aliasColumns?.length ? { columns: join.aliasColumns } : {}),
+                ...(columns?.length ? { columns } : {}),
+                ...(localColumns?.length ? { localColumns } : {}),
                 metadata:
                     join.table?.type === 'Identifier'
                         ? { tableName: join.table.name, sourceKind: 'table', joinType: join.type }
@@ -1240,7 +1281,17 @@ export class ScopeBuilder {
         }
 
         if (expr.type === 'Identifier') {
-            return this.current.resolve(expr.name)?.columns;
+            const sym =
+                this.current.resolve(expr.name);
+            if (!sym) {
+                return undefined;
+            }
+
+            if (sym.localColumns?.length) {
+                return sym.localColumns.map(c => c.rawName);
+            }
+
+            return sym.columns;
         }
 
         if (expr.type === 'SubqueryExpression') {
@@ -1344,6 +1395,70 @@ export class ScopeBuilder {
         }
 
         return unique;
+    }
+
+    private makeSymbolColumn(
+        rawName: string,
+        dataType?: string,
+        location?: NodeLocation
+    ): SymbolColumn {
+        const typeMembers =
+            getTypeMembers(dataType);
+        return {
+            rawName,
+            normalizedName: this.normalizeColumnName(rawName),
+            ...(dataType ? { dataType } : {}),
+            ...(typeMembers?.length ? { typeMembers } : {}),
+            ...(location ? { location } : {})
+        };
+    }
+
+    private getTableReferenceAliasLocalColumns(ref: TableReference): SymbolColumn[] | undefined {
+        if (ref.aliasColumns?.length) {
+            return ref.aliasColumns.map(name =>
+                this.makeSymbolColumn(name, undefined, ref)
+            );
+        }
+
+        if (ref.table?.type === 'Identifier') {
+            const source =
+                this.current.resolve(ref.table.name);
+            if (source?.localColumns?.length) {
+                return source.localColumns.map(col => ({
+                    ...col
+                }));
+            }
+        }
+
+        const derived =
+            this.getTableReferenceAliasColumns(ref);
+        if (derived?.length) {
+            return derived.map(name =>
+                this.makeSymbolColumn(name, undefined, ref)
+            );
+        }
+
+        return undefined;
+    }
+
+    private getJoinAliasLocalColumns(join: JoinNode): SymbolColumn[] | undefined {
+        if (join.aliasColumns?.length) {
+            return join.aliasColumns.map(name =>
+                this.makeSymbolColumn(name, undefined, join)
+            );
+        }
+
+        if (join.table?.type === 'Identifier') {
+            const source =
+                this.current.resolve(join.table.name);
+            if (source?.localColumns?.length) {
+                return source.localColumns.map(col => ({
+                    ...col
+                }));
+            }
+        }
+
+        return undefined;
     }
 
 

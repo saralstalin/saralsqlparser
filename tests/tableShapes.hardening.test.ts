@@ -82,6 +82,8 @@ describe('TVP and table variable hardening', () => {
 
         expect(sym?.kind).toBe(SymbolKind.Table);
         expect(sym?.columns).toEqual(['Id', 'Name']);
+        expect(sym?.localColumns?.map(c => c.rawName)).toEqual(['Id', 'Name']);
+        expect(sym?.localColumns?.map(c => c.dataType)).toEqual(['INT', 'VARCHAR(50)']);
     });
 
     test('table variable select produces lineage for qualified column reference', () => {

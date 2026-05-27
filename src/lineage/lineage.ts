@@ -108,6 +108,19 @@ export interface MutationTarget {
     location: NodeLocation;
 }
 
+export interface ReadScopeSource {
+    name: string;
+    alias?: string;
+    kind: LineageSourceKind;
+    location?: NodeLocation;
+}
+
+export interface ReadScopeExposure {
+    statement: 'INSERT' | 'UPDATE' | 'DELETE';
+    location: NodeLocation;
+    sources: ReadScopeSource[];
+}
+
 export interface LineageEdge {
     from: LineageNode;
     to: LineageNode;
@@ -120,4 +133,5 @@ export interface LineageResult {
     sources: SourceExposure[];
     ambiguities: AmbiguityDiagnostic[];
     mutations: MutationTarget[];
+    readScopes: ReadScopeExposure[];
 }

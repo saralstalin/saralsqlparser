@@ -111,6 +111,202 @@ const result = analyze(sql);
 | `lineage` | Column lineage edges plus source exposure, ambiguity metadata, and mutation target metadata |
 | `columns` | Column resolution analysis including ambiguity candidates and correlation flags where available |
 
+## AST Example
+
+### Sample SQL (used in all follow-on examples)
+
+```sql
+DECLARE @T TABLE (
+  StoreId INT,
+  GeoPoint GEOGRAPHY,
+  StoreName VARCHAR(100)
+);
+
+SELECT
+  t.StoreId,
+  GeoPoint.Lat AS Latitude
+FROM @T t
+WHERE StoreId = 1;
+```
+
+```json
+{
+  "type": "Program",
+  "start": 0,
+  "end": 167,
+  "body": [
+    {
+      "type": "DeclareStatement",
+      "variables": [
+        {
+          "name": "@T",
+          "dataType": "TABLE",
+          "columns": [
+            { "name": "StoreId", "dataType": "INT" },
+            { "name": "GeoPoint", "dataType": "GEOGRAPHY" },
+            { "name": "StoreName", "dataType": "VARCHAR(100)" }
+          ]
+        }
+      ],
+      "start": 0,
+      "end": 88
+    },
+    {
+      "type": "SelectStatement",
+      "columns": [
+        {
+          "type": "Column",
+          "expression": {
+            "type": "Identifier",
+            "name": "t.StoreId",
+            "parts": ["t", "StoreId"]
+          },
+          "outputName": "StoreId"
+        },
+        {
+          "type": "Column",
+          "expression": {
+            "type": "Identifier",
+            "name": "GeoPoint.Lat",
+            "parts": ["GeoPoint", "Lat"]
+          },
+          "alias": "Latitude",
+          "outputName": "Latitude"
+        }
+      ],
+      "from": [{ "type": "TableReference", "table": { "type": "Identifier", "name": "@T" }, "alias": "t" }],
+      "where": {
+        "type": "BinaryExpression",
+        "left": {
+          "type": "Identifier",
+          "name": "StoreId",
+          "parts": ["StoreId"]
+        },
+        "operator": "=",
+        "right": { "type": "Literal", "value": 1, "variant": "number" }
+      }
+    }
+  ]
+}
+```
+
+## Column Resolution Decision Contract
+
+`analyze(sql).columns.resolutions[]` includes a parser-native decision object for identifier ownership and ambiguity.
+Using the sample SQL above (both selected columns):
+
+```json
+[
+  {
+    "location": { "name": "t.StoreId" },
+    "inputs": [{ "name": "@T.StoreId", "resolution": "resolved" }],
+    "decision": {
+      "owner": "@T",
+      "scopeDepth": 0,
+      "decisionReason": "qualified_reference"
+    }
+  },
+  {
+    "location": { "name": "GeoPoint.Lat" },
+    "inputs": [{ "name": "GeoPoint.Lat", "resolution": "unresolved" }],
+    "decision": {
+      "owner": "@T",
+      "scopeDepth": 0,
+      "decisionReason": "qualified_reference"
+    }
+  }
+]
+```
+
+`decisionReason` values:
+
+- `qualified_reference`
+- `single_scope_owner`
+- `single_candidate_promotion`
+- `ambiguous_candidates`
+- `unresolved_external`
+- `non_column`
+
+This is intended as parser truth for local ownership/ambiguity so LSP clients do not need to re-run scope-walk heuristics.
+
+## Property Access Semantic Contract
+
+`analyze(sql).columns.propertyAccesses[]` surfaces explicit member/property-access semantics for identifier chains.
+Using the sample SQL above:
+
+```json
+{
+  "location": { "name": "GeoPoint.Lat", "start": 22, "end": 34 },
+  "baseExpr": "GeoPoint",
+  "member": "Lat",
+  "resolutionMode": "local_typed_member",
+  "owner": "@T",
+  "dataType": "GEOGRAPHY",
+  "memberType": "FLOAT"
+}
+```
+
+`resolutionMode` values:
+
+- `local_typed_member`
+- `local_untyped_member`
+- `shape_member`
+
+This helps LSP clients classify `base.member` access without misclassifying all dotted identifiers as table-qualified columns.
+
+Parser-native built-in member coverage is intentionally focused on common enterprise usage:
+
+- `GEOGRAPHY` (core): `Lat`, `Long`, `STSrid`, `STDistance`, `STIntersects`, `STContains`, `STWithin`, `STBuffer`, `STAsText`, `ToString`
+- `GEOMETRY` (core): `STSrid`, `STDistance`, `STIntersects`, `STContains`, `STWithin`, `STBuffer`, `STArea`, `STLength`, `STAsText`, `ToString`
+- `XML` (core): `value`, `query`, `exist`, `nodes`, `modify`
+- `hierarchyid` (core): `GetAncestor`, `GetDescendant`, `GetLevel`, `IsDescendantOf`, `ToString`
+
+## Scope Symbol Column Metadata
+
+Scope symbols for local tabular shapes now expose structured column metadata.
+
+- `columns: string[]` (legacy compatibility)
+- `localColumns: Array<{ rawName, normalizedName, dataType?, location? }>` (canonical)
+
+This applies to:
+
+- declared table variables (`DECLARE @T TABLE (...)`)
+- local temp/typed table symbols created in-file
+- TVP-backed and table-variable aliases where local shape is known
+
+Using the sample SQL above, `scope.root.resolve('@T')`:
+
+```json
+{
+  "sql": "DECLARE @T TABLE ( StoreId INT, GeoPoint GEOGRAPHY, StoreName VARCHAR(100) )",
+  "name": "@T",
+  "kind": "Table",
+  "columns": ["StoreId", "GeoPoint", "StoreName"],
+  "localColumns": [
+    {
+      "rawName": "StoreId",
+      "normalizedName": "storeid",
+      "dataType": "INT"
+    },
+    {
+      "rawName": "GeoPoint",
+      "normalizedName": "geopoint",
+      "dataType": "GEOGRAPHY",
+      "typeMembers": [
+        { "name": "Lat", "kind": "property", "returnType": "FLOAT" },
+        { "name": "Long", "kind": "property", "returnType": "FLOAT" },
+        { "name": "STAsText", "kind": "method", "returnType": "NVARCHAR(MAX)" }
+      ]
+    },
+    {
+      "rawName": "StoreName",
+      "normalizedName": "storename",
+      "dataType": "VARCHAR(100)"
+    }
+  ]
+}
+```
+
 ---
 
 # Coverage Scorecard

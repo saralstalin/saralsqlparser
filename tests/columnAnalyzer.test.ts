@@ -130,6 +130,7 @@ describe('ColumnAnalyzer', () => {
 
         // wildcard produces no identifier nodes
         expect(Array.isArray(result.resolutions)).toBe(true);
+        expect(Array.isArray(result.propertyAccesses)).toBe(true);
     });
 
     test('handles subquery safely', () => {
@@ -189,6 +190,8 @@ describe('ColumnAnalyzer', () => {
         const idResolution = result.resolutions.find(r => r.location.name === 'Id');
 
         expect(idResolution?.ambiguityCandidates?.length).toBeGreaterThan(1);
+        expect(idResolution?.decision.decisionReason).toBe('ambiguous_candidates');
+        expect(idResolution?.decision.ambiguityCandidates?.length).toBeGreaterThan(1);
     });
 
     test('keeps qualified alias resolution scoped per statement', () => {
@@ -244,5 +247,47 @@ describe('ColumnAnalyzer', () => {
 
         const idResolution = result.resolutions.find(r => r.location.name === 'Id');
         expect(idResolution?.isUnverifiable).toBe(true);
+    });
+
+    test('emits single-owner decision metadata for bare columns', () => {
+        const sql = `SELECT Name FROM Users`;
+        const ast = parse(sql);
+        const analyzer = new ColumnAnalyzer();
+        const result = analyzer.analyze(ast);
+        const resolution = result.resolutions.find(r => r.location.name === 'Name');
+
+        expect(resolution?.decision.owner).toBe('Users');
+        expect(resolution?.decision.decisionReason).toBe('single_scope_owner');
+    });
+
+    test('emits property-access semantic shape for identifier chains', () => {
+        const sql = `
+            DECLARE @Store TABLE(GeoPoint GEOGRAPHY);
+            SELECT GeoPoint.Lat FROM @Store;
+        `;
+        const ast = parse(sql);
+        const scope = new ScopeBuilder().build(ast);
+        const analyzer = new ColumnAnalyzer();
+        const result = analyzer.analyze(ast, scope);
+        const propertyAccess = result.propertyAccesses.find(x => x.location.name === 'GeoPoint.Lat');
+
+        expect(propertyAccess).toBeDefined();
+        expect(propertyAccess?.baseExpr).toBe('GeoPoint');
+        expect(propertyAccess?.member).toBe('Lat');
+        expect(propertyAccess?.resolutionMode).toBe('local_typed_member');
+        expect(propertyAccess?.owner).toBe('@Store');
+        expect(propertyAccess?.dataType).toBe('GEOGRAPHY');
+        expect(propertyAccess?.memberType).toBe('FLOAT');
+    });
+
+    test('does not classify alias-qualified columns as property-access', () => {
+        const sql = `SELECT e.FirstName FROM Employee e;`;
+        const ast = parse(sql);
+        const scope = new ScopeBuilder().build(ast);
+        const analyzer = new ColumnAnalyzer();
+        const result = analyzer.analyze(ast, scope);
+        const falsePositive = result.propertyAccesses.find(x => x.location.name === 'e.FirstName');
+
+        expect(falsePositive).toBeUndefined();
     });
 });

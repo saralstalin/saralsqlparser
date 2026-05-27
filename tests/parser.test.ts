@@ -152,6 +152,15 @@ describe('T-SQL Parser', () => {
         ).toBe('[Sales].[Customer Orders]');
     });
 
+    test('should handle escaped closing bracket inside bracketed identifier', () => {
+        const sql = `SELECT [My]]Column] FROM [dbo].[T]`;
+        const ast = parse(sql);
+        const stmt = ast.body[0] as SelectNode;
+
+        expect(stmt.columns[0].sourceName).toBe('[My]]Column]');
+        expect(getTableName(stmt.from?.[0].table)).toBe('[dbo].[T]');
+    });
+
     // 5. WHERE with complex operators
     test('should handle WHERE clause with T-SQL operators', () => {
         const sql = `SELECT Name FROM Users WHERE Status = 'Active' AND [Date] >= '2025-01-01'`;
@@ -365,7 +374,7 @@ describe('T-SQL Parser', () => {
         expect((stmt.from?.[0].table as any).type).toBe('TableReference');
     });
 
-    test('should parse spaced composite comparison operators', () => {
+    test('should not fold spaced comparison operators into composite operators', () => {
         const sql = `
             SELECT recordRow.Id
             FROM dbo.Records recordRow
@@ -373,9 +382,21 @@ describe('T-SQL Parser', () => {
               AND recordRow.Score < = @Threshold
         `;
 
-        const result = new Parser(new Lexer(sql)).parse();
+        const lexer = new Lexer(sql);
+        const operators: string[] = [];
+        while (true) {
+            const token = lexer.nextToken();
+            if (token.type === TokenType.Operator) {
+                operators.push(token.value);
+            }
+            if (token.type === TokenType.EOF) break;
+        }
 
-        expect(result.issues).toEqual([]);
+        expect(operators).toContain('>');
+        expect(operators).toContain('<');
+        expect(operators).toContain('=');
+        expect(operators).not.toContain('>=');
+        expect(operators).not.toContain('<=');
     });
 
     test('should parse procedure with parenthesized joined source in FROM', () => {

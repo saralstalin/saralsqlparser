@@ -46,6 +46,51 @@ describe('DECLARE', () => {
         expect(sym).toBeDefined();
         expect(sym?.kind).toBe(SymbolKind.Table);
         expect(sym?.columns).toEqual(['Id', 'Name']);
+        expect(sym?.localColumns?.map(c => c.rawName)).toEqual(['Id', 'Name']);
+        expect(sym?.localColumns?.map(c => c.normalizedName)).toEqual(['id', 'name']);
+        expect(sym?.localColumns?.map(c => c.dataType)).toEqual(['INT', 'VARCHAR(100)']);
+    });
+
+    test('typed local column exposes known type members', () => {
+        const scope = rootScope(`
+            DECLARE @Stores TABLE(
+                GeoPoint GEOGRAPHY
+            );
+        `);
+        const sym = scope.resolve('@Stores');
+        const geo = sym?.localColumns?.find(c => c.rawName === 'GeoPoint');
+
+        expect(geo?.dataType).toBe('GEOGRAPHY');
+        expect(geo?.typeMembers?.some(m => m.name === 'Lat' && m.returnType === 'FLOAT')).toBe(true);
+        expect(geo?.typeMembers?.some(m => m.name === 'STDistance' && m.kind === 'method')).toBe(true);
+    });
+
+    test('XML typed local column exposes common XML members', () => {
+        const scope = rootScope(`
+            DECLARE @Docs TABLE(
+                Payload XML
+            );
+        `);
+        const sym = scope.resolve('@Docs');
+        const payload = sym?.localColumns?.find(c => c.rawName === 'Payload');
+
+        expect(payload?.dataType).toBe('XML');
+        expect(payload?.typeMembers?.some(m => m.name === 'value' && m.returnType === 'SQL_VARIANT')).toBe(true);
+        expect(payload?.typeMembers?.some(m => m.name === 'exist' && m.returnType === 'BIT')).toBe(true);
+    });
+
+    test('hierarchyid typed local column exposes common hierarchyid members', () => {
+        const scope = rootScope(`
+            DECLARE @Org TABLE(
+                Node hierarchyid
+            );
+        `);
+        const sym = scope.resolve('@Org');
+        const node = sym?.localColumns?.find(c => c.rawName === 'Node');
+
+        expect(node?.dataType?.toUpperCase()).toBe('HIERARCHYID');
+        expect(node?.typeMembers?.some(m => m.name === 'GetLevel' && m.returnType === 'INT')).toBe(true);
+        expect(node?.typeMembers?.some(m => m.name === 'IsDescendantOf' && m.returnType === 'BIT')).toBe(true);
     });
 
     test('declaration with initialiser visits expression', () => {
@@ -314,6 +359,25 @@ describe('SELECT aliases', () => {
         const selectScope = scope.getChildren().find(x => x.name === 'select');
         expect(selectScope?.resolveLocal('u')?.kind).toBe(SymbolKind.Alias);
         expect(selectScope?.resolveLocal('r')?.kind).toBe(SymbolKind.Alias);
+    });
+
+    test('table-variable alias exposes structured local columns', () => {
+        const scope = rootScope(`
+            DECLARE @Emp TABLE(
+                FirstName2 VARCHAR(100),
+                LastName2 VARCHAR(100)
+            );
+
+            SELECT te.FirstName2
+            FROM @Emp te;
+        `);
+        const selectScope = scope.getChildren().find(x => x.name === 'select');
+        const alias = selectScope?.resolveLocal('te');
+
+        expect(alias?.kind).toBe(SymbolKind.Alias);
+        expect(alias?.columns).toEqual(['FirstName2', 'LastName2']);
+        expect(alias?.localColumns?.map(c => c.rawName)).toEqual(['FirstName2', 'LastName2']);
+        expect(alias?.localColumns?.map(c => c.dataType)).toEqual(['VARCHAR(100)', 'VARCHAR(100)']);
     });
 
     test('table alias does NOT leak into root scope', () => {

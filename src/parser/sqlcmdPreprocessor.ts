@@ -26,9 +26,9 @@ export class SqlCmdPreprocessor {
     // Matches $(VariableName)
     private readonly VAR_REGEX = /\$\(([a-zA-Z0-9_]+)\)/g;
     // Matches :setvar VariableName Value (basic implementation)
-    private readonly SETVAR_REGEX = /^:setvar\s+([a-zA-Z0-9_]+)\s*(.*)$/im;
+    private readonly SETVAR_REGEX = /^:setvar\s+([a-zA-Z0-9_]+)\s*(.*)$/gim;
     // Matches :r FileName
-    private readonly R_REGEX = /^:r\s+(.*)$/im;
+    private readonly R_REGEX = /^:r\s+(.*)$/gim;
 
     public process(input: string, options?: SqlCmdOptions): PreprocessResult {
         let text = input;
@@ -50,7 +50,8 @@ export class SqlCmdPreprocessor {
         // To preserve offsets perfectly for the remaining text, we replace the directive
         // line with whitespace of the exact same length.
         
-        text = text.replace(new RegExp(this.SETVAR_REGEX, 'gm'), (match, varName, value, offset) => {
+        this.SETVAR_REGEX.lastIndex = 0;
+        text = text.replace(this.SETVAR_REGEX, (match, varName, value) => {
             // Clean up surrounding quotes if present
             const cleanValue = value.replace(/^["']|["']$/g, '').trim();
             variables[varName] = cleanValue;
@@ -59,9 +60,16 @@ export class SqlCmdPreprocessor {
             return ' '.repeat(match.length);
         });
 
-        text = text.replace(new RegExp(this.R_REGEX, 'gm'), (match) => {
+        this.R_REGEX.lastIndex = 0;
+        text = text.replace(this.R_REGEX, (match, includePath, offset) => {
             // For now, just blank out the :r line to prevent parser crashes.
             // Future: Implement options.resolveInclude to actually inline the file text.
+            issues.push({
+                code: 'SQLCMD_UNRESOLVED_INCLUDE',
+                message: `SQLCMD include was not resolved: ${String(includePath ?? '').trim() || '<empty>'}.`,
+                start: offset,
+                end: offset + match.length
+            });
             return ' '.repeat(match.length);
         });
 

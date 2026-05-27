@@ -32,7 +32,9 @@ import {
     LineageSourceKind,
     SourceExposure,
     AmbiguityDiagnostic,
-    MutationTarget
+    MutationTarget,
+    ReadScopeExposure,
+    ReadScopeSource
 } from './lineage';
 
 type SourceMap = Map<string, VirtualSource>;
@@ -43,6 +45,7 @@ export class LineageBuilder {
     private sourceExposure = new Map<string, SourceExposure>();
     private ambiguities: AmbiguityDiagnostic[] = [];
     private mutations: MutationTarget[] = [];
+    private readScopes: ReadScopeExposure[] = [];
 
     build(program: Program): LineageResult {
         this.columns = [];
@@ -50,6 +53,7 @@ export class LineageBuilder {
         this.sourceExposure = new Map();
         this.ambiguities = [];
         this.mutations = [];
+        this.readScopes = [];
 
         for (const stmt of program.body) {
             this.visitStatement(stmt);
@@ -60,7 +64,8 @@ export class LineageBuilder {
             edges: this.buildEdges(this.columns),
             sources: [...this.sourceExposure.values()],
             ambiguities: this.ambiguities,
-            mutations: this.mutations
+            mutations: this.mutations,
+            readScopes: this.readScopes
         };
     }
 
@@ -365,6 +370,8 @@ export class LineageBuilder {
                 this.registerTableReference(ref);
             }
         }
+
+        this.recordReadScope('DELETE', stmt, stmt.from ?? []);
 
         if (stmt.target && stmt.target.type === 'Identifier') {
             this.recordMutationTarget('DELETE', stmt, stmt.target.name);
@@ -808,6 +815,7 @@ export class LineageBuilder {
             stmt.table.type === 'Identifier' &&
             stmt.selectQuery
         ) {
+            this.recordReadScopeForQuery('INSERT', stmt, stmt.selectQuery);
             const target = stmt.table.name;
             const sourceCols = this.visitQuery(
                 stmt.selectQuery,
@@ -903,6 +911,8 @@ export class LineageBuilder {
                 this.registerTableReference(ref);
             }
         }
+
+        this.recordReadScope('UPDATE', stmt, stmt.from ?? []);
         this.registerSource(stmt.target, undefined, undefined, 'table');
 
         const target = stmt.target.name;
@@ -1362,6 +1372,158 @@ export class LineageBuilder {
                 : {}),
             location: stmt
         });
+    }
+
+    private recordReadScope(
+        statement: 'INSERT' | 'UPDATE' | 'DELETE',
+        location: NodeLocation,
+        tableRefs: TableReference[]
+    ): void {
+        const sources: ReadScopeSource[] = [];
+        const seen = new Set<string>();
+
+        const walk = (ref: TableReference): void => {
+            const source = this.toReadScopeSource(ref);
+            if (source) {
+                const key =
+                    `${source.name.toLowerCase()}|${(source.alias ?? '').toLowerCase()}|${source.kind}`;
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    sources.push(source);
+                }
+            }
+
+            for (const join of ref.joins) {
+                const joinSource = this.toReadScopeSourceFromJoin(join);
+                if (joinSource) {
+                    const key =
+                        `${joinSource.name.toLowerCase()}|${(joinSource.alias ?? '').toLowerCase()}|${joinSource.kind}`;
+                    if (!seen.has(key)) {
+                        seen.add(key);
+                        sources.push(joinSource);
+                    }
+                }
+            }
+        };
+
+        for (const ref of tableRefs) {
+            walk(ref);
+        }
+
+        this.readScopes.push({
+            statement,
+            location,
+            sources
+        });
+    }
+
+    private recordReadScopeForQuery(
+        statement: 'INSERT' | 'UPDATE' | 'DELETE',
+        location: NodeLocation,
+        query: QueryStatement
+    ): void {
+        const refs = this.collectTopLevelTableReferences(query);
+        this.recordReadScope(statement, location, refs);
+    }
+
+    private collectTopLevelTableReferences(query: QueryStatement): TableReference[] {
+        if (query.type === 'SetOperator') {
+            return this.collectTopLevelTableReferences(query.left);
+        }
+
+        return query.from ?? [];
+    }
+
+    private toReadScopeSource(ref: TableReference): ReadScopeSource | null {
+        const expr = ref.table;
+        if (!expr) return null;
+
+        if (expr.type === 'Identifier') {
+            const resolved = this.resolveSource(ref.alias ?? expr.name);
+            return {
+                name: resolved?.name ?? expr.name,
+                ...(ref.alias ? { alias: ref.alias } : {}),
+                kind: resolved?.kind ?? 'table',
+                location: expr
+            };
+        }
+
+        if (expr.type === 'SubqueryExpression') {
+            return {
+                name: ref.alias ?? '__subquery',
+                ...(ref.alias ? { alias: ref.alias } : {}),
+                kind: 'derived_subquery',
+                location: expr
+            };
+        }
+
+        if (expr.type === 'FunctionCall') {
+            return {
+                name: ref.alias ?? expr.name,
+                ...(ref.alias ? { alias: ref.alias } : {}),
+                kind: 'function',
+                location: expr
+            };
+        }
+
+        if (expr.type === 'ValuesTableExpression') {
+            return {
+                name: ref.alias ?? '__values',
+                ...(ref.alias ? { alias: ref.alias } : {}),
+                kind: 'derived_values',
+                location: expr
+            };
+        }
+
+        return null;
+    }
+
+    private toReadScopeSourceFromJoin(join: JoinNode): ReadScopeSource | null {
+        const expr = join.table;
+        if (!expr) return null;
+
+        if (expr.type === 'Identifier') {
+            const resolved = this.resolveSource(join.alias ?? expr.name);
+            return {
+                name: resolved?.name ?? expr.name,
+                ...(join.alias ? { alias: join.alias } : {}),
+                kind: resolved?.kind ?? 'table',
+                location: expr
+            };
+        }
+
+        if (expr.type === 'SubqueryExpression') {
+            const isApply =
+                join.type === 'CROSS APPLY' || join.type === 'OUTER APPLY';
+            return {
+                name: join.alias ?? '__subquery',
+                ...(join.alias ? { alias: join.alias } : {}),
+                kind: isApply ? 'derived_apply' : 'derived_subquery',
+                location: expr
+            };
+        }
+
+        if (expr.type === 'FunctionCall') {
+            const isApply =
+                join.type === 'CROSS APPLY' || join.type === 'OUTER APPLY';
+            return {
+                name: join.alias ?? expr.name,
+                ...(join.alias ? { alias: join.alias } : {}),
+                kind: isApply ? 'derived_apply' : 'function',
+                location: expr
+            };
+        }
+
+        if (expr.type === 'ValuesTableExpression') {
+            return {
+                name: join.alias ?? '__values',
+                ...(join.alias ? { alias: join.alias } : {}),
+                kind: 'derived_values',
+                location: expr
+            };
+        }
+
+        return null;
     }
 
     private resolveUpdateTargetName(stmt: UpdateNode): string {

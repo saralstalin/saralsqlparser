@@ -28,7 +28,8 @@ describe('SqlCmdPreprocessor', () => {
 
         expect(result.text.startsWith(' '.repeat(20))).toBe(true);
         expect(result.text).toContain('SELECT 1;');
-        expect(result.issues).toHaveLength(0);
+        expect(result.issues).toHaveLength(1);
+        expect(result.issues[0].code).toBe('SQLCMD_UNRESOLVED_INCLUDE');
         expect(result.mapOffset(25)).toBe(25);
     });
 
@@ -66,6 +67,7 @@ describe('SqlCmdPreprocessor', () => {
 
         expect(result.text.startsWith(' '.repeat(12))).toBe(true);
         expect(result.text).toContain('SELECT * FROM dbo.Users;');
+        expect(result.issues.map(x => x.code)).toContain('SQLCMD_UNRESOLVED_INCLUDE');
         
         const semiColonPrepIndex = result.text.indexOf(';');
         const semiColonOrigIndex = sql.indexOf(';');
