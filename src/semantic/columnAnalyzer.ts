@@ -17,17 +17,20 @@ export interface ColumnResolution {
     location: IdentifierNode;
     inputs: LineageNode[];
     ambiguityCandidates?: string[];
+    owner?: string;
+    scopeDepth?: number;
+    decisionReason?:
+        | 'qualified_reference'
+        | 'single_scope_owner'
+        | 'single_candidate_promotion'
+        | 'ambiguous_candidates'
+        | 'unresolved_external'
+        | 'non_column';
     decision: {
         owner?: string;
         scopeDepth?: number;
         ambiguityCandidates?: string[];
-        decisionReason:
-            | 'qualified_reference'
-            | 'single_scope_owner'
-            | 'single_candidate_promotion'
-            | 'ambiguous_candidates'
-            | 'unresolved_external'
-            | 'non_column';
+        decisionReason: NonNullable<ColumnResolution['decisionReason']>;
     };
     isCorrelated?: boolean;
     isUnverifiable?: boolean;
@@ -99,6 +102,9 @@ export class ColumnAnalyzer {
                     ...(ambiguityCandidates.length
                         ? { ambiguityCandidates }
                         : {}),
+                    ...(decision.owner !== undefined ? { owner: decision.owner } : {}),
+                    ...(decision.scopeDepth !== undefined ? { scopeDepth: decision.scopeDepth } : {}),
+                    decisionReason: decision.decisionReason,
                     decision,
                     isCorrelated:
                         id.parts.length >= 2 &&

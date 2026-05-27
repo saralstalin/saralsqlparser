@@ -215,6 +215,8 @@ WHERE StoreId = 1;
 ## Column Resolution Decision Contract
 
 `analyze(sql).columns.resolutions[]` includes a parser-native decision object for identifier ownership and ambiguity.
+For LSP ergonomics, the same decision fields are also surfaced at top-level on each resolution item:
+`owner`, `scopeDepth`, `ambiguityCandidates`, `decisionReason`.
 Using the sample SQL above (both selected columns):
 
 ```json
@@ -222,6 +224,9 @@ Using the sample SQL above (both selected columns):
   {
     "location": { "name": "t.StoreId" },
     "inputs": [{ "name": "@T.StoreId", "resolution": "resolved" }],
+    "owner": "@T",
+    "scopeDepth": 0,
+    "decisionReason": "qualified_reference",
     "decision": {
       "owner": "@T",
       "scopeDepth": 0,
@@ -231,6 +236,9 @@ Using the sample SQL above (both selected columns):
   {
     "location": { "name": "GeoPoint.Lat" },
     "inputs": [{ "name": "GeoPoint.Lat", "resolution": "unresolved" }],
+    "owner": "@T",
+    "scopeDepth": 0,
+    "decisionReason": "qualified_reference",
     "decision": {
       "owner": "@T",
       "scopeDepth": 0,

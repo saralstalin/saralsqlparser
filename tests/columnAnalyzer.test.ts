@@ -190,6 +190,7 @@ describe('ColumnAnalyzer', () => {
         const idResolution = result.resolutions.find(r => r.location.name === 'Id');
 
         expect(idResolution?.ambiguityCandidates?.length).toBeGreaterThan(1);
+        expect(idResolution?.decisionReason).toBe('ambiguous_candidates');
         expect(idResolution?.decision.decisionReason).toBe('ambiguous_candidates');
         expect(idResolution?.decision.ambiguityCandidates?.length).toBeGreaterThan(1);
     });
@@ -256,6 +257,8 @@ describe('ColumnAnalyzer', () => {
         const result = analyzer.analyze(ast);
         const resolution = result.resolutions.find(r => r.location.name === 'Name');
 
+        expect(resolution?.owner).toBe('Users');
+        expect(resolution?.decisionReason).toBe('single_scope_owner');
         expect(resolution?.decision.owner).toBe('Users');
         expect(resolution?.decision.decisionReason).toBe('single_scope_owner');
     });
