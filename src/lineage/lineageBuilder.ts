@@ -13,6 +13,7 @@ import {
     IfNode,
     BlockNode,
     TryCatchNode,
+    NodeLocation,
     InsertNode,
     UpdateNode,
     DeleteNode,
