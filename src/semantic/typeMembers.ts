@@ -41,6 +41,14 @@ const BUILTIN_TYPE_MEMBERS: Record<string, TypeMember[]> = {
     ]
 };
 
+export function getBuiltinTypeMembersCatalog(): Record<string, TypeMember[]> {
+    const clone: Record<string, TypeMember[]> = {};
+    for (const [key, members] of Object.entries(BUILTIN_TYPE_MEMBERS)) {
+        clone[key] = members.map(member => ({ ...member }));
+    }
+    return clone;
+}
+
 function canonicalDataType(dataType?: string): string | undefined {
     if (!dataType) return undefined;
 

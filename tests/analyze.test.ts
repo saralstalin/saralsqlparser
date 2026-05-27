@@ -17,6 +17,8 @@ describe('analyze facade', () => {
         expect(result.lineage.columns).toBeDefined();
         expect(result.lineage.edges).toBeDefined();
         expect(result.columns.resolutions).toBeDefined();
+        expect(result.typeMembers).toBeDefined();
+        expect(result.typeMembers.builtIn.GEOGRAPHY?.some(x => x.name === 'Lat')).toBe(true);
 
         expect(result.diagnostics.map(d => d.code)).toContain(
             DiagnosticCode.UndeclaredVariable
@@ -24,6 +26,16 @@ describe('analyze facade', () => {
         expect(result.semanticDiagnostics.map(d => d.code)).toContain(
             DiagnosticCode.UndeclaredVariable
         );
+    });
+
+    test('exposes referenced type members as top-level channel', () => {
+        const result = analyze(`
+            DECLARE @Location GEOGRAPHY;
+            SELECT @Location.Lat;
+        `);
+
+        expect(result.typeMembers.referenced.GEOGRAPHY).toBeDefined();
+        expect(result.typeMembers.referenced.GEOGRAPHY.some(x => x.name === 'Lat')).toBe(true);
     });
 
     test('combines parse issues and semantic diagnostics into one sorted stream', () => {

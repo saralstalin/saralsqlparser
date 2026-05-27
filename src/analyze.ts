@@ -7,6 +7,8 @@ import { LineageBuilder } from './lineage/lineageBuilder';
 import { ColumnAnalysisResult, ColumnAnalyzer } from './semantic/columnAnalyzer';
 import { ScopeBuilder, ScopeBuilderResult } from './semantic/scopeBuilder';
 import { SqlCmdPreprocessor, SqlCmdOptions } from './parser/sqlcmdPreprocessor';
+import { TypeMember } from './semantic/scope';
+import { getBuiltinTypeMembersCatalog, getTypeMembers } from './semantic/typeMembers';
 
 export type AnalysisDiagnosticSource = 'parser' | 'semantic' | 'sqlcmd';
 
@@ -27,6 +29,10 @@ export interface AnalysisResult {
     diagnostics: AnalysisDiagnostic[];
     lineage: LineageResult;
     columns: ColumnAnalysisResult;
+    typeMembers: {
+        builtIn: Record<string, TypeMember[]>;
+        referenced: Record<string, TypeMember[]>;
+    };
 }
 
 export function analyze(sql: string, options?: SqlCmdOptions): AnalysisResult {
@@ -38,6 +44,7 @@ export function analyze(sql: string, options?: SqlCmdOptions): AnalysisResult {
     const semanticDiagnostics = diagnose(parseResult.ast, scope);
     const lineage = new LineageBuilder().build(parseResult.ast);
     const columns = new ColumnAnalyzer().analyze(parseResult.ast, scope);
+    const typeMembers = buildTypeMembers(scope);
     const issues = parseResult.issues ?? [];
 
     const diagnostics = combineDiagnostics(
@@ -53,11 +60,41 @@ export function analyze(sql: string, options?: SqlCmdOptions): AnalysisResult {
         semanticDiagnostics,
         diagnostics,
         lineage,
-        columns
+        columns,
+        typeMembers
     };
 
     applyOffsetMapping(result, preprocessResult.mapOffset);
     return result;
+}
+
+function buildTypeMembers(scope: ScopeBuilderResult): {
+    builtIn: Record<string, TypeMember[]>;
+    referenced: Record<string, TypeMember[]>;
+} {
+    const referenced = new Map<string, TypeMember[]>();
+
+    const visit = (s: any): void => {
+        for (const symbol of s.symbols?.values?.() ?? []) {
+            if (!symbol?.dataType) continue;
+            const base = symbol.dataType
+                .trim()
+                .toUpperCase()
+                .split('(')[0]
+                ?.trim();
+            if (!base || referenced.has(base)) continue;
+            const members = getTypeMembers(base);
+            if (members?.length) referenced.set(base, members);
+        }
+        for (const child of s.children ?? []) visit(child);
+    };
+
+    visit(scope.root);
+
+    return {
+        builtIn: getBuiltinTypeMembersCatalog(),
+        referenced: Object.fromEntries(referenced.entries())
+    };
 }
 
 function combineDiagnostics(

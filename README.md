@@ -110,6 +110,7 @@ const result = analyze(sql);
 | `diagnostics` | Semantic and safety diagnostics |
 | `lineage` | Column lineage edges plus source exposure, ambiguity metadata, and mutation target metadata |
 | `columns` | Column resolution analysis including ambiguity candidates and correlation flags where available |
+| `typeMembers` | Built-in and referenced SQL Server type-member catalog (for property/method completions and typing) |
 
 ## AST Example
 
@@ -187,6 +188,27 @@ WHERE StoreId = 1;
       }
     }
   ]
+}
+```
+
+### Top-Level Type Members (from `analyze(...)`)
+
+```json
+{
+  "typeMembers": {
+    "builtIn": {
+      "GEOGRAPHY": [
+        { "name": "Lat", "kind": "property", "returnType": "FLOAT", "returnKind": "scalar" },
+        { "name": "Long", "kind": "property", "returnType": "FLOAT", "returnKind": "scalar" }
+      ]
+    },
+    "referenced": {
+      "GEOGRAPHY": [
+        { "name": "Lat", "kind": "property", "returnType": "FLOAT", "returnKind": "scalar" },
+        { "name": "Long", "kind": "property", "returnType": "FLOAT", "returnKind": "scalar" }
+      ]
+    }
+  }
 }
 ```
 

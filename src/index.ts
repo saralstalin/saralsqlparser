@@ -95,6 +95,7 @@ export type {
 
 export { ColumnAnalyzer } from './semantic/columnAnalyzer';
 export type { ColumnAnalysisResult, ColumnResolution, PropertyAccessResolution } from './semantic/columnAnalyzer';
+export { getBuiltinTypeMembersCatalog, getTypeMembers, resolveTypeMember } from './semantic/typeMembers';
 
 export { SqlCmdPreprocessor } from './parser/sqlcmdPreprocessor';
 export type { SqlCmdOptions, PreprocessResult } from './parser/sqlcmdPreprocessor';
