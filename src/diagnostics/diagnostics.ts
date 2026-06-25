@@ -19,7 +19,7 @@ import {
     TableReference,
 } from '../ast/types';
 
-import { ScopeBuilderResult, DuplicateDeclaration } from '../semantic/scopeBuilder';
+import { ScopeBuilderResult } from '../semantic/scopeBuilder';
 import { SymbolKind, Scope } from '../semantic/scope';
 
 // ─── Core types ───────────────────────────────────────────────────────────────

@@ -17,7 +17,6 @@ import {
     InsertNode,
     UpdateNode,
     DeleteNode,
-    OutputColumnNode,
     OutputClauseNode,
     TableReference,
     JoinNode,
@@ -1525,17 +1524,5 @@ export class LineageBuilder {
         }
 
         return null;
-    }
-
-    private resolveUpdateTargetName(stmt: UpdateNode): string {
-        if (!stmt.target || stmt.target.type !== 'Identifier') {
-            return '';
-        }
-
-        const targetName = stmt.target.name;
-
-        const source = this.resolveSource(targetName);
-
-        return source?.name ?? targetName;
     }
 }

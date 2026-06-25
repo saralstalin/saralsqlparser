@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run *)",
+      "Bash(npm test *)",
+      "Bash(node -e \"const fs=require\\('fs'\\); const buf=fs.readFileSync\\('src/parser/parser.ts'\\); console.log\\(buf.includes\\(13\\) ? 'CRLF likely' : 'LF only'\\);\")",
+      "Bash(node splitParser.js)",
+      "Bash(node -e ' *)",
+      "Bash(git status *)",
+      "Bash(node trimImports.js)"
+    ]
+  }
+}

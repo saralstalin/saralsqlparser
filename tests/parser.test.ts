@@ -1,5 +1,5 @@
 import { Lexer, TokenType } from '../src/parser/lexer';
-import { SelectNode, InsertNode, UpdateNode, DeleteNode, DeclareNode, SetNode, CreateNode, CreateIndexNode, DropNode, SetOperatorNode, IfNode, BlockNode, WithNode, OverExpression, TableReference, MemberExpression, IdentifierNode, LiteralNode } from '../src/ast/types';
+import { SelectNode, InsertNode, UpdateNode, DeleteNode, DeclareNode, SetNode, CreateNode, CreateIndexNode, DropNode, SetOperatorNode, IfNode, BlockNode, WithNode, OverExpression, TableReference, IdentifierNode, LiteralNode } from '../src/ast/types';
 import { Parser } from '../src/parser/parser';
 
 /**

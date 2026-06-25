@@ -1,5 +1,4 @@
 import {
-    BlockNode,
     CreateNode,
     DeclareNode,
     DeleteNode,
@@ -14,8 +13,7 @@ import {
     SelectNode,
     Statement,
     TableReference,
-    UpdateNode,
-    WithNode
+    UpdateNode
 } from './ast/types';
 
 export type ExtractedDeclarationKind =

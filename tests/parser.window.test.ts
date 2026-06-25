@@ -470,7 +470,7 @@ describe('T-SQL Parser - Window Functions', () => {
     });
 
     test('debug column shape', () => {
-        const stmt = parseOne<any>(`
+        parseOne<any>(`
         SELECT SUM(Salary) OVER(
             ORDER BY Salary
             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW

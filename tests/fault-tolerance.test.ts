@@ -1,4 +1,4 @@
-import { Lexer, TokenType } from '../src/parser/lexer';
+import { Lexer } from '../src/parser/lexer';
 import { Parser } from '../src/parser/parser';
 
 describe('Parser Fault Tolerance', () => {
