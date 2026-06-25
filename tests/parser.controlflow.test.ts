@@ -367,6 +367,40 @@ describe('T-SQL Parser - RETURN', () => {
         expect(block.body[4].type).toBe('DeallocateCursorStatement');
     });
 
+    test('should parse cursor-variable lifecycle statements (SET @c = CURSOR FOR ...)', () => {
+        const result = parseResult(`
+            CREATE PROCEDURE dbo.ProcessItems
+            AS
+            BEGIN
+                DECLARE @ItemCursor CURSOR;
+                SET @ItemCursor = CURSOR FOR
+                    SELECT Id FROM dbo.Items;
+                OPEN @ItemCursor;
+                FETCH NEXT FROM @ItemCursor INTO @ItemId;
+                CLOSE @ItemCursor;
+                DEALLOCATE @ItemCursor;
+            END
+        `);
+
+        expect(result.issues).toHaveLength(0);
+
+        const create = result.ast.body[0] as any;
+        const block = create.body[0];
+
+        expect(block.body[0].type).toBe('DeclareStatement');
+        expect(block.body[1].type).toBe('SetStatement');
+        expect(block.body[1].cursorQuery.type).toBe('SelectStatement');
+        expect(block.body[2].type).toBe('OpenCursorStatement');
+        expect(block.body[2].name).toBe('@ItemCursor');
+        expect(block.body[3].type).toBe('FetchCursorStatement');
+        expect(block.body[3].name).toBe('@ItemCursor');
+        expect(block.body[3].into).toEqual(['@ItemId']);
+        expect(block.body[4].type).toBe('CloseCursorStatement');
+        expect(block.body[4].name).toBe('@ItemCursor');
+        expect(block.body[5].type).toBe('DeallocateCursorStatement');
+        expect(block.body[5].name).toBe('@ItemCursor');
+    });
+
     test('should parse FETCH ABSOLUTE cursor statement', () => {
         const stmt = parseOne<any>(`FETCH ABSOLUTE 5 FROM item_cursor INTO @ItemId`);
 

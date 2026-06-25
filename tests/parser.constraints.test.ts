@@ -108,6 +108,46 @@ describe('T-SQL Parser - Constraints', () => {
                 'LEN(ISOCode) = 2'
             );
         });
+
+        test('named column-level REFERENCES shorthand (no FOREIGN KEY keywords)', () => {
+            const stmt = parseOne<any>(`
+                CREATE TABLE dbo.Department(
+                    HeadEmployeeId INT
+                        CONSTRAINT FK_Department_Employee
+                        REFERENCES Employee(EmployeeId)
+                )
+            `);
+
+            const k =
+                stmt.columns[0].constraints[0];
+
+            expect(k.name).toBe('FK_Department_Employee');
+            expect(k.kind).toBe('FOREIGN KEY');
+            expect(k.columns).toEqual([
+                'HeadEmployeeId'
+            ]);
+            expect(k.referencesTable)
+                .toBe('Employee');
+            expect(k.referencesColumns)
+                .toEqual(['EmployeeId']);
+        });
+
+        test('named column-level REFERENCES shorthand with ON DELETE CASCADE', () => {
+            const stmt = parseOne<any>(`
+                CREATE TABLE dbo.OrderItem(
+                    OrderId INT
+                        CONSTRAINT FK_OrderItem_Order
+                        REFERENCES [Order](OrderId)
+                        ON DELETE CASCADE
+                )
+            `);
+
+            const k =
+                stmt.columns[0].constraints[0];
+
+            expect(k.kind).toBe('FOREIGN KEY');
+            expect(k.onDelete).toBe('CASCADE');
+        });
     });
 
     describe('named constraints', () => {

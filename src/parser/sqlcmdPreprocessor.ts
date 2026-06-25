@@ -79,6 +79,12 @@ export class SqlCmdPreprocessor {
         let lastOrigIndex = 0;
         let currentPrepIndex = 0;
 
+        // $(Var) references inside comments are inert — the lexer discards
+        // comments entirely, so substituting or warning about them would
+        // only produce noisy, irrelevant diagnostics (e.g. "-- uses $(Env)
+        // for staging" should never raise SQLCMD_UNKNOWN_VAR).
+        const commentRanges = this.findCommentRanges(text);
+
         // Reset regex state
         this.VAR_REGEX.lastIndex = 0;
         let match: RegExpExecArray | null;
@@ -93,12 +99,16 @@ export class SqlCmdPreprocessor {
             prepText += textBefore;
             currentPrepIndex += textBefore.length;
 
-            if (variables[varName] !== undefined) {
+            if (this.isInsideAnyRange(origMatchStart, commentRanges)) {
+                // Inside a comment: leave untouched, no substitution, no diagnostic.
+                prepText += match[0];
+                currentPrepIndex += match[0].length;
+            } else if (variables[varName] !== undefined) {
                 const expandedValue = variables[varName];
                 prepText += expandedValue;
                 currentPrepIndex += expandedValue.length;
-                
-                // We just changed the length of the string. Add a new anchor 
+
+                // We just changed the length of the string. Add a new anchor
                 // for the text immediately following the substitution.
                 anchors.push({
                     prep: currentPrepIndex,
@@ -108,7 +118,7 @@ export class SqlCmdPreprocessor {
                 // Missing variable: Leave as-is, emit diagnostic
                 prepText += match[0];
                 currentPrepIndex += match[0].length;
-                
+
                 issues.push({
                     code: 'SQLCMD_UNKNOWN_VAR',
                     message: `SQLCMD variable '${varName}' is not defined.`,
@@ -136,5 +146,77 @@ export class SqlCmdPreprocessor {
                 return anchor.orig + (prepOffset - anchor.prep);
             }
         };
+    }
+
+    // Scans for '--' line comments and (nestable) '/* */' block comments,
+    // skipping over single-quoted string literals so that comment-looking
+    // text inside a string (e.g. '--not a comment') is never mistaken for
+    // one. Mirrors the lexer's own comment handling (see lexer.ts
+    // skipWhitespaceAndComments) so the two stay consistent.
+    private findCommentRanges(text: string): Array<{ start: number; end: number }> {
+        const ranges: Array<{ start: number; end: number }> = [];
+        const len = text.length;
+        let i = 0;
+
+        while (i < len) {
+            const ch = text[i];
+
+            if (ch === '\'') {
+                i++;
+                while (i < len) {
+                    if (text[i] === '\'') {
+                        if (text[i + 1] === '\'') {
+                            i += 2;
+                            continue;
+                        }
+                        i++;
+                        break;
+                    }
+                    i++;
+                }
+                continue;
+            }
+
+            if (ch === '-' && text[i + 1] === '-') {
+                const start = i;
+                while (i < len && text[i] !== '\n') i++;
+                ranges.push({ start, end: i });
+                continue;
+            }
+
+            if (ch === '/' && text[i + 1] === '*') {
+                const start = i;
+                i += 2;
+                let depth = 1;
+
+                while (i < len && depth > 0) {
+                    if (text[i] === '/' && text[i + 1] === '*') {
+                        depth++;
+                        i += 2;
+                        continue;
+                    }
+                    if (text[i] === '*' && text[i + 1] === '/') {
+                        depth--;
+                        i += 2;
+                        continue;
+                    }
+                    i++;
+                }
+
+                ranges.push({ start, end: i });
+                continue;
+            }
+
+            i++;
+        }
+
+        return ranges;
+    }
+
+    private isInsideAnyRange(
+        offset: number,
+        ranges: Array<{ start: number; end: number }>
+    ): boolean {
+        return ranges.some(r => offset >= r.start && offset < r.end);
     }
 }

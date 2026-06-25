@@ -498,6 +498,81 @@ describe('VAR003 — unused parameter', () => {
     });
 });
 
+describe('VAR004 — variable used before SET', () => {
+    test('fires when a declared variable with no initializer is read before any SET', () => {
+        const d = only(`
+            DECLARE @x INT;
+            SELECT @x;
+        `, DiagnosticCode.VariableUsedBeforeSet);
+
+        expect(d.length).toBe(1);
+        expect(d[0].severity).toBe('warning');
+    });
+
+    test('does NOT fire when the variable is initialized in its DECLARE', () => {
+        const d = only(`
+            DECLARE @x INT = 5;
+            SELECT @x;
+        `, DiagnosticCode.VariableUsedBeforeSet);
+
+        expect(d.length).toBe(0);
+    });
+
+    test('does NOT fire when SET precedes the read', () => {
+        const d = only(`
+            DECLARE @x INT;
+            SET @x = 5;
+            SELECT @x;
+        `, DiagnosticCode.VariableUsedBeforeSet);
+
+        expect(d.length).toBe(0);
+    });
+
+    test('fires only for the read that precedes the SET, not for reads after it', () => {
+        const d = only(`
+            DECLARE @x INT;
+            SELECT @x;
+            SET @x = 5;
+            SELECT @x;
+        `, DiagnosticCode.VariableUsedBeforeSet);
+
+        expect(d.length).toBe(1);
+    });
+
+    test('does NOT fire for parameters (always have a value at call time)', () => {
+        const d = only(`
+            CREATE PROCEDURE dbo.Proc1
+                @x INT
+            AS
+            BEGIN
+                SELECT @x;
+            END
+        `, DiagnosticCode.VariableUsedBeforeSet);
+
+        expect(d.length).toBe(0);
+    });
+
+    test('does NOT fire for table variables (reading before any INSERT is not an error)', () => {
+        const d = only(`
+            DECLARE @t TABLE (Id INT);
+            SELECT * FROM @t;
+        `, DiagnosticCode.VariableUsedBeforeSet);
+
+        expect(d.length).toBe(0);
+    });
+
+    test('does NOT fire when a SET inside an IF branch textually precedes the read (conservative, no control-flow analysis)', () => {
+        const d = only(`
+            DECLARE @x INT;
+            IF 1 = 1
+                SET @x = 1;
+            SELECT @x;
+        `, DiagnosticCode.VariableUsedBeforeSet);
+
+        expect(d.length).toBe(0);
+    });
+});
+
 describe('VAR005 — invalid schema-qualified table variable reference', () => {
     test('fires on schema-qualified TVP reference and points to the real fix', () => {
         const d = only(`
@@ -1387,5 +1462,106 @@ describe('DUP001 batch separators', () => {
         `, DiagnosticCode.DuplicateVariable);
 
         expect(d.length).toBe(0);
+    });
+});
+
+// ─── DDL004: CREATE/ALTER PROC|FUNCTION|VIEW|TRIGGER must be first in batch ──
+
+describe('DDL004 — CREATE must be the first statement in a batch', () => {
+    test('fires when CREATE PROCEDURE follows another statement in the same batch', () => {
+        const d = only(`
+            SELECT 1;
+            CREATE PROCEDURE dbo.Proc1
+            AS BEGIN
+                SELECT 1;
+            END
+        `, DiagnosticCode.CreateMustBeFirstInBatch);
+
+        expect(d.length).toBe(1);
+        expect(d[0].severity).toBe('error');
+    });
+
+    test('fires for CREATE VIEW, CREATE FUNCTION, and CREATE TRIGGER', () => {
+        expect(only(`
+            SELECT 1;
+            CREATE VIEW dbo.V1 AS SELECT 1 AS Col1;
+        `, DiagnosticCode.CreateMustBeFirstInBatch).length).toBe(1);
+
+        expect(only(`
+            SELECT 1;
+            CREATE FUNCTION dbo.Fn1() RETURNS INT AS BEGIN RETURN 1 END
+        `, DiagnosticCode.CreateMustBeFirstInBatch).length).toBe(1);
+
+        expect(only(`
+            SELECT 1;
+            CREATE TRIGGER dbo.Trg1 ON dbo.Users AFTER INSERT AS BEGIN SELECT 1 END
+        `, DiagnosticCode.CreateMustBeFirstInBatch).length).toBe(1);
+    });
+
+    test('fires for ALTER PROCEDURE too', () => {
+        const d = only(`
+            SELECT 1;
+            ALTER PROCEDURE dbo.Proc1
+            AS BEGIN
+                SELECT 1;
+            END
+        `, DiagnosticCode.CreateMustBeFirstInBatch);
+
+        expect(d.length).toBe(1);
+    });
+
+    test('does NOT fire when CREATE PROCEDURE is the only statement', () => {
+        const d = only(`
+            CREATE PROCEDURE dbo.Proc1
+            AS BEGIN
+                SELECT 1;
+            END
+        `, DiagnosticCode.CreateMustBeFirstInBatch);
+
+        expect(d.length).toBe(0);
+    });
+
+    test('does NOT fire when the preceding statement is in a different batch (GO)', () => {
+        const d = only(`
+            SELECT 1;
+            GO
+            CREATE PROCEDURE dbo.Proc1
+            AS BEGIN
+                SELECT 1;
+            END
+        `, DiagnosticCode.CreateMustBeFirstInBatch);
+
+        expect(d.length).toBe(0);
+    });
+
+    test('does NOT fire when only preceded by SET ANSI_NULLS / SET QUOTED_IDENTIFIER (common SSMS scripting pattern)', () => {
+        const d = only(`
+            SET ANSI_NULLS ON
+            SET QUOTED_IDENTIFIER ON
+            CREATE PROCEDURE dbo.Proc1
+            AS BEGIN
+                SELECT 1;
+            END
+        `, DiagnosticCode.CreateMustBeFirstInBatch);
+
+        expect(d.length).toBe(0);
+    });
+
+    test('does NOT fire for CREATE TABLE preceded by another statement (no such restriction)', () => {
+        const d = only(`
+            SELECT 1;
+            CREATE TABLE dbo.T1 (Id INT);
+        `, DiagnosticCode.CreateMustBeFirstInBatch);
+
+        expect(d.length).toBe(0);
+    });
+
+    test('fires on the second CREATE PROCEDURE when two are scripted in the same batch', () => {
+        const d = only(`
+            CREATE PROCEDURE dbo.Proc1 AS BEGIN SELECT 1; END
+            CREATE PROCEDURE dbo.Proc2 AS BEGIN SELECT 2; END
+        `, DiagnosticCode.CreateMustBeFirstInBatch);
+
+        expect(d.length).toBe(1);
     });
 });

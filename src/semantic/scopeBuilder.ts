@@ -312,6 +312,17 @@ export class ScopeBuilder {
 
             if (variable.initialValue) {
                 this.visitExpression(variable.initialValue);
+
+                // DECLARE @x INT = 1 assigns a value just like SET would —
+                // record it as a write so "used before SET" analysis doesn't
+                // treat an initialized variable as never having been set.
+                if (variable.name.startsWith('@')) {
+                    this.recordReference(
+                        variable.name,
+                        { start: variable.start, end: variable.end },
+                        'write'
+                    );
+                }
             }
         }
     }
@@ -334,6 +345,10 @@ export class ScopeBuilder {
 
         if (stmt.value) {
             this.visitExpression(stmt.value);
+        }
+
+        if (stmt.cursorQuery) {
+            this.visitQuery(stmt.cursorQuery);
         }
     }
 

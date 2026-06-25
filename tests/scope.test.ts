@@ -782,10 +782,13 @@ describe('ScopeBuilderResult', () => {
             DECLARE @MyVar INT = 99;
             SELECT @myvar + @MYVAR;
         `);
-        // All variations land under the same lowercase key
+        // All variations land under the same lowercase key.
+        // 3 references: the DECLARE's own initializer (a write) plus the two reads.
         const refs = result.references.get('@myvar');
         expect(refs).toBeDefined();
-        expect(refs!.length).toBe(2);
+        expect(refs!.length).toBe(3);
+        expect(refs!.filter(r => r.kind === 'write').length).toBe(1);
+        expect(refs!.filter(r => r.kind === 'read').length).toBe(2);
     });
 
     test('undeclared list location points to usage site', () => {

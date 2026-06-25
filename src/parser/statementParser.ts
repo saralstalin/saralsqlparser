@@ -4,6 +4,7 @@ import {
     Statement,
     DeclareNode,
     SetNode,
+    QueryStatement,
     PrintNode,
     RaiseErrorNode,
     ExecuteNode,
@@ -582,6 +583,7 @@ export abstract class StatementParser extends DmlParser {
         let variableEnd = endOffset;
 
         let value: Expression | null = null;
+        let cursorQuery: QueryStatement | undefined;
 
         const first = this.peek();
 
@@ -610,56 +612,93 @@ export abstract class StatementParser extends DmlParser {
                 endOffset =
                     eqToken.offset + eqToken.value.length;
 
-                try {
-                    const next = this.peek();
+                // Cursor variable assignment: SET @c = CURSOR FOR <query>
+                // (as opposed to a named cursor: DECLARE c CURSOR FOR ...)
+                if (this.peekKeyword('CURSOR')) {
+                    this.consume();
+                    endOffset = this.lastConsumedEnd();
 
-                    if (
-                        next &&
-                        next.type !== TokenType.Semicolon &&
-                        next.type !== TokenType.Comma &&
-                        this.canStartExpressionToken(next)
-                    ) {
-                        const parsedValue = this.parseExpression();
-                        value = isCompoundAssignment
-                            ? this.buildCompoundAssignmentExpression(
-                                {
-                                    type: 'Variable',
-                                    name: variable,
-                                    start: variableStart,
-                                    end: variableEnd
-                                },
-                                eqToken,
-                                parsedValue
-                            )
-                            : parsedValue;
+                    if (this.peekKeyword('FOR')) {
+                        this.consume();
+                        endOffset = this.lastConsumedEnd();
 
-                        if (value) {
-                            endOffset = value.end;
+                        try {
+                            cursorQuery = this.parseQueryExpression();
+                            endOffset = cursorQuery.end;
+                        } catch (e) {
+                            incomplete = true;
+
+                            this.addRecoverableError(
+                                errors,
+                                'PARSE_SET_CURSOR_QUERY',
+                                e instanceof Error ? e.message : String(e),
+                                endOffset,
+                                endOffset
+                            );
                         }
                     } else {
                         incomplete = true;
 
                         this.addRecoverableError(
                             errors,
+                            'PARSE_SET_CURSOR_FOR',
+                            'Expected FOR query in cursor assignment',
+                            endOffset,
+                            endOffset
+                        );
+                    }
+                } else {
+                    try {
+                        const next = this.peek();
+
+                        if (
+                            next &&
+                            next.type !== TokenType.Semicolon &&
+                            next.type !== TokenType.Comma &&
+                            this.canStartExpressionToken(next)
+                        ) {
+                            const parsedValue = this.parseExpression();
+                            value = isCompoundAssignment
+                                ? this.buildCompoundAssignmentExpression(
+                                    {
+                                        type: 'Variable',
+                                        name: variable,
+                                        start: variableStart,
+                                        end: variableEnd
+                                    },
+                                    eqToken,
+                                    parsedValue
+                                )
+                                : parsedValue;
+
+                            if (value) {
+                                endOffset = value.end;
+                            }
+                        } else {
+                            incomplete = true;
+
+                            this.addRecoverableError(
+                                errors,
+                                'PARSE_SET_EXPRESSION',
+                                'Expected expression',
+                                eqToken.offset,
+                                endOffset
+                            );
+                        }
+
+                    } catch (e) {
+                        incomplete = true;
+
+                        this.addRecoverableError(
+                            errors,
                             'PARSE_SET_EXPRESSION',
-                            'Expected expression',
+                            e instanceof Error
+                                ? e.message
+                                : String(e),
                             eqToken.offset,
                             endOffset
                         );
                     }
-
-                } catch (e) {
-                    incomplete = true;
-
-                    this.addRecoverableError(
-                        errors,
-                        'PARSE_SET_EXPRESSION',
-                        e instanceof Error
-                            ? e.message
-                            : String(e),
-                        eqToken.offset,
-                        endOffset
-                    );
                 }
 
             } else {
@@ -785,6 +824,7 @@ export abstract class StatementParser extends DmlParser {
             variableStart,
             variableEnd,
             value,
+            ...(cursorQuery ? { cursorQuery } : {}),
             start: startToken.offset,
             end: endOffset,
             ...(incomplete ? { incomplete: true } : {}),

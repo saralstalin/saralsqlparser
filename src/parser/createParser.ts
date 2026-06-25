@@ -1039,6 +1039,15 @@ export abstract class CreateParser extends ControlFlowParser {
                     if (stmt) {
                         statements.push(stmt);
                         endOffset = stmt.end;
+
+                        // A BEGIN...END block is the complete, unambiguous
+                        // routine body — nothing can legitimately follow it
+                        // without a batch separator (GO), so stop here
+                        // rather than swallowing subsequent statements into
+                        // this routine's body.
+                        if (stmt.type === 'BlockStatement') {
+                            break;
+                        }
                     } else {
                         if (
                             this.pos > beforePos
@@ -1572,6 +1581,132 @@ export abstract class CreateParser extends ControlFlowParser {
             );
         };
 
+        // Shared by `FOREIGN KEY [(cols)] REFERENCES ...` and the
+        // column-level shorthand `CONSTRAINT name REFERENCES ...` (no
+        // FOREIGN KEY keywords — only valid when attached to a single
+        // column). Parses the REFERENCES target plus any trailing
+        // ON DELETE/ON UPDATE actions.
+        const parseReferencesAndActions = (): void => {
+            if (this.peek()?.value === 'REFERENCES') {
+                this.consume();
+
+                const next = this.peek();
+
+                const validTarget =
+                    next &&
+                    next.type !==
+                    TokenType.CloseParen &&
+                    next.type !==
+                    TokenType.Comma &&
+                    next.type !==
+                    TokenType.Semicolon &&
+                    !(
+                        next.type ===
+                        TokenType.Keyword &&
+                        RESYNC_KEYWORDS.has(
+                            next.value
+                        )
+                    );
+
+                if (validTarget) {
+                    const ref =
+                        this.parseMultipartIdentifier();
+
+                    if (
+                        ref.type === 'Identifier'
+                    ) {
+                        referencesTable =
+                            ref.name;
+                    } else {
+                        fail(
+                            'PARSE_CONSTRAINT_REFERENCES_TABLE',
+                            'Expected referenced table name'
+                        );
+                    }
+                } else {
+                    fail(
+                        'PARSE_CONSTRAINT_REFERENCES_TABLE',
+                        'Expected referenced table name'
+                    );
+                }
+
+                if (
+                    this.peek()?.type ===
+                    TokenType.OpenParen
+                ) {
+                    this.consume();
+
+                    referencesColumns =
+                        this.parseIdentifierListSafe();
+
+                    if (
+                        this.peek()?.type ===
+                        TokenType.CloseParen
+                    ) {
+                        this.consume();
+                    } else {
+                        fail(
+                            'PARSE_CONSTRAINT_REFERENCES_CLOSE',
+                            'Expected ) after REFERENCES columns'
+                        );
+                    }
+                }
+            } else {
+                fail(
+                    'PARSE_CONSTRAINT_REFERENCES',
+                    'Expected REFERENCES clause'
+                );
+            }
+
+            // Optional FK referential actions:
+            // ON DELETE { CASCADE | SET NULL | SET DEFAULT | NO ACTION }
+            // ON UPDATE { CASCADE | SET NULL | SET DEFAULT | NO ACTION }
+            while (
+                this.peek()?.value?.toUpperCase() === 'ON' &&
+                (
+                    this.peek(1)?.value?.toUpperCase() === 'DELETE' ||
+                    this.peek(1)?.value?.toUpperCase() === 'UPDATE'
+                )
+            ) {
+                this.consume(); // ON
+                const target = this.consume().value.toUpperCase(); // DELETE|UPDATE
+
+                let action: ConstraintNode['onDelete'] | undefined;
+                const first = this.peek()?.value?.toUpperCase();
+                const second = this.peek(1)?.value?.toUpperCase();
+
+                if (first === 'CASCADE') {
+                    this.consume();
+                    action = 'CASCADE';
+                } else if (first === 'NO' && second === 'ACTION') {
+                    this.consume();
+                    this.consume();
+                    action = 'NO ACTION';
+                } else if (first === 'SET' && second === 'NULL') {
+                    this.consume();
+                    this.consume();
+                    action = 'SET NULL';
+                } else if (first === 'SET' && second === 'DEFAULT') {
+                    this.consume();
+                    this.consume();
+                    action = 'SET DEFAULT';
+                } else {
+                    fail(
+                        'PARSE_CONSTRAINT_FK_ACTION',
+                        `Expected referential action after ON ${target}`
+                    );
+                }
+
+                if (target === 'DELETE' && action) {
+                    onDelete = action;
+                }
+
+                if (target === 'UPDATE' && action) {
+                    onUpdate = action;
+                }
+            }
+        };
+
         try {
             // optional CONSTRAINT name
             if (this.peek()?.value === 'CONSTRAINT') {
@@ -1671,124 +1806,21 @@ export abstract class CreateParser extends ControlFlowParser {
                     }
                 }
 
-                if (this.peek()?.value === 'REFERENCES') {
-                    this.consume();
+                parseReferencesAndActions();
+            }
 
-                    const next = this.peek();
+            // Column-level shorthand: CONSTRAINT name REFERENCES table(col)
+            // — same as FOREIGN KEY REFERENCES, but only valid attached to
+            // a single column (no explicit FOREIGN KEY keywords or column
+            // list of its own).
+            else if (value === 'REFERENCES') {
+                kind = 'FOREIGN KEY';
 
-                    const validTarget =
-                        next &&
-                        next.type !==
-                        TokenType.CloseParen &&
-                        next.type !==
-                        TokenType.Comma &&
-                        next.type !==
-                        TokenType.Semicolon &&
-                        !(
-                            next.type ===
-                            TokenType.Keyword &&
-                            RESYNC_KEYWORDS.has(
-                                next.value
-                            )
-                        );
-
-                    if (validTarget) {
-                        const ref =
-                            this.parseMultipartIdentifier();
-
-                        if (
-                            ref.type === 'Identifier'
-                        ) {
-                            referencesTable =
-                                ref.name;
-                        } else {
-                            fail(
-                                'PARSE_CONSTRAINT_REFERENCES_TABLE',
-                                'Expected referenced table name'
-                            );
-                        }
-                    } else {
-                        fail(
-                            'PARSE_CONSTRAINT_REFERENCES_TABLE',
-                            'Expected referenced table name'
-                        );
-                    }
-
-                    if (
-                        this.peek()?.type ===
-                        TokenType.OpenParen
-                    ) {
-                        this.consume();
-
-                        referencesColumns =
-                            this.parseIdentifierListSafe();
-
-                        if (
-                            this.peek()?.type ===
-                            TokenType.CloseParen
-                        ) {
-                            this.consume();
-                        } else {
-                            fail(
-                                'PARSE_CONSTRAINT_REFERENCES_CLOSE',
-                                'Expected ) after REFERENCES columns'
-                            );
-                        }
-                    }
-                } else {
-                    fail(
-                        'PARSE_CONSTRAINT_REFERENCES',
-                        'Expected REFERENCES clause'
-                    );
+                if (implicitColumn) {
+                    columns = [implicitColumn];
                 }
 
-                // Optional FK referential actions:
-                // ON DELETE { CASCADE | SET NULL | SET DEFAULT | NO ACTION }
-                // ON UPDATE { CASCADE | SET NULL | SET DEFAULT | NO ACTION }
-                while (
-                    this.peek()?.value?.toUpperCase() === 'ON' &&
-                    (
-                        this.peek(1)?.value?.toUpperCase() === 'DELETE' ||
-                        this.peek(1)?.value?.toUpperCase() === 'UPDATE'
-                    )
-                ) {
-                    this.consume(); // ON
-                    const target = this.consume().value.toUpperCase(); // DELETE|UPDATE
-
-                    let action: ConstraintNode['onDelete'] | undefined;
-                    const first = this.peek()?.value?.toUpperCase();
-                    const second = this.peek(1)?.value?.toUpperCase();
-
-                    if (first === 'CASCADE') {
-                        this.consume();
-                        action = 'CASCADE';
-                    } else if (first === 'NO' && second === 'ACTION') {
-                        this.consume();
-                        this.consume();
-                        action = 'NO ACTION';
-                    } else if (first === 'SET' && second === 'NULL') {
-                        this.consume();
-                        this.consume();
-                        action = 'SET NULL';
-                    } else if (first === 'SET' && second === 'DEFAULT') {
-                        this.consume();
-                        this.consume();
-                        action = 'SET DEFAULT';
-                    } else {
-                        fail(
-                            'PARSE_CONSTRAINT_FK_ACTION',
-                            `Expected referential action after ON ${target}`
-                        );
-                    }
-
-                    if (target === 'DELETE' && action) {
-                        onDelete = action;
-                    }
-
-                    if (target === 'UPDATE' && action) {
-                        onUpdate = action;
-                    }
-                }
+                parseReferencesAndActions();
             }
 
             // UNIQUE

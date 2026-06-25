@@ -449,7 +449,7 @@ export abstract class QueryParser extends TableSourceParser {
                 next.type !== TokenType.Semicolon &&
                 next.value !== ')'
             ) {
-                const rightStart = this.parseSelect();
+                const rightStart = this.parseSetOperand();
 
                 right = this.parseSetOperation(
                     rightStart,
@@ -489,6 +489,26 @@ export abstract class QueryParser extends TableSourceParser {
         }
     }
 
+    // A UNION/EXCEPT/INTERSECT operand may itself be parenthesized
+    // (e.g. `A UNION (B EXCEPT C)`) to override the default precedence.
+    // parseSelect() alone can't start on '(', so unwrap parens here and
+    // delegate to parseQueryExpression() for the inner query/chain.
+    protected parseSetOperand(): QueryStatement {
+        if (this.peek()?.type !== TokenType.OpenParen) {
+            return this.parseSelect();
+        }
+
+        const openParen = this.consume();
+        const inner = this.parseQueryExpression();
+        const closeParen = this.match(TokenType.CloseParen);
+
+        return {
+            ...inner,
+            start: openParen.offset,
+            end: closeParen.offset + closeParen.value.length
+        };
+    }
+
     protected isParenthesizedQueryStatementStart(): boolean {
         if (this.peek()?.type !== TokenType.OpenParen) {
             return false;
@@ -512,7 +532,7 @@ export abstract class QueryParser extends TableSourceParser {
             parenDepth++;
         }
 
-        const query = this.parseQueryExpression();
+        let query: QueryStatement = this.parseQueryExpression();
 
         while (
             parenDepth > 0 &&
@@ -524,6 +544,15 @@ export abstract class QueryParser extends TableSourceParser {
 
         if (query.type === 'SelectStatement') {
             this.parseSelectTail(query);
+        }
+
+        // A parenthesized query can itself be the first operand of a
+        // larger chain, e.g. `(SELECT 1) UNION (SELECT 2)`.
+        if (
+            this.peek() &&
+            ['UNION', 'EXCEPT', 'INTERSECT'].includes(this.peek()!.value.toUpperCase())
+        ) {
+            query = this.parseSetOperation(query);
         }
 
         query.start = start;

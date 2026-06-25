@@ -68,9 +68,65 @@ describe('SqlCmdPreprocessor', () => {
         expect(result.text.startsWith(' '.repeat(12))).toBe(true);
         expect(result.text).toContain('SELECT * FROM dbo.Users;');
         expect(result.issues.map(x => x.code)).toContain('SQLCMD_UNRESOLVED_INCLUDE');
-        
+
         const semiColonPrepIndex = result.text.indexOf(';');
         const semiColonOrigIndex = sql.indexOf(';');
         expect(result.mapOffset(semiColonPrepIndex)).toBe(semiColonOrigIndex);
+    });
+
+    test('does not warn about $(Variables) mentioned in a line comment', () => {
+        const preprocessor = new SqlCmdPreprocessor();
+        const sql = '-- uses $(Missing) for staging\nSELECT 1;';
+        const result = preprocessor.process(sql);
+
+        expect(result.issues).toHaveLength(0);
+        expect(result.text).toBe(sql);
+    });
+
+    test('does not warn about $(Variables) mentioned in a block comment', () => {
+        const preprocessor = new SqlCmdPreprocessor();
+        const sql = '/* uses $(Missing) for staging */\nSELECT 1;';
+        const result = preprocessor.process(sql);
+
+        expect(result.issues).toHaveLength(0);
+        expect(result.text).toBe(sql);
+    });
+
+    test('does not substitute $(Variables) mentioned in a comment even when defined', () => {
+        const preprocessor = new SqlCmdPreprocessor();
+        const sql = '-- $(SchemaName) is the target schema\nSELECT 1;';
+        const result = preprocessor.process(sql, { initialVariables: { SchemaName: 'dbo' } });
+
+        expect(result.issues).toHaveLength(0);
+        expect(result.text).toBe(sql);
+    });
+
+    test('still substitutes and warns for $(Variables) outside comments, even when a comment precedes them', () => {
+        const preprocessor = new SqlCmdPreprocessor();
+        const sql = '-- references $(Missing)\nSELECT * FROM $(SchemaName).Users, $(StillMissing);';
+        const result = preprocessor.process(sql, { initialVariables: { SchemaName: 'dbo' } });
+
+        expect(result.text).toContain('SELECT * FROM dbo.Users, $(StillMissing);');
+        expect(result.issues).toHaveLength(1);
+        expect(result.issues[0].code).toBe('SQLCMD_UNKNOWN_VAR');
+        expect(result.issues[0].message).toContain('StillMissing');
+    });
+
+    test('still substitutes $(Variables) inside string literals (common sqlcmd usage)', () => {
+        const preprocessor = new SqlCmdPreprocessor();
+        const sql = "PRINT '$(Environment)';";
+        const result = preprocessor.process(sql, { initialVariables: { Environment: 'prod' } });
+
+        expect(result.text).toBe("PRINT 'prod';");
+        expect(result.issues).toHaveLength(0);
+    });
+
+    test('does not mistake comment markers inside a string literal for a real comment', () => {
+        const preprocessor = new SqlCmdPreprocessor();
+        const sql = "SELECT '--not a comment $(Missing)';";
+        const result = preprocessor.process(sql);
+
+        expect(result.issues).toHaveLength(1);
+        expect(result.issues[0].code).toBe('SQLCMD_UNKNOWN_VAR');
     });
 });

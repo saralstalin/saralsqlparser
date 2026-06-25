@@ -76,8 +76,6 @@ export abstract class DmlParser extends QueryParser {
                     tableNode.type === 'Identifier' &&
                     (tableNode.incomplete || tableNode.parts.includes(''))
                 ) {
-                    incomplete = true;
-
                     this.addRecoverableError(
                         errors,
                         'PARSE_INSERT_TABLE',
@@ -98,8 +96,6 @@ export abstract class DmlParser extends QueryParser {
                     };
                 }
             } else {
-                incomplete = true;
-
                 this.addRecoverableError(
                     errors,
                     'PARSE_INSERT_TARGET',
@@ -120,8 +116,6 @@ export abstract class DmlParser extends QueryParser {
                 };
             }
         } catch (e) {
-            incomplete = true;
-
             this.addRecoverableError(
                 errors,
                 'PARSE_INSERT_TARGET',
@@ -1644,7 +1638,6 @@ export abstract class DmlParser extends QueryParser {
                 };
                 endOffset = top.end;
             } catch {
-                topIncomplete = true;
                 this.addRecoverableError(
                     topErrors,
                     'PARSE_MERGE_TOP',
@@ -1674,7 +1667,6 @@ export abstract class DmlParser extends QueryParser {
                         top.end = endOffset;
                     }
                 } else {
-                    topIncomplete = true;
                     this.addRecoverableError(
                         topErrors,
                         'PARSE_MERGE_TOP_CLOSE_PAREN',

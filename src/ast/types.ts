@@ -419,6 +419,8 @@ export interface SetNode extends NodeLocation, Recoverable {
     variableStart: number;
     variableEnd: number;
     value: Expression | null;
+    /** Set when this is a cursor-variable assignment: SET @c = CURSOR FOR <query> */
+    cursorQuery?: QueryStatement;
 }
 
 // ===============================

@@ -456,6 +456,14 @@ SaralSQL focuses heavily on real-world SQL Server grammar used in enterprise sto
 ~78% Full · major day-to-day T-SQL covered · Azure-native DDL still limited
 </p>
 
+> **Known issue:** a few constructs marked 🟥 Missing below don't fail cleanly — they parse without
+> a `PARSE_*` issue but produce structurally wrong AST instead of being rejected (e.g. `EXEC ... AT
+> linked_server` absorbs `AT`/the server name as bogus call arguments; `EXECUTE AS USER = '...'`
+> misreads `AS` as the procedure name; a `MASKED WITH (...)` column attribute gets merged into the
+> preceding column's data type and then hallucinates an extra column named `WITH`). Most unsupported
+> constructs fail loudly and recoverably as intended (`OPENROWSET`, `TABLESAMPLE`, `GROUPING SETS`,
+> etc.) — these three are tracked as a separate class of bug, not just missing coverage.
+
 ---
 
 <table>
@@ -797,27 +805,50 @@ SaralSQL focuses heavily on real-world SQL Server grammar used in enterprise sto
 # Current Diagnostics
 
 SaralSQL focuses on high-signal diagnostics suitable for editors and code review.
+Codes follow a `CATEGORY###` convention so editors and CI can filter/suppress by id.
 
 ## Variables & Parameters
 
-- undeclared variables
-- unused variables
-- unused parameters
+- `VAR001` undeclared variable
+- `VAR002` declared but unused variable
+- `VAR003` declared but unused parameter
+- `VAR004` variable read before it is ever assigned a value (no initializer, no preceding SET)
+- `VAR005` invalid schema-qualified table-variable reference (e.g. `dbo.@TableVar`)
+
+## Columns
+
+- `COL001` unknown column on a resolvable table/alias shape
+- `NAM001` unbracketed keyword-like column name (e.g. an unbracketed column named `ORDER`)
 
 ## DML Safety
 
-- SELECT *
-- self-comparisons such as `u.Id = u.Id`
-- UPDATE without filters
-- DELETE without filters
-- UPDATE target with `WITH (NOLOCK)`
+- `DML001` UPDATE without a WHERE clause
+- `DML002` DELETE without a WHERE clause
+- `DML003` INSERT without an explicit column list
+- `DML004` UPDATE target table uses `WITH (NOLOCK)`
+- `SEL001` SELECT *
+- `SEL002` SELECT * inside a view
+- `LOG001` self-comparison such as `u.Id = u.Id`
+
+## Hints & Query Options
+
+- `JOIN001` join hint usage (HASH / MERGE / LOOP)
+- `HINT001` table hint usage (NOLOCK, READPAST, INDEX(...), TABLOCK, etc.)
+- `OPT001` OPTION clause query-hint guidance (RECOMPILE, MAXDOP, FORCE_ORDER, etc.)
+- `CUR001` cursor usage
 
 ## DDL & Structure
 
-- unbracketed keyword-like identifiers
-- missing commas before table constraints
-- suspicious hint usage
-- OPTION clause guidance
+- `DDL001` missing comma before a table-level constraint
+- `DDL002` unnamed PRIMARY KEY / UNIQUE constraint
+- `DDL003` unnamed DEFAULT constraint
+- `DDL004` CREATE/ALTER PROCEDURE, FUNCTION, VIEW, or TRIGGER is not the first statement in its batch
+
+## Duplicates
+
+- `DUP001` duplicate variable/parameter declared in the same scope
+- `DUP002` duplicate CTE name within a WITH clause
+- `DUP003` duplicate SELECT output alias
 
 Diagnostics are intentionally selective. The goal is to remain useful in enterprise SQL without overwhelming users with low-value warnings.
 
@@ -892,28 +923,32 @@ SELECT
 FROM dbo.Invoices i;
 ```
 
-Lineage:
+`analyze(sql).lineage.edges` (each edge is `{ from: LineageNode, to: LineageNode, location }`;
+`from`/`to` fields shown here, trimmed of `location` and `resolution` for brevity):
 
 ```json
 [
   {
-    "source": "dbo.Invoices.CustomerId",
-    "target": "dbo.InvoiceSummary.CustomerId"
+    "from": { "kind": "column", "name": "dbo.Invoices.CustomerId", "source": "dbo.Invoices" },
+    "to": { "kind": "result", "name": "dbo.InvoiceSummary.CustomerId" }
   },
   {
-    "source": "dbo.Invoices.InvoiceMonth",
-    "target": "dbo.InvoiceSummary.InvoiceMonth"
+    "from": { "kind": "column", "name": "dbo.Invoices.InvoiceMonth", "source": "dbo.Invoices" },
+    "to": { "kind": "result", "name": "dbo.InvoiceSummary.InvoiceMonth" }
   },
   {
-    "source": "dbo.Invoices.Subtotal",
-    "target": "dbo.InvoiceSummary.TotalAmount"
+    "from": { "kind": "column", "name": "dbo.Invoices.Subtotal", "source": "dbo.Invoices" },
+    "to": { "kind": "result", "name": "dbo.InvoiceSummary.TotalAmount" }
   },
   {
-    "source": "dbo.Invoices.TaxAmount",
-    "target": "dbo.InvoiceSummary.TotalAmount"
+    "from": { "kind": "column", "name": "dbo.Invoices.TaxAmount", "source": "dbo.Invoices" },
+    "to": { "kind": "result", "name": "dbo.InvoiceSummary.TotalAmount" }
   }
 ]
 ```
+
+Note that the multi-term expression (`i.Subtotal + i.TaxAmount`) correctly produces two
+separate edges into the same target column, since both source columns contribute to it.
 
 ---
 

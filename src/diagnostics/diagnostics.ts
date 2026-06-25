@@ -46,6 +46,7 @@ export enum DiagnosticCode {
     MissingCommaBeforeTableConstraint = 'DDL001',
     UnnamedKeyConstraint = 'DDL002',
     UnnamedDefaultConstraint = 'DDL003',
+    CreateMustBeFirstInBatch = 'DDL004',
 
     UpdateWithoutWhere = 'DML001',
     DeleteWithoutWhere = 'DML002',
@@ -105,8 +106,10 @@ export class DiagnosticEngine {
             this.visitStatement(stmt, false);
         }
 
+        this.checkBatchPlacement(program);
         this.checkUndeclaredVariables(scopeResult);
         this.checkUnusedSymbols(scopeResult);
+        this.checkVariableUsedBeforeSet(scopeResult);
         this.checkDuplicateDeclarations(scopeResult);
 
         return this.diagnostics.sort((a, b) => a.start - b.start);
@@ -192,6 +195,41 @@ export class DiagnosticEngine {
                         severity: 'warning',
                         start: symbol.location.start,
                         end: symbol.location.end,
+                    });
+                }
+            }
+        });
+    }
+
+    // Flags a read of a local variable that occurs before any write
+    // (a SET, or a DECLARE with an initializer) reaches it. This is a
+    // purely textual/offset check — it does not reason about control flow,
+    // so a variable set inside one IF branch and read unconditionally
+    // afterward will not be flagged. That's intentional: we'd rather miss
+    // a real bug than flag a read that's actually fine on some paths.
+    private checkVariableUsedBeforeSet(result: ScopeBuilderResult): void {
+        this.walkScopes(result.root, (scope) => {
+            for (const symbol of scope.getOwnSymbols()) {
+                if (symbol.kind !== SymbolKind.Variable) continue;
+
+                const writeOffsets = symbol.references
+                    .filter(r => r.kind === 'write')
+                    .map(r => r.location.start);
+
+                const earliestWrite = writeOffsets.length
+                    ? Math.min(...writeOffsets)
+                    : null;
+
+                for (const ref of symbol.references) {
+                    if (ref.kind !== 'read') continue;
+                    if (earliestWrite !== null && ref.location.start >= earliestWrite) continue;
+
+                    this.emit({
+                        code: DiagnosticCode.VariableUsedBeforeSet,
+                        message: `Variable '${symbol.name}' is used before it is assigned a value — it will be NULL here`,
+                        severity: 'warning',
+                        start: ref.location.start,
+                        end: ref.location.end,
                     });
                 }
             }
@@ -444,6 +482,49 @@ export class DiagnosticEngine {
         }
 
         this.checkOptionClause(stmt.optionClause);
+    }
+
+    // ── Batch rules ───────────────────────────────────────────────────────────
+
+    // SQL Server requires CREATE/ALTER PROCEDURE, FUNCTION, VIEW, and TRIGGER
+    // to be the only statement in their batch (i.e. preceded only by GO, or
+    // by nothing). SET statements (most commonly SET ANSI_NULLS ON / SET
+    // QUOTED_IDENTIFIER ON, which SSMS scripts immediately before these
+    // objects) are treated as not counting against this rule — that pattern
+    // is extremely common and we'd rather under-report than flag it.
+    private static readonly BATCH_FIRST_OBJECT_TYPES = new Set([
+        'PROCEDURE', 'FUNCTION', 'VIEW', 'TRIGGER'
+    ]);
+
+    private checkBatchPlacement(program: Program): void {
+        let sawPrecedingStatementInBatch = false;
+
+        for (const stmt of program.body) {
+            if (stmt.type === 'BatchSeparatorStatement') {
+                sawPrecedingStatementInBatch = false;
+                continue;
+            }
+
+            if (
+                stmt.type === 'CreateStatement' &&
+                DiagnosticEngine.BATCH_FIRST_OBJECT_TYPES.has(stmt.objectType) &&
+                sawPrecedingStatementInBatch
+            ) {
+                this.emit({
+                    code: DiagnosticCode.CreateMustBeFirstInBatch,
+                    message:
+                        `${stmt.orAlter ? 'ALTER' : 'CREATE'} ${stmt.objectType} must be the first statement in a batch — ` +
+                        `add GO before it or move the preceding statements into their own batch`,
+                    severity: 'error',
+                    start: stmt.start,
+                    end: stmt.end,
+                });
+            }
+
+            if (stmt.type !== 'SetStatement') {
+                sawPrecedingStatementInBatch = true;
+            }
+        }
     }
 
     // ── WITH / CREATE / IF / BLOCK ───────────────────────────────────────────

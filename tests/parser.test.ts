@@ -1101,6 +1101,49 @@ END`;
         expect((root.right as SetOperatorNode).operator).toBe('INTERSECT');
     });
 
+    test('should accept a parenthesized query as the left operand of a set operator', () => {
+        const sql = `(SELECT 1) UNION SELECT 2`;
+        const result = new Parser(new Lexer(sql)).parse();
+
+        expect(result.issues).toEqual([]);
+        expect(result.ast.body).toHaveLength(1);
+        const root = result.ast.body[0] as SetOperatorNode;
+        expect(root.type).toBe('SetOperator');
+        expect(root.operator).toBe('UNION');
+    });
+
+    test('should accept a parenthesized query as the right operand of a set operator', () => {
+        const sql = `SELECT 1 UNION (SELECT 2)`;
+        const result = new Parser(new Lexer(sql)).parse();
+
+        expect(result.issues).toEqual([]);
+        const root = result.ast.body[0] as SetOperatorNode;
+        expect(root.type).toBe('SetOperator');
+        expect(root.operator).toBe('UNION');
+    });
+
+    test('should accept parenthesized operands on both sides, used to override default precedence', () => {
+        const sql = `SELECT 1 UNION (SELECT 2 EXCEPT SELECT 3)`;
+        const result = new Parser(new Lexer(sql)).parse();
+
+        expect(result.issues).toEqual([]);
+        const root = result.ast.body[0] as SetOperatorNode;
+        expect(root.type).toBe('SetOperator');
+        expect(root.operator).toBe('UNION');
+        expect((root.right as SetOperatorNode).operator).toBe('EXCEPT');
+    });
+
+    test('should accept a chain of fully parenthesized operands', () => {
+        const sql = `(SELECT 1) UNION (SELECT 2) EXCEPT (SELECT 3)`;
+        const result = new Parser(new Lexer(sql)).parse();
+
+        expect(result.issues).toEqual([]);
+        expect(result.ast.body).toHaveLength(1);
+        const root = result.ast.body[0] as SetOperatorNode;
+        expect(root.type).toBe('SetOperator');
+        expect(root.operator).toBe('EXCEPT');
+    });
+
     test('should preserve temp table identifiers in expression position', () => {
         const stmt = parse('SELECT #Temp;').body[0] as SelectNode;
         const expr = stmt.columns[0].expression as IdentifierNode;
@@ -2277,4 +2320,96 @@ INTO @NewRows (KeyValue, DisplayValue, TargetId);`;
 
 
 
+});
+
+describe('CREATE PROCEDURE / FUNCTION / TRIGGER — body must stop at BEGIN...END', () => {
+    test('a statement after a BEGIN...END procedure body is a separate top-level statement, not swallowed into the body', () => {
+        const sql = `
+            CREATE PROCEDURE dbo.Proc1
+            AS
+            BEGIN
+                SELECT 1;
+            END;
+            SELECT 99;
+        `;
+
+        const result = new Parser(new Lexer(sql)).parse();
+
+        expect(result.issues).toEqual([]);
+        expect(result.ast.body).toHaveLength(2);
+        expect(result.ast.body[0].type).toBe('CreateStatement');
+        expect(result.ast.body[1].type).toBe('SelectStatement');
+
+        const create = result.ast.body[0] as CreateNode;
+        expect(Array.isArray(create.body)).toBe(true);
+        expect((create.body as any[])).toHaveLength(1);
+        expect((create.body as any[])[0].type).toBe('BlockStatement');
+    });
+
+    test('does not swallow a subsequent unrelated DECLARE after the procedure body', () => {
+        const sql = `
+            CREATE PROCEDURE dbo.Proc1
+            AS
+            BEGIN
+                SELECT 1;
+            END
+            DECLARE @X INT = 1;
+        `;
+
+        const result = new Parser(new Lexer(sql)).parse();
+
+        expect(result.ast.body).toHaveLength(2);
+        expect(result.ast.body[1].type).toBe('DeclareStatement');
+    });
+
+    test('multiple GO-separated CREATE PROCEDURE batches each parse independently', () => {
+        const sql = `
+            CREATE PROCEDURE dbo.Proc1 AS BEGIN SELECT 1; END
+            GO
+            CREATE PROCEDURE dbo.Proc2 AS BEGIN SELECT 2; END
+        `;
+
+        const result = new Parser(new Lexer(sql)).parse();
+
+        expect(result.issues).toEqual([]);
+        expect(result.ast.body.map(s => s.type)).toEqual([
+            'CreateStatement',
+            'BatchSeparatorStatement',
+            'CreateStatement'
+        ]);
+    });
+
+    test('a bare (non BEGIN...END) procedure body still extends to the rest of the batch (matches SQL Server behavior)', () => {
+        const sql = `
+            CREATE PROCEDURE dbo.Proc1
+            AS
+                SELECT 1;
+                SELECT 2;
+        `;
+
+        const result = new Parser(new Lexer(sql)).parse();
+        const create = result.ast.body[0] as CreateNode;
+
+        expect(result.ast.body).toHaveLength(1);
+        expect(Array.isArray(create.body)).toBe(true);
+        expect((create.body as any[])).toHaveLength(2);
+    });
+
+    test('CREATE FUNCTION and CREATE TRIGGER bodies also stop at BEGIN...END', () => {
+        const fnSql = `
+            CREATE FUNCTION dbo.Fn1() RETURNS INT AS BEGIN RETURN 1 END
+            SELECT 99;
+        `;
+        const fnResult = new Parser(new Lexer(fnSql)).parse();
+        expect(fnResult.ast.body).toHaveLength(2);
+        expect(fnResult.ast.body[1].type).toBe('SelectStatement');
+
+        const trgSql = `
+            CREATE TRIGGER dbo.Trg1 ON dbo.Users AFTER INSERT AS BEGIN SELECT 1 END
+            SELECT 99;
+        `;
+        const trgResult = new Parser(new Lexer(trgSql)).parse();
+        expect(trgResult.ast.body).toHaveLength(2);
+        expect(trgResult.ast.body[1].type).toBe('SelectStatement');
+    });
 });

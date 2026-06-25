@@ -888,7 +888,11 @@ export abstract class ControlFlowParser extends StatementParser {
             this.peek() &&
             (
                 this.peek()!.type === TokenType.Identifier ||
-                this.peek()!.type === TokenType.Keyword
+                this.peek()!.type === TokenType.Keyword ||
+                // OPEN/FETCH/CLOSE/DEALLOCATE @cursorVar — a cursor stored
+                // in a variable (SET @c = CURSOR FOR ...), as opposed to a
+                // named cursor (DECLARE c CURSOR FOR ...).
+                this.peek()!.type === TokenType.Variable
             )
         ) {
             const name = this.consume().value;
