@@ -43,7 +43,7 @@ export function analyze(sql: string, options?: SqlCmdOptions): AnalysisResult {
     const scope = new ScopeBuilder().build(parseResult.ast);
     const semanticDiagnostics = diagnose(parseResult.ast, scope);
     const lineage = new LineageBuilder().build(parseResult.ast);
-    const columns = new ColumnAnalyzer().analyze(parseResult.ast, scope);
+    const columns = new ColumnAnalyzer().analyze(parseResult.ast, scope, lineage);
     const typeMembers = buildTypeMembers(scope);
     const issues = parseResult.issues ?? [];
 

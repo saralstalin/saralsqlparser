@@ -8,7 +8,7 @@ import {
 } from '../ast/types';
 
 import { LineageBuilder } from '../lineage/lineageBuilder';
-import { LineageNode, DerivedColumn } from '../lineage/lineage';
+import { LineageNode, DerivedColumn, LineageResult } from '../lineage/lineage';
 import { ScopeBuilderResult } from './scopeBuilder';
 import { Scope, Symbol, SymbolColumn } from './scope';
 import { resolveTypeMember } from './typeMembers';
@@ -64,9 +64,12 @@ export interface PropertyAccessResolution {
 export class ColumnAnalyzer {
     private builder = new LineageBuilder();
 
-    analyze(program: Program, scopeResult?: ScopeBuilderResult): ColumnAnalysisResult {
-        // Build lineage once (important for performance + correctness)
-        const lineage = this.builder.build(program);
+    analyze(
+        program: Program,
+        scopeResult?: ScopeBuilderResult,
+        prebuiltLineage?: LineageResult
+    ): ColumnAnalysisResult {
+        const lineage = prebuiltLineage ?? this.builder.build(program);
 
         const resolutions: ColumnResolution[] = [];
         const propertyAccesses: PropertyAccessResolution[] = [];
