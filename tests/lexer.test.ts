@@ -189,4 +189,37 @@ describe('T-SQL Lexer - Tests', () => {
             }
         ]);
     });
+
+    test('should correctly identify Comma as a distinct token type', () => {
+        const lexer = new Lexer("A, B");
+        lexer.nextToken(); // A
+        const comma = lexer.nextToken();
+        expect(comma.type).toBe(TokenType.Comma);
+        expect(comma.value).toBe(',');
+    });
+
+    test('should not fold spaced comparison operators into composite operators', () => {
+        const sql = `
+            SELECT recordRow.Id
+            FROM dbo.Records recordRow
+            WHERE recordRow.CreatedOn > = @Cutoff
+              AND recordRow.Score < = @Threshold
+        `;
+
+        const lexer = new Lexer(sql);
+        const operators: string[] = [];
+        while (true) {
+            const token = lexer.nextToken();
+            if (token.type === TokenType.Operator) {
+                operators.push(token.value);
+            }
+            if (token.type === TokenType.EOF) break;
+        }
+
+        expect(operators).toContain('>');
+        expect(operators).toContain('<');
+        expect(operators).toContain('=');
+        expect(operators).not.toContain('>=');
+        expect(operators).not.toContain('<=');
+    });
 });

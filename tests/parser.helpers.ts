@@ -162,6 +162,9 @@ export function toSql(expr: any): string {
         case 'ValuesTableExpression':
             return 'ValuesTable';
 
+        case 'ExistsExpression':
+            return `EXISTS (${toSql(expr.query)})`;
+
         default:
             return expr.type
                 ? `[Unhandled Node: ${expr.type}]`

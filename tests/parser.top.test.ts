@@ -152,4 +152,45 @@ describe('T-SQL Parser - TOP clause', () => {
                 .toBe('SelectStatement');
         });
     });
+
+    describe('TOP across statement types', () => {
+        test('should handle T-SQL TOP clause', () => {
+            const sql = `SELECT TOP 10 * FROM Logs;`;
+            const ast = parseOne<any>(sql);
+            expect(ast.top?.quantity.value).toBe(10);
+        });
+
+        test('should handle T-SQL TOP (10) and JOINs', () => {
+            const sql = `SELECT TOP (10) e.Name FROM Employees AS e INNER JOIN Departments AS d ON e.DeptId = d.Id`;
+            const stmt = parseOne<any>(sql);
+            expect(stmt.top?.quantity.value).toBe(10);
+            expect(stmt.from?.[0].table.parts.join('.')).toBe('Employees');
+            expect(stmt.from?.[0].joins[0].type).toBe('INNER JOIN');
+            expectSql(stmt.from?.[0].joins[0].on, 'e.DeptId = d.Id');
+        });
+
+        test('should handle SELECT TOP ... INTO', () => {
+            const sql = `SELECT TOP 10 * INTO dbo.Backup FROM Orders`;
+            const stmt = parseOne<any>(sql);
+            expect(stmt.top?.quantity.value).toBe(10);
+            expect(stmt.into?.name).toBe('dbo.Backup');
+            expect(stmt.into?.parts).toEqual(['dbo', 'Backup']);
+        });
+
+        test('should handle UPDATE TOP variable', () => {
+            const sql = `UPDATE TOP (@n) dbo.Items SET IsActive = 1 WHERE IsActive = 0`;
+            const node = parseOne<any>(sql);
+            expect(node.top?.type).toBe('TopClause');
+            expect(node.top?.quantity?.type).toBe('Variable');
+            expect(node.top?.quantity?.name).toBe('@n');
+        });
+
+        test('should handle DELETE TOP variable', () => {
+            const sql = `DELETE TOP (@n) FROM dbo.Items WHERE IsActive = 0`;
+            const node = parseOne<any>(sql);
+            expect(node.top?.type).toBe('TopClause');
+            expect(node.top?.quantity?.type).toBe('Variable');
+            expect(node.top?.quantity?.name).toBe('@n');
+        });
+    });
 });

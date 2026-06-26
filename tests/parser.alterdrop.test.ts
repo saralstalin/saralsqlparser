@@ -629,3 +629,59 @@ describe('T-SQL Parser - DDL Changes', () => {
         });
     });
 });
+
+describe('T-SQL Parser - DROP TABLE / VIEW / PROC / FUNCTION / INDEX (bare forms)', () => {
+    const parse = (sql: string) => {
+        const lexer = new Lexer(sql);
+        const parser = new Parser(lexer);
+        return parser.parse().ast;
+    };
+
+    test('should handle DROP TABLE', () => {
+        const sql = `DROP TABLE #Sales`;
+        const node = parse(sql).body[0] as any;
+        expect(node.type).toBe('DropStatement');
+        expect(node.objectType).toBe('TABLE');
+        expect(node.target?.name).toBe('#Sales');
+    });
+
+    test('should handle DROP VIEW', () => {
+        const sql = `DROP VIEW dbo.V1`;
+        const node = parse(sql).body[0] as any;
+        expect(node.objectType).toBe('VIEW');
+        expect(node.target?.name).toBe('dbo.V1');
+        expect(node.target?.parts).toEqual(['dbo', 'V1']);
+    });
+
+    test('should handle DROP PROC', () => {
+        const sql = `DROP PROC dbo.P1`;
+        const node = parse(sql).body[0] as any;
+        expect(node.objectType).toBe('PROCEDURE');
+        expect(node.target?.name).toBe('dbo.P1');
+        expect(node.target?.parts).toEqual(['dbo', 'P1']);
+    });
+
+    test('should handle DROP FUNCTION', () => {
+        const sql = `DROP FUNCTION dbo.fn_Test`;
+        const node = parse(sql).body[0] as any;
+        expect(node.objectType).toBe('FUNCTION');
+        expect(node.target?.name).toBe('dbo.fn_Test');
+    });
+
+    test('should handle DROP INDEX', () => {
+        const sql = `DROP INDEX IX_Test ON dbo.T1`;
+        const node = parse(sql).body[0] as any;
+        expect(node.objectType).toBe('INDEX');
+        expect(node.target?.name).toBe('IX_Test');
+    });
+
+    test('should handle DROP in IF statement', () => {
+        const sql = `IF OBJECT_ID('dbo.Sales') IS NOT NULL DROP TABLE dbo.Sales`;
+        const node = parse(sql).body[0] as any;
+        expect(node.type).toBe('IfStatement');
+        const dropStmt = Array.isArray(node.thenBranch) ? node.thenBranch[0] : node.thenBranch;
+        if (dropStmt && 'objectType' in dropStmt) {
+            expect(dropStmt.objectType).toBe('TABLE');
+        }
+    });
+});

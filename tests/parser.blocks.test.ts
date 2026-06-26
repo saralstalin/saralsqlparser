@@ -571,4 +571,14 @@ describe('T-SQL Parser - IF / ELSE / BEGIN / END', () => {
             condition.right!.type
         ).toBe('ExistsExpression');
     });
+
+    test('should handle IF...ELSE', () => {
+        const sql = `IF 1=1 PRINT 'A' ELSE PRINT 'B'`;
+        expect((parseOne<IfNode>(sql)).elseBranch).toBeDefined();
+    });
+
+    test('should handle BEGIN...END', () => {
+        const sql = `BEGIN PRINT 'A'; PRINT 'B'; END`;
+        expect((parseOne<any>(sql)).body).toHaveLength(2);
+    });
 });

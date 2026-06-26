@@ -1,6 +1,6 @@
 // Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
 
-exports[`T-SQL Parser should build AST for a basic SELECT 1`] = `
+exports[`T-SQL Parser - SELECT clauses should build AST for a basic SELECT 1`] = `
 {
   "body": [
     {

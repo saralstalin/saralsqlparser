@@ -478,4 +478,57 @@ describe('T-SQL Parser - Window Functions', () => {
         FROM dbo.Employee
     `);
     });
+
+    describe('OVER clause — node location accuracy', () => {
+        const getSqlFragment = (sql: string, node: { start: number, end: number }) => {
+            return sql.substring(node.start, node.end);
+        };
+
+        test('should handle basic ROW_NUMBER() OVER()', () => {
+            const sql = "SELECT ROW_NUMBER() OVER() as row_num FROM T";
+            const stmt = parseOne<any>(sql);
+            const overExpr = stmt.columns[0].expression;
+
+            expect(overExpr.type).toBe('OverExpression');
+            expect(overExpr.expression.type).toBe('FunctionCall');
+            expect(overExpr.window.type).toBe('WindowDefinition');
+
+            expect(getSqlFragment(sql, overExpr)).toBe("ROW_NUMBER() OVER()");
+            expect(getSqlFragment(sql, overExpr.window)).toBe("OVER()");
+        });
+
+        test('should handle OVER with PARTITION BY and ORDER BY', () => {
+            const sql = "SELECT SUM(Salary) OVER(PARTITION BY DeptID ORDER BY Salary DESC) FROM Emp";
+            const stmt = parseOne<any>(sql);
+            const overExpr = stmt.columns[0].expression;
+
+            expect(overExpr.window.partitionBy).toHaveLength(1);
+            expect(overExpr.window.orderBy).toHaveLength(1);
+            expect(overExpr.window.orderBy[0].direction).toBe('DESC');
+
+            expect(getSqlFragment(sql, overExpr)).toBe("SUM(Salary) OVER(PARTITION BY DeptID ORDER BY Salary DESC)");
+            expect(getSqlFragment(sql, overExpr.window)).toBe("OVER(PARTITION BY DeptID ORDER BY Salary DESC)");
+
+            const orderByItem = overExpr.window.orderBy[0];
+            expect(getSqlFragment(sql, orderByItem)).toBe("Salary DESC");
+        });
+
+        test('should handle multiple columns in PARTITION BY', () => {
+            const sql = "SELECT AVG(Price) OVER(PARTITION BY Category, SubCategory) FROM Products";
+            const stmt = parseOne<any>(sql);
+            const overExpr = stmt.columns[0].expression;
+
+            expect(overExpr.window.partitionBy).toHaveLength(2);
+            expect(getSqlFragment(sql, overExpr.window.partitionBy[1])).toBe("SubCategory");
+        });
+
+        test('should handle Window functions in ORDER BY clause', () => {
+            const sql = "SELECT Name FROM T ORDER BY ROW_NUMBER() OVER(ORDER BY Name)";
+            const stmt = parseOne<any>(sql);
+            const orderByExpr = stmt.orderBy[0].expression;
+
+            expect(orderByExpr.type).toBe('OverExpression');
+            expect(getSqlFragment(sql, orderByExpr)).toBe("ROW_NUMBER() OVER(ORDER BY Name)");
+        });
+    });
 });

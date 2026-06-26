@@ -764,3 +764,112 @@ describe('real-world DDL', () => {
         ).toBe('FOREIGN KEY');
     });
 });
+
+describe('T-SQL Parser - CREATE TABLE inline indexes and storage options', () => {
+    test('should parse table constraint WITH index options and ON storage inside CREATE TABLE', () => {
+        const sql = `
+            CREATE TABLE dbo.GdoDuplicateMessage (
+                DuplicateID INT NOT NULL,
+                CONSTRAINT PK_GdoDuplicateMessage PRIMARY KEY CLUSTERED
+                (
+                    DuplicateID ASC
+                )
+                WITH (
+                    PAD_INDEX = OFF,
+                    STATISTICS_NORECOMPUTE = OFF,
+                    IGNORE_DUP_KEY = OFF,
+                    ALLOW_ROW_LOCKS = ON,
+                    ALLOW_PAGE_LOCKS = ON
+                ) ON [PRIMARY]
+            ) ON [PRIMARY] TEXTIMAGE_ON [PRIMARY]
+        `;
+
+        const result = new Parser(new Lexer(sql)).parse();
+        const stmt = result.ast.body[0] as any;
+
+        expect(result.issues).toEqual([]);
+        expect(stmt.constraints).toHaveLength(1);
+        expect(stmt.constraints?.[0].kind).toBe('PRIMARY KEY');
+        expect(stmt.constraints?.[0].storage?.name).toBe('[PRIMARY]');
+        expect(stmt.columns?.some((col: any) => col.name === 'WITH')).toBe(false);
+    });
+
+    test('should keep named inline UNIQUE and DEFAULT constraints on their columns', () => {
+        const sql = `
+            CREATE TABLE [dbo].[Configuration]
+            (
+                [Id] INT IDENTITY(1,1) NOT NULL,
+                [ConfigName] VARCHAR(50) CONSTRAINT [UK_Configuration_ConfigName] UNIQUE NOT NULL,
+                [ConfigValue] VARCHAR(2000) NOT NULL,
+                [IsActive] BIT NOT NULL,
+                [UpdatedBy] NVARCHAR(50) NULL,
+                [UpdatedDate] DATETIME CONSTRAINT [DC_Configuration_UpdatedDate] DEFAULT (GETUTCDATE()) NOT NULL,
+                [Comment] VARCHAR(255) NULL,
+                CONSTRAINT PK_Configuration_Id PRIMARY KEY CLUSTERED(Id ASC)
+            );
+        `;
+
+        const result = new Parser(new Lexer(sql)).parse();
+        const stmt = result.ast.body[0] as any;
+        const configName = stmt.columns?.find((col: any) => col.name === '[ConfigName]');
+        const updatedDate = stmt.columns?.find((col: any) => col.name === '[UpdatedDate]');
+
+        expect(result.issues).toEqual([]);
+        expect(configName?.constraints?.some((c: any) => c.kind === 'UNIQUE')).toBe(true);
+        expect(configName?.constraints?.some((c: any) => c.kind === 'NOT NULL')).toBe(true);
+        expect(updatedDate?.constraints?.some((c: any) => c.kind === 'DEFAULT')).toBe(true);
+        expect(updatedDate?.constraints?.some((c: any) => c.kind === 'NOT NULL')).toBe(true);
+        expect(stmt.constraints).toHaveLength(1);
+        expect(stmt.columns?.some((col: any) => col.name === 'NOT')).toBe(false);
+    });
+
+    test('should parse inline table indexes inside CREATE TABLE', () => {
+        const sql = `
+            CREATE TABLE [dbo].[ItemsSelected]
+            (
+                [Id] BIGINT IDENTITY(1,1) NOT NULL,
+                [ItemsId] BIGINT,
+                [ContextId] BIGINT,
+                CONSTRAINT [PK_ItemsSelected] PRIMARY KEY CLUSTERED ([Id] ASC),
+                INDEX NC_ItemsSelected_ContextId_ItemsId NONCLUSTERED ([ContextId], [ItemsId])
+            )
+        `;
+
+        const result = new Parser(new Lexer(sql)).parse();
+        const stmt = result.ast.body[0] as any;
+
+        expect(result.issues).toEqual([]);
+        expect(stmt.indexes).toHaveLength(1);
+        expect(stmt.indexes?.[0].name).toBe('NC_ItemsSelected_ContextId_ItemsId');
+        expect(stmt.indexes?.[0].clustered).toBe('NONCLUSTERED');
+        expect(stmt.indexes?.[0].columns.map((c: any) => c.name)).toEqual(['[ContextId]', '[ItemsId]']);
+        expect(stmt.columns?.some((col: any) => col.name === 'INDEX')).toBe(false);
+    });
+
+    test('should parse inline indexes inside CREATE TYPE AS TABLE', () => {
+        const sql = `
+            CREATE TYPE [dbo].[SomeTableType] AS TABLE (
+                [Name] NVARCHAR(30) NOT NULL,
+                [ModelId] VARCHAR(20) NULL,
+                [IsService] BIT NOT NULL,
+                [IsNonSelected] BIT NOT NULL,
+                INDEX [ix_nc_1] ([ModelId]),
+                INDEX [ix_nc_2] ([Name], [IsService]),
+                INDEX [ix_nc_3] ([IsNonSelected])
+            );
+        `;
+
+        const result = new Parser(new Lexer(sql)).parse();
+        const stmt = result.ast.body[0] as any;
+
+        expect(result.issues).toEqual([]);
+        expect(stmt.objectType).toBe('TYPE');
+        expect(stmt.isTableType).toBe(true);
+        expect(stmt.indexes).toHaveLength(3);
+        expect(stmt.indexes?.map((i: any) => i.name)).toEqual([
+            '[ix_nc_1]',
+            '[ix_nc_2]',
+            '[ix_nc_3]'
+        ]);
+    });
+});

@@ -12,7 +12,10 @@
       "Bash(awk 'NR==34,NR==310' src/parser/dmlParser.ts)",
       "Bash(node verifyCoverage.js)",
       "Bash(grep -n \"Wildcard\\\\|unknown\\\\|'\\\\\\\\*'\" src/extractors.ts)",
-      "Bash(npx jest *)"
+      "Bash(npx jest *)",
+      "Bash(npx tsc *)",
+      "Bash(git show *)",
+      "Read(//tmp/**)"
     ]
   }
 }

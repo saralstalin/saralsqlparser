@@ -447,4 +447,10 @@ describe('T-SQL Parser - DECLARE', () => {
         expect(body[1].type)
             .toBe('SelectStatement');
     });
+
+    test('should handle DECLARE with assignment', () => {
+        const stmt = declareStmt(`DECLARE @ID INT = 10`);
+        expect(stmt.variables[0].name).toBe('@ID');
+        expectSql(stmt.variables[0].initialValue, '10');
+    });
 });
