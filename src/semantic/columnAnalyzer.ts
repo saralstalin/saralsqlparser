@@ -1,14 +1,18 @@
 import {
     Program,
     Expression,
-    IdentifierNode
+    IdentifierNode,
+    SelectNode,
+    UpdateNode,
+    DeleteNode
 } from '../ast/types';
 
 import { LineageBuilder } from '../lineage/lineageBuilder';
-import { LineageNode } from '../lineage/lineage';
+import { LineageNode, DerivedColumn } from '../lineage/lineage';
 import { ScopeBuilderResult } from './scopeBuilder';
 import { Scope, Symbol, SymbolColumn } from './scope';
 import { resolveTypeMember } from './typeMembers';
+import { collectNodes } from '../ast/astWalker';
 
 // ---------------------------------------------
 // Public types
@@ -72,58 +76,153 @@ export class ColumnAnalyzer {
             if (!col.expression) continue;
 
             this.collectIdentifiers(col.expression, (id) => {
-                const inputs =
-                    this.getIdentifierInputs(id, col.inputs);
-                const ambiguityCandidates =
-                    this.collectAmbiguityCandidates(inputs);
-                const decision =
-                    this.buildDecision(
-                        id,
-                        inputs,
-                        ambiguityCandidates,
-                        scopeResult?.root
+                this.resolveAndRecordColumn(
+                    id,
+                    this.getIdentifierInputs(id, col.inputs),
+                    scopeResult,
+                    resolutions,
+                    propertyAccesses
+                );
+            });
+        }
+
+        // ORDER BY can reference a SELECT-list output alias
+        // (e.g. `SELECT Id AS RowId ... ORDER BY RowId`) rather than a
+        // real table column. lineage.columns only tracks projected output
+        // columns, so without this pass these references got no
+        // resolution at all. Resolve them by reusing the already-computed
+        // lineage inputs of the SELECT column the alias refers to.
+        //
+        // Known limitation: this only covers ORDER BY names that match a
+        // SELECT-list alias. ORDER BY referencing a real FROM-clause
+        // column that isn't in the SELECT list is not yet covered.
+        const derivedColumnsByOffset = new Map<number, DerivedColumn>();
+        for (const col of lineage.columns) {
+            derivedColumnsByOffset.set(col.location.start, col);
+        }
+
+        const selectsWithOrderBy = collectNodes(
+            program,
+            (n): n is SelectNode => {
+                if (n.type !== 'SelectStatement') return false;
+                return !!(n as SelectNode).orderBy?.length;
+            }
+        );
+
+        for (const stmt of selectsWithOrderBy) {
+            for (const order of stmt.orderBy!) {
+                this.collectIdentifiers(order.expression, (id) => {
+                    if (id.parts.length !== 1) return;
+
+                    const matchedColumn = stmt.columns.find(c =>
+                        c.outputName.toLowerCase() === id.name.toLowerCase()
                     );
+                    if (!matchedColumn) return;
 
-                let isUnverifiable = false;
-                if (scopeResult && id.parts.length === 1) {
-                    let scope: any = scopeResult.root.findInnermost(id.start);
-                    while (scope) {
-                        if (scope.hasUnverifiableSources) {
-                            isUnverifiable = true;
-                            break;
-                        }
-                        scope = scope.parent;
-                    }
-                }
+                    const derived = derivedColumnsByOffset.get(matchedColumn.start);
+                    if (!derived) return;
 
-                resolutions.push({
-                    location: id,
-                    inputs,
-                    ...(ambiguityCandidates.length
-                        ? { ambiguityCandidates }
-                        : {}),
-                    ...(decision.owner !== undefined ? { owner: decision.owner } : {}),
-                    ...(decision.scopeDepth !== undefined ? { scopeDepth: decision.scopeDepth } : {}),
-                    decisionReason: decision.decisionReason,
-                    decision,
-                    isCorrelated:
-                        id.parts.length >= 2 &&
-                        inputs.some(input => input.resolution === 'resolved'),
-                    ...(isUnverifiable ? { isUnverifiable } : {})
+                    this.resolveAndRecordColumn(
+                        id,
+                        derived.inputs,
+                        scopeResult,
+                        resolutions,
+                        propertyAccesses
+                    );
                 });
+            }
+        }
 
-                const propertyAccess =
-                    this.buildPropertyAccessDecision(
-                        id,
-                        scopeResult?.root
-                    );
-                if (propertyAccess) {
-                    propertyAccesses.push(propertyAccess);
-                }
+        // UPDATE/DELETE WHERE-clause columns are read-side references, not
+        // part of the mutation target — lineageBuilder already resolves
+        // them (lineage.mutations[].predicateInputs) but columnAnalyzer
+        // never consumed that, so they had no resolution entry at all
+        // (lineage.columns only tracks SET-assignment values for UPDATE,
+        // and nothing at all for DELETE).
+        const mutationsByOffset = new Map(
+            lineage.mutations.map(m => [m.location.start, m] as const)
+        );
+
+        const updatesAndDeletes = collectNodes(
+            program,
+            (n): n is UpdateNode | DeleteNode =>
+                n.type === 'UpdateStatement' || n.type === 'DeleteStatement'
+        );
+
+        for (const stmt of updatesAndDeletes) {
+            if (!stmt.where) continue;
+
+            const mutation = mutationsByOffset.get(stmt.start);
+            if (!mutation?.predicateInputs) continue;
+
+            this.collectIdentifiers(stmt.where, (id) => {
+                this.resolveAndRecordColumn(
+                    id,
+                    this.getIdentifierInputs(id, mutation.predicateInputs!),
+                    scopeResult,
+                    resolutions,
+                    propertyAccesses
+                );
             });
         }
 
         return { resolutions, propertyAccesses };
+    }
+
+    private resolveAndRecordColumn(
+        id: IdentifierNode,
+        inputs: LineageNode[],
+        scopeResult: ScopeBuilderResult | undefined,
+        resolutions: ColumnResolution[],
+        propertyAccesses: PropertyAccessResolution[]
+    ): void {
+        const ambiguityCandidates =
+            this.collectAmbiguityCandidates(inputs);
+        const propertyAccess =
+            this.buildPropertyAccessDecision(
+                id,
+                scopeResult?.root
+            );
+        const decision =
+            this.buildDecision(
+                id,
+                inputs,
+                ambiguityCandidates,
+                scopeResult?.root,
+                propertyAccess
+            );
+
+        let isUnverifiable = false;
+        if (scopeResult && id.parts.length === 1) {
+            let scope: any = scopeResult.root.findInnermost(id.start);
+            while (scope) {
+                if (scope.hasUnverifiableSources) {
+                    isUnverifiable = true;
+                    break;
+                }
+                scope = scope.parent;
+            }
+        }
+
+        resolutions.push({
+            location: id,
+            inputs,
+            ...(ambiguityCandidates.length
+                ? { ambiguityCandidates }
+                : {}),
+            ...(decision.owner !== undefined ? { owner: decision.owner } : {}),
+            ...(decision.scopeDepth !== undefined ? { scopeDepth: decision.scopeDepth } : {}),
+            decisionReason: decision.decisionReason,
+            decision,
+            isCorrelated:
+                id.parts.length >= 2 &&
+                inputs.some(input => input.resolution === 'resolved'),
+            ...(isUnverifiable ? { isUnverifiable } : {})
+        });
+
+        if (propertyAccess) {
+            propertyAccesses.push(propertyAccess);
+        }
     }
 
     private collectAmbiguityCandidates(inputs: LineageNode[]): string[] {
@@ -166,7 +265,8 @@ export class ColumnAnalyzer {
         identifier: IdentifierNode,
         inputs: LineageNode[],
         ambiguityCandidates: string[],
-        rootScope?: Scope
+        rootScope?: Scope,
+        propertyAccess?: PropertyAccessResolution | null
     ): ColumnResolution['decision'] {
         const resolvedSources =
             inputs
@@ -185,8 +285,47 @@ export class ColumnAnalyzer {
             inputs.some(input => input.kind === 'column');
 
         if (identifier.parts.length >= 2) {
+            const qualifier = identifier.parts[0];
+
+            // Prefer the literal qualifier when it is itself a real,
+            // scope-resolvable name (alias, table variable, CTE, derived
+            // table, ...). Lineage's deep source-tracing can cross through
+            // a derived/union boundary and surface an unrelated base table
+            // — correct for a simple 1:1 passthrough alias, wrong for
+            // anything where the qualifier's own projection is what matters.
+            if (rootScope) {
+                const scope = rootScope.findInnermost(identifier.start);
+
+                if (scope.resolve(qualifier)) {
+                    const scopeDepth =
+                        this.resolveScopeDepth(rootScope, identifier.start, qualifier);
+                    return {
+                        owner: qualifier,
+                        ...(scopeDepth !== undefined ? { scopeDepth } : {}),
+                        ...(ambiguityCandidates.length ? { ambiguityCandidates } : {}),
+                        decisionReason: 'qualified_reference'
+                    };
+                }
+
+                // Not a real table/alias qualifier — this is a member or
+                // property access on a locally-typed column (e.g.
+                // GeoPoint.Lat), not a table-qualified column reference.
+                // Defer to that decision's owner so resolutions[] and
+                // propertyAccesses[] agree instead of contradicting
+                // each other.
+                if (propertyAccess?.owner && propertyAccess.resolutionMode !== 'shape_member') {
+                    const scopeDepth =
+                        this.resolveScopeDepth(rootScope, identifier.start, propertyAccess.owner);
+                    return {
+                        owner: propertyAccess.owner,
+                        ...(scopeDepth !== undefined ? { scopeDepth } : {}),
+                        decisionReason: 'qualified_reference'
+                    };
+                }
+            }
+
             const owner =
-                uniqueResolved[0] ?? identifier.parts[0];
+                uniqueResolved[0] ?? qualifier;
             const scopeDepth =
                 rootScope
                     ? this.resolveScopeDepth(rootScope, identifier.start, owner)

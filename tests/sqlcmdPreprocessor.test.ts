@@ -21,15 +21,17 @@ describe('SqlCmdPreprocessor', () => {
         expect(result.issues).toHaveLength(0);
     });
 
-    test('blanks out :r includes and keeps offset 1:1', () => {
+    test('blanks out :r includes and keeps offset 1:1, without asserting whether it resolves', () => {
+        // Whether a :r include actually resolves is a workspace fact (file
+        // existence, project layout) that a single-file parser has no way
+        // to know — so this is silently blanked out, not flagged as an issue.
         const preprocessor = new SqlCmdPreprocessor();
         const sql = ':r ./some/script.sql\nSELECT 1;';
         const result = preprocessor.process(sql);
 
         expect(result.text.startsWith(' '.repeat(20))).toBe(true);
         expect(result.text).toContain('SELECT 1;');
-        expect(result.issues).toHaveLength(1);
-        expect(result.issues[0].code).toBe('SQLCMD_UNRESOLVED_INCLUDE');
+        expect(result.issues).toHaveLength(0);
         expect(result.mapOffset(25)).toBe(25);
     });
 
@@ -67,7 +69,7 @@ describe('SqlCmdPreprocessor', () => {
 
         expect(result.text.startsWith(' '.repeat(12))).toBe(true);
         expect(result.text).toContain('SELECT * FROM dbo.Users;');
-        expect(result.issues.map(x => x.code)).toContain('SQLCMD_UNRESOLVED_INCLUDE');
+        expect(result.issues.map(x => x.code)).not.toContain('SQLCMD_UNRESOLVED_INCLUDE');
 
         const semiColonPrepIndex = result.text.indexOf(';');
         const semiColonOrigIndex = sql.indexOf(';');

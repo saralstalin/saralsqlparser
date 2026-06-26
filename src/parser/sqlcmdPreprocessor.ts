@@ -61,15 +61,13 @@ export class SqlCmdPreprocessor {
         });
 
         this.R_REGEX.lastIndex = 0;
-        text = text.replace(this.R_REGEX, (match, includePath, offset) => {
-            // For now, just blank out the :r line to prevent parser crashes.
-            // Future: Implement options.resolveInclude to actually inline the file text.
-            issues.push({
-                code: 'SQLCMD_UNRESOLVED_INCLUDE',
-                message: `SQLCMD include was not resolved: ${String(includePath ?? '').trim() || '<empty>'}.`,
-                start: offset,
-                end: offset + match.length
-            });
+        text = text.replace(this.R_REGEX, (match) => {
+            // Blank out the :r line so the single-file parser never sees
+            // it. Whether the include actually resolves is a workspace
+            // fact this preprocessor has no business asserting — that's
+            // entirely the host's responsibility (file existence, project
+            // conventions, etc.), not something to flag as a parser issue.
+            // Future: options.resolveInclude could inline the file text.
             return ' '.repeat(match.length);
         });
 

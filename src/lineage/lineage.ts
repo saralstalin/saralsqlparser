@@ -81,6 +81,7 @@ export interface VirtualSource {
 
 export interface SourceProjectionColumn {
     name: string;
+    normalizedName: string;
     location?: NodeLocation;
 }
 

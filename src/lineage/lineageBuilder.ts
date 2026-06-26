@@ -98,6 +98,7 @@ export class LineageBuilder {
                 location: source.definedAt,
                 projection: [...source.columns.values()].map(col => ({
                     name: col.name,
+                    normalizedName: col.name.toLowerCase(),
                     location: col.location
                 }))
             });
@@ -188,7 +189,14 @@ export class LineageBuilder {
                         col.name.toLowerCase(),
                         {
                             name: col.name,
-                            inputs: [],
+                            inputs: [{
+                                kind: 'column',
+                                name: `${name}.${col.name}`,
+                                source: name,
+                                sourceKind: 'table',
+                                resolution: 'resolved',
+                                location: col
+                            }],
                             location: stmt
                         } as DerivedColumn
                     ])
@@ -373,8 +381,16 @@ export class LineageBuilder {
 
         this.recordReadScope('DELETE', stmt, stmt.from ?? []);
 
+        // Mirrors visitUpdate: a simple `DELETE FROM dbo.T WHERE ...` (no
+        // separate aliased FROM-list) never reaches registerTableReference
+        // above, so without this the target table is never a resolvable
+        // source and WHERE-clause columns can't resolve against it at all.
+        this.registerSource(stmt.target, undefined, undefined, 'table');
+
+        const predicateInputs = this.resolveExpression(stmt.where);
+
         if (stmt.target && stmt.target.type === 'Identifier') {
-            this.recordMutationTarget('DELETE', stmt, stmt.target.name);
+            this.recordMutationTarget('DELETE', stmt, stmt.target.name, predicateInputs);
         }
 
         this.visitOutputClause(stmt.output);

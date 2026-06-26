@@ -153,6 +153,29 @@ export class ScopeBuilder {
         }
     }
 
+    // CREATE TYPE persists across GO-separated batches like any other
+    // catalog object (unlike DECLARE'd variables, which are batch-scoped),
+    // so a TVP parameter's type lookup can't rely on the normal
+    // ancestor-chain resolve() — the type may live in a sibling batch
+    // scope. Search the whole tree instead.
+    private findTypeSymbol(name: string): Symbol | undefined {
+        const search = (scope: Scope): Symbol | undefined => {
+            const local = scope.resolveLocal(name);
+            if (local?.kind === SymbolKind.Type) {
+                return local;
+            }
+            for (const child of scope.getChildren()) {
+                const found = search(child);
+                if (found) {
+                    return found;
+                }
+            }
+            return undefined;
+        };
+
+        return search(this.root);
+    }
+
     // ── References ────────────────────────────────────────────────────────────
 
     private recordReference(name: string, location: NodeLocation, kind: ReferenceKind = 'read'): void {
@@ -715,10 +738,27 @@ export class ScopeBuilder {
                 this.pushScope(stmt.start, stmt.end, stmt.name);
 
                 for (const param of stmt.parameters ?? []) {
+                    // Table-valued parameters declared against a same-file
+                    // CREATE TYPE ... AS TABLE (e.g. `@Emp dbo.EmpTableType
+                    // READONLY`) can cross-reference that type's own
+                    // localColumns — no external schema needed, the type
+                    // definition is already in scope.
+                    const typeSymbol =
+                        param.dataType
+                            ? this.findTypeSymbol(param.dataType)
+                            : undefined;
+                    const localColumns =
+                        typeSymbol?.kind === SymbolKind.Type && typeSymbol.localColumns?.length
+                            ? typeSymbol.localColumns.map(col => ({ ...col }))
+                            : undefined;
+
                     this.declare({
                         name: param.name,
                         kind: SymbolKind.Parameter,
                         dataType: param.dataType,
+                        ...(localColumns?.length
+                            ? { columns: localColumns.map(c => c.rawName), localColumns }
+                            : {}),
                         location: param,
                         references: [],
                         metadata: {

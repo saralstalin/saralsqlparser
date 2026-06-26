@@ -2413,3 +2413,35 @@ describe('CREATE PROCEDURE / FUNCTION / TRIGGER — body must stop at BEGIN...EN
         expect(trgResult.ast.body[1].type).toBe('SelectStatement');
     });
 });
+
+describe('UPDATE SET — mixed column and variable assignment targets', () => {
+    test('tags each assignment target as column or variable (not just a heuristic on the string)', () => {
+        const sql = `
+            UPDATE ri SET IsCommitted = 1, @DowncountEvent = CASE WHEN ri.IsExpired = 1 THEN 1 ELSE 0 END
+            FROM dbo.RuleInstance ri;
+        `;
+        const result = new Parser(new Lexer(sql)).parse();
+
+        expect(result.issues).toEqual([]);
+        const update = result.ast.body[0] as any;
+        expect(update.assignments).toHaveLength(2);
+        expect(update.assignments[0].column).toBe('IsCommitted');
+        expect(update.assignments[0].targetKind).toBe('column');
+        expect(update.assignments[1].column).toBe('@DowncountEvent');
+        expect(update.assignments[1].targetKind).toBe('variable');
+    });
+
+    test('tags the target in a MERGE ... WHEN MATCHED THEN UPDATE SET action too', () => {
+        const sql = `
+            MERGE INTO dbo.T AS t USING dbo.S AS s ON t.Id = s.Id
+            WHEN MATCHED THEN UPDATE SET t.Name = s.Name, @Touched = 1;
+        `;
+        const result = new Parser(new Lexer(sql)).parse();
+
+        expect(result.issues).toEqual([]);
+        const merge = result.ast.body[0] as any;
+        const updateAction = merge.whenClauses[0].action;
+        expect(updateAction.assignments[0].targetKind).toBe('column');
+        expect(updateAction.assignments[1].targetKind).toBe('variable');
+    });
+});

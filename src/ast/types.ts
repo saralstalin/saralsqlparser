@@ -307,6 +307,13 @@ export interface UpdateAssignment extends NodeLocation {
     type: 'UpdateAssignment';
     column: string;
     columnNode: IdentifierNode | null;
+    /**
+     * Whether the assignment target is a table column (`SET Col = ...`) or
+     * a local variable (`SET @x = ...`) — a single SET list can legally mix
+     * both. Undefined when the target couldn't be determined at all (parse
+     * error before a target name was read).
+     */
+    targetKind?: 'column' | 'variable';
     value: Expression | null;
 }
 

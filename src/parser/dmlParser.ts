@@ -1084,6 +1084,9 @@ export abstract class DmlParser extends QueryParser {
         errors: string[],
         state: { incomplete: boolean; endOffset: number }
     ): UpdateAssignment[] {
+        const targetKindFor = (name: string): 'column' | 'variable' | undefined =>
+            name ? (name.startsWith('@') ? 'variable' : 'column') : undefined;
+
         return this.parseList(() => {
             const assignmentStart =
                 this.peek()?.offset ?? state.endOffset;
@@ -1197,6 +1200,7 @@ export abstract class DmlParser extends QueryParser {
                     type: 'UpdateAssignment',
                     column: columnName,
                     columnNode,
+                    targetKind: targetKindFor(columnName),
                     start: assignmentStart,
                     end: assignmentEnd,
                     value: null
@@ -1234,6 +1238,7 @@ export abstract class DmlParser extends QueryParser {
                     type: 'UpdateAssignment',
                     column: columnName,
                     columnNode,
+                    targetKind: targetKindFor(columnName),
                     start: assignmentStart,
                     end: assignmentEnd,
                     value: null
@@ -1279,6 +1284,7 @@ export abstract class DmlParser extends QueryParser {
                 type: 'UpdateAssignment',
                 column: columnName,
                 columnNode,
+                targetKind: targetKindFor(columnName),
                 start: assignmentStart,
                 end: assignmentEnd,
                 value

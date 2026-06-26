@@ -75,6 +75,47 @@ describe('AST fact extractors', () => {
         );
     });
 
+    test('extractReferences tags FROM/JOIN aliases as alias kind, not bare table-name lookalikes', () => {
+        // Before the fix: the alias itself ('u', 'r') had no reference
+        // entry of its own at all — only the real table names did. A host
+        // doing schema validation by scanning for table-like tokens had no
+        // parser-native signal to avoid treating 'u'/'r' as table names.
+        const sql = `
+            SELECT u.Id FROM dbo.Users u
+            JOIN dbo.Roles r ON r.Id = u.RoleId;
+        `;
+
+        const references = extractReferences(analyze(sql).ast);
+
+        expect(references).toContainEqual(
+            expect.objectContaining({
+                kind: 'alias',
+                context: 'from',
+                name: 'u',
+                normalizedName: 'u'
+            })
+        );
+        expect(references).toContainEqual(
+            expect.objectContaining({
+                kind: 'alias',
+                context: 'join',
+                name: 'r',
+                normalizedName: 'r'
+            })
+        );
+    });
+
+    test('extractReferences tags an alias.* wildcard qualifier as alias kind, not unknown', () => {
+        const sql = `SELECT d.* FROM dbo.Department d;`;
+        const references = extractReferences(analyze(sql).ast);
+
+        const wildcardQualifier = references.find(
+            r => r.context === 'expression' && r.name === 'd'
+        );
+
+        expect(wildcardQualifier).toMatchObject({ kind: 'alias' });
+    });
+
     test('extractReferences emits qualified OUTPUT pseudo-table references', () => {
         const sql = `
             UPDATE dbo.Users

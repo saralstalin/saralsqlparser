@@ -263,6 +263,151 @@ describe('ColumnAnalyzer', () => {
         expect(resolution?.decision.decisionReason).toBe('single_scope_owner');
     });
 
+    test('emits single-owner decision metadata for bare columns over a #temp table (not non_column)', () => {
+        const sql = `
+            CREATE TABLE #T (Id INT, Name VARCHAR(50));
+            SELECT Id, Name FROM #T;
+        `;
+        const ast = parse(sql);
+        const scope = new ScopeBuilder().build(ast);
+        const analyzer = new ColumnAnalyzer();
+        const result = analyzer.analyze(ast, scope);
+        const resolution = result.resolutions.find(r => r.location.name === 'Name');
+
+        expect(resolution?.owner).toBe('#T');
+        expect(resolution?.decisionReason).toBe('single_scope_owner');
+    });
+
+    describe('ORDER BY alias references', () => {
+        test('resolves an ORDER BY alias to the same owner as the SELECT column it refers to', () => {
+            const sql = `SELECT Id AS RowId FROM Users ORDER BY RowId;`;
+            const ast = parse(sql);
+            const scope = new ScopeBuilder().build(ast);
+            const analyzer = new ColumnAnalyzer();
+            const result = analyzer.analyze(ast, scope);
+
+            // Before the fix: columnAnalyzer only walks lineage.columns
+            // (the SELECT list), so the ORDER BY reference to "RowId" had
+            // no resolution entry at all.
+            const orderByResolution = result.resolutions.find(
+                r => r.location.name === 'RowId'
+            );
+
+            expect(orderByResolution).toBeDefined();
+            expect(orderByResolution?.owner).toBe('Users');
+            expect(orderByResolution?.decisionReason).toBe('single_scope_owner');
+        });
+
+        test('resolves an ORDER BY alias that refers to a qualified column', () => {
+            const sql = `SELECT u.Id AS UserId FROM Users u ORDER BY UserId;`;
+            const ast = parse(sql);
+            const scope = new ScopeBuilder().build(ast);
+            const analyzer = new ColumnAnalyzer();
+            const result = analyzer.analyze(ast, scope);
+
+            const orderByResolution = result.resolutions.find(
+                r => r.location.name === 'UserId'
+            );
+
+            // "UserId" itself is a bare (unqualified) token in the ORDER BY
+            // clause, so it resolves through the same bare-column path as
+            // any other single-part identifier — reporting the underlying
+            // table ('Users') rather than the alias ('u') that happened to
+            // qualify the original SELECT-list expression. This is the
+            // physical owner of the data, which is still meaningful;
+            // reusing the exact alias-level decision from the SELECT list
+            // is a possible future refinement, not required here.
+            expect(orderByResolution).toBeDefined();
+            expect(orderByResolution?.owner).toBe('Users');
+        });
+
+        test('does not produce a spurious alias match for an ORDER BY name that is not a SELECT alias', () => {
+            const sql = `SELECT Id FROM Users ORDER BY SomeOtherColumn;`;
+            const ast = parse(sql);
+            const scope = new ScopeBuilder().build(ast);
+            const analyzer = new ColumnAnalyzer();
+            const result = analyzer.analyze(ast, scope);
+
+            const orderByResolution = result.resolutions.find(
+                r => r.location.name === 'SomeOtherColumn'
+            );
+
+            expect(orderByResolution).toBeUndefined();
+        });
+    });
+
+    describe('UPDATE / DELETE read-side (WHERE) column resolution', () => {
+        test('resolves a bare WHERE-clause column on an UPDATE statement to its single owner', () => {
+            const sql = `
+                UPDATE e SET e.Salary = e.Salary * 1.1
+                FROM dbo.Employee e
+                WHERE DeptName = 'Eng';
+            `;
+            const ast = parse(sql);
+            const scope = new ScopeBuilder().build(ast);
+            const analyzer = new ColumnAnalyzer();
+            const result = analyzer.analyze(ast, scope);
+
+            // Before the fix: columnAnalyzer only walked lineage.columns
+            // (the SET assignment values), so a bare column in WHERE that
+            // wasn't also referenced in the SET list had no resolution at
+            // all — even though lineageBuilder already resolves it
+            // (lineage.mutations[].predicateInputs).
+            const whereResolution = result.resolutions.find(
+                r => r.location.name === 'DeptName'
+            );
+
+            expect(whereResolution).toBeDefined();
+            expect(whereResolution?.owner).toBe('dbo.Employee');
+        });
+
+        test('reports ambiguity for a bare WHERE-clause column shared by two joined tables (correct, not a single guess)', () => {
+            const sql = `
+                UPDATE e SET e.Salary = e.Salary * 1.1
+                FROM dbo.Employee e JOIN dbo.Department d ON d.Id = e.DeptId
+                WHERE DeptName = 'Eng';
+            `;
+            const ast = parse(sql);
+            const scope = new ScopeBuilder().build(ast);
+            const analyzer = new ColumnAnalyzer();
+            const result = analyzer.analyze(ast, scope);
+
+            // Neither table's schema is known, so DeptName could belong to
+            // either side of the join — reporting it as ambiguous (rather
+            // than silently picking one) is the correct, conservative
+            // answer, and is itself only possible now that WHERE is
+            // analyzed at all.
+            const whereResolution = result.resolutions.find(
+                r => r.location.name === 'DeptName'
+            );
+
+            expect(whereResolution).toBeDefined();
+            expect(whereResolution?.owner).toBeUndefined();
+            expect(whereResolution?.decisionReason).toBe('ambiguous_candidates');
+            expect(whereResolution?.ambiguityCandidates).toEqual(
+                expect.arrayContaining(['dbo.Employee', 'dbo.Department'])
+            );
+        });
+
+        test('resolves a bare WHERE-clause column on a DELETE statement', () => {
+            const sql = `DELETE FROM dbo.Employee WHERE DeptId = 5;`;
+            const ast = parse(sql);
+            const scope = new ScopeBuilder().build(ast);
+            const analyzer = new ColumnAnalyzer();
+            const result = analyzer.analyze(ast, scope);
+
+            // Before the fix: DELETE produced zero resolutions at all,
+            // since lineage.columns is never populated for DELETE and
+            // lineageBuilder didn't even resolve DELETE's WHERE clause.
+            const whereResolution = result.resolutions.find(
+                r => r.location.name === 'DeptId'
+            );
+
+            expect(whereResolution).toBeDefined();
+            expect(whereResolution?.owner).toBe('dbo.Employee');
+        });
+    });
+
     test('emits property-access semantic shape for identifier chains', () => {
         const sql = `
             DECLARE @Store TABLE(GeoPoint GEOGRAPHY);
@@ -292,5 +437,66 @@ describe('ColumnAnalyzer', () => {
         const falsePositive = result.propertyAccesses.find(x => x.location.name === 'e.FirstName');
 
         expect(falsePositive).toBeUndefined();
+    });
+
+    describe('qualified-reference owner: nearest scope, not deepest lineage source', () => {
+        test('property-access tokens (GeoPoint.Lat) get a consistent owner in resolutions[], not the member name', () => {
+            const sql = `
+                DECLARE @Store TABLE(GeoPoint GEOGRAPHY);
+                SELECT GeoPoint.Lat FROM @Store;
+            `;
+            const ast = parse(sql);
+            const scope = new ScopeBuilder().build(ast);
+            const analyzer = new ColumnAnalyzer();
+            const result = analyzer.analyze(ast, scope);
+
+            const resolution = result.resolutions.find(r => r.location.name === 'GeoPoint.Lat');
+
+            // Before the fix this reported owner: 'GeoPoint' (the member
+            // name itself, mistaken for a table qualifier) instead of the
+            // real owning table/variable already known via propertyAccesses[].
+            expect(resolution?.owner).toBe('@Store');
+            expect(resolution?.decisionReason).toBe('qualified_reference');
+        });
+
+        test('derived alias over a UNION reports itself as owner, not a base table buried in one branch', () => {
+            const sql = `
+                SELECT s.availableInventory FROM (
+                    SELECT Qty AS availableInventory FROM dbo.WarehouseA
+                    UNION
+                    SELECT Qty AS availableInventory FROM dbo.WarehouseB
+                ) s;
+            `;
+            const ast = parse(sql);
+            const scope = new ScopeBuilder().build(ast);
+            const analyzer = new ColumnAnalyzer();
+            const result = analyzer.analyze(ast, scope);
+
+            const resolution = result.resolutions.find(r => r.location.name === 's.availableInventory');
+
+            // Before the fix this reported owner: 'dbo.WarehouseA' — the
+            // base table lineage happened to trace into via the LEFT
+            // branch of the UNION, which is misleading since the column
+            // could equally have come from WarehouseB.
+            expect(resolution?.owner).toBe('s');
+            expect(resolution?.decisionReason).toBe('qualified_reference');
+        });
+
+        test('simple alias-qualified column still resolves through to the underlying table (unchanged)', () => {
+            const sql = `SELECT e.Salary FROM dbo.Employee e;`;
+            const ast = parse(sql);
+            const scope = new ScopeBuilder().build(ast);
+            const analyzer = new ColumnAnalyzer();
+            const result = analyzer.analyze(ast, scope);
+
+            const resolution = result.resolutions.find(r => r.location.name === 'e.Salary');
+
+            // 'e' is itself a real, scope-resolvable alias, so it is now
+            // preferred directly over deeper lineage tracing — this is the
+            // same underlying relation either way (e IS dbo.Employee), so
+            // this is a presentation change, not a correctness regression.
+            expect(resolution?.owner).toBe('e');
+            expect(resolution?.decisionReason).toBe('qualified_reference');
+        });
     });
 });

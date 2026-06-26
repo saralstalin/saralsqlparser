@@ -387,6 +387,32 @@ describe('SELECT aliases', () => {
         expect(scope.resolveLocal('u')).toBeUndefined();
     });
 
+    test('TVP parameter typed with a same-file CREATE TYPE AS TABLE exposes structured local columns', () => {
+        // Before the fix: the TYPE symbol (dbo.EmpTableType) correctly
+        // captured its own localColumns, but the PARAMETER declared with
+        // that type name never cross-referenced it — even though the type
+        // definition is right there in the same file. Both the parameter
+        // and its alias ended up with localColumns: undefined.
+        const scope = rootScope(`
+            CREATE TYPE dbo.EmpTableType AS TABLE (EmpId INT, FirstName2 VARCHAR(100));
+            GO
+            CREATE PROCEDURE dbo.P (@Emp dbo.EmpTableType READONLY) AS
+            SELECT te.FirstName2 FROM @Emp te;
+        `);
+
+        const procScope = scope.getChildren()
+            .flatMap(batch => batch.getChildren())
+            .find(x => x.name === 'dbo.P');
+        expect(procScope).toBeDefined();
+
+        const param = procScope?.resolveLocal('@Emp');
+        expect(param?.localColumns?.map(c => c.rawName)).toEqual(['EmpId', 'FirstName2']);
+
+        const selectScope = procScope?.getChildren().find(x => x.name === 'select');
+        const alias = selectScope?.resolveLocal('te');
+        expect(alias?.localColumns?.map(c => c.rawName)).toEqual(['EmpId', 'FirstName2']);
+    });
+
     test('column alias registered in select scope', () => {
         const scope = rootScope(`
         SELECT Name AS UserName FROM dbo.Users;

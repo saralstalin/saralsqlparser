@@ -45,6 +45,7 @@ export type ExtractedReferenceKind =
     | 'variable'
     | 'function'
     | 'cte'
+    | 'alias'
     | 'unknown';
 
 export type ExtractedReferenceContext =
@@ -471,19 +472,21 @@ function collectReferencesFromSelect(
         collectReferencesFromTableReference(table, references, 'from');
     }
 
+    const knownAliases = collectFromAliases(stmt.from ?? []);
+
     for (const col of stmt.columns) {
-        collectReferencesFromExpression(col.expression, references);
+        collectReferencesFromExpression(col.expression, references, knownAliases);
     }
 
-    collectReferencesFromExpression(stmt.where, references);
-    collectReferencesFromExpression(stmt.having, references);
+    collectReferencesFromExpression(stmt.where, references, knownAliases);
+    collectReferencesFromExpression(stmt.having, references, knownAliases);
 
     for (const expr of stmt.groupBy ?? []) {
-        collectReferencesFromExpression(expr, references);
+        collectReferencesFromExpression(expr, references, knownAliases);
     }
 
     for (const order of stmt.orderBy ?? []) {
-        collectReferencesFromExpression(order.expression, references);
+        collectReferencesFromExpression(order.expression, references, knownAliases);
     }
 }
 
@@ -590,6 +593,7 @@ function collectReferencesFromTableReference(
     } else {
         addObjectReference(ref.table, references, context);
     }
+    addAliasReference(ref.alias, ref, references, context);
 
     if (ref.table?.type === 'SubqueryExpression') {
         collectReferencesFromQuery(ref.table.query, references);
@@ -601,6 +605,7 @@ function collectReferencesFromTableReference(
         } else {
             addObjectReference(join.table, references, 'join');
         }
+        addAliasReference(join.alias, join, references, 'join');
 
         if (join.table?.type === 'SubqueryExpression') {
             collectReferencesFromQuery(join.table.query, references);
@@ -610,9 +615,59 @@ function collectReferencesFromTableReference(
     }
 }
 
+function collectFromAliases(refs: TableReference[]): Set<string> {
+    const aliases = new Set<string>();
+
+    const visit = (ref: TableReference): void => {
+        if (ref.alias) {
+            aliases.add(ref.alias.toLowerCase());
+        }
+        if (ref.table?.type === 'TableReference') {
+            visit(ref.table);
+        }
+        for (const join of ref.joins) {
+            if (join.alias) {
+                aliases.add(join.alias.toLowerCase());
+            }
+            if (join.table?.type === 'TableReference') {
+                visit(join.table);
+            }
+        }
+    };
+
+    for (const ref of refs) {
+        visit(ref);
+    }
+
+    return aliases;
+}
+
+// The AST only stores the alias as a bare string (no separate offset for
+// the alias token itself), so this uses the containing FROM/JOIN node's
+// span as an approximate location — still gives the host a definitive
+// "this name is an alias, not a schema object" signal it didn't have
+// before, even though the span isn't alias-token-precise.
+function addAliasReference(
+    alias: string | undefined,
+    location: NodeLocation,
+    references: ExtractedReference[],
+    context: ExtractedReferenceContext
+): void {
+    if (!alias) return;
+
+    references.push({
+        kind: 'alias',
+        context,
+        name: alias,
+        normalizedName: normalizeName(alias),
+        location
+    });
+}
+
 function collectReferencesFromExpression(
     expr: Expression | null | undefined,
-    references: ExtractedReference[]
+    references: ExtractedReference[],
+    knownAliases?: Set<string>
 ): void {
     if (!expr) return;
 
@@ -640,21 +695,21 @@ function collectReferencesFromExpression(
                 location: expr
             });
             for (const arg of expr.args) {
-                collectReferencesFromExpression(arg, references);
+                collectReferencesFromExpression(arg, references, knownAliases);
             }
             return;
 
         case 'BinaryExpression':
-            collectReferencesFromExpression(expr.left, references);
-            collectReferencesFromExpression(expr.right, references);
+            collectReferencesFromExpression(expr.left, references, knownAliases);
+            collectReferencesFromExpression(expr.right, references, knownAliases);
             return;
 
         case 'UnaryExpression':
-            collectReferencesFromExpression(expr.right, references);
+            collectReferencesFromExpression(expr.right, references, knownAliases);
             return;
 
         case 'GroupingExpression':
-            collectReferencesFromExpression(expr.expression, references);
+            collectReferencesFromExpression(expr.expression, references, knownAliases);
             return;
 
         case 'SubqueryExpression':
@@ -664,52 +719,59 @@ function collectReferencesFromExpression(
         case 'ValuesTableExpression':
             for (const row of expr.rows) {
                 for (const value of row) {
-                    collectReferencesFromExpression(value, references);
+                    collectReferencesFromExpression(value, references, knownAliases);
                 }
             }
             return;
 
         case 'OverExpression':
-            collectReferencesFromExpression(expr.expression, references);
+            collectReferencesFromExpression(expr.expression, references, knownAliases);
             for (const partition of expr.window.partitionBy ?? []) {
-                collectReferencesFromExpression(partition, references);
+                collectReferencesFromExpression(partition, references, knownAliases);
             }
             for (const order of expr.window.orderBy ?? []) {
-                collectReferencesFromExpression(order.expression, references);
+                collectReferencesFromExpression(order.expression, references, knownAliases);
             }
             return;
 
         case 'MemberExpression':
-            collectReferencesFromExpression(expr.object, references);
+            collectReferencesFromExpression(expr.object, references, knownAliases);
             return;
 
         case 'WildcardExpression':
             if (expr.tablePrefix) {
-                addIdentifierReference(expr.tablePrefix, references, 'unknown', 'expression');
+                const isKnownAlias =
+                    knownAliases?.has(expr.tablePrefix.name.toLowerCase());
+                addIdentifierReference(
+                    expr.tablePrefix,
+                    references,
+                    isKnownAlias ? 'alias' : 'unknown',
+                    'expression'
+                );
             }
             return;
 
         case 'CaseExpression':
-            collectReferencesFromExpression(expr.input, references);
+            collectReferencesFromExpression(expr.input, references, knownAliases);
             for (const branch of expr.branches) {
-                collectReferencesFromExpression(branch.when, references);
-                collectReferencesFromExpression(branch.then, references);
+                collectReferencesFromExpression(branch.when, references, knownAliases);
+                collectReferencesFromExpression(branch.then, references, knownAliases);
             }
-            collectReferencesFromExpression(expr.elseBranch, references);
+            collectReferencesFromExpression(expr.elseBranch, references, knownAliases);
             return;
 
         case 'InExpression':
-            collectReferencesFromExpression(expr.left, references);
+            collectReferencesFromExpression(expr.left, references, knownAliases);
             for (const item of expr.list ?? []) {
-                collectReferencesFromExpression(item, references);
+                collectReferencesFromExpression(item, references, knownAliases);
             }
             collectReferencesFromQuery(expr.subquery, references);
             return;
 
         case 'BetweenExpression':
-            collectReferencesFromExpression(expr.left, references);
-            collectReferencesFromExpression(expr.lowerBound, references);
-            collectReferencesFromExpression(expr.upperBound, references);
+            collectReferencesFromExpression(expr.left, references, knownAliases);
+            collectReferencesFromExpression(expr.lowerBound, references, knownAliases);
+            collectReferencesFromExpression(expr.upperBound, references, knownAliases);
             return;
 
         case 'Literal':

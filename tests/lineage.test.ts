@@ -32,6 +32,25 @@ describe('LineageBuilder', () => {
         ]);
     });
 
+    test('bare column over a locally-defined #temp table resolves an edge (same as a table variable would)', () => {
+        // Before the fix: CREATE TABLE #T registers each column with an
+        // empty `inputs` array (correct for columns *derived* from
+        // something else, like a CTE column, but wrong for a temp
+        // table's own raw column definitions, which have no further
+        // upstream lineage to flatten into). The lookup path returned
+        // that empty array verbatim instead of resolving to #T itself,
+        // so no edge was produced at all.
+        expect(
+            edgeStrings(`
+                CREATE TABLE #T (Id INT, Name VARCHAR(50));
+                SELECT Id, Name FROM #T;
+            `)
+        ).toEqual([
+            '#T.Id -> Id',
+            '#T.Name -> Name'
+        ]);
+    });
+
     test('alias output', () => {
         expect(
             edgeStrings(`
@@ -994,6 +1013,21 @@ describe('Lineage metadata', () => {
         expect(source?.projection.map(p => p.name)).toContain('SomeName');
     });
 
+    test('projection columns include a normalizedName for case-insensitive membership checks', () => {
+        const result = lineage(`
+            SELECT a.SomeName
+            FROM (
+                SELECT e.FirstName AS SomeName
+                FROM Employee e
+            ) a
+        `);
+
+        const source = result.sources.find(x => x.alias === 'a');
+        const col = source?.projection.find(p => p.name === 'SomeName');
+
+        expect(col?.normalizedName).toBe('somename');
+    });
+
     test('classifies CROSS APPLY function alias as derived_apply source', () => {
         const result = lineage(`
             SELECT ss.value
@@ -1113,5 +1147,20 @@ describe('Lineage metadata', () => {
 
         expect(winnerPredicate).toBeDefined();
         expect(winnerPredicate?.resolution).toBe('resolved');
+    });
+
+    test('captures delete predicate inputs against delete target source (DELETE never resolved WHERE at all)', () => {
+        const result = lineage(`
+            DELETE FROM dbo.Employee
+            WHERE DeptId = @DeptId;
+        `);
+
+        const del = result.mutations.find(x => x.statement === 'DELETE');
+        const deptPredicate = del?.predicateInputs?.find(
+            x => x.kind === 'column' && x.name === 'dbo.Employee.DeptId'
+        );
+
+        expect(deptPredicate).toBeDefined();
+        expect(deptPredicate?.resolution).toBe('resolved');
     });
 });
