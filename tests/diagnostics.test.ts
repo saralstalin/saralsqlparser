@@ -528,6 +528,38 @@ describe('VAR004 — variable used before SET', () => {
         expect(d.length).toBe(0);
     });
 
+    test('does NOT fire when SELECT assignment precedes the read', () => {
+        const d = only(`
+            DECLARE @NewDeliveryId INT;
+            SELECT @NewDeliveryId = ISNULL(MAX(DeliveryId), 0) + 1
+            FROM GoodieDeliveries;
+            SELECT @NewDeliveryId;
+        `, DiagnosticCode.VariableUsedBeforeSet);
+
+        expect(d.length).toBe(0);
+    });
+
+    test('does NOT fire when UPDATE SET assignment precedes the read', () => {
+        const d = only(`
+            DECLARE @X INT;
+            UPDATE dbo.Users SET @X = Id WHERE Id = 1;
+            SELECT @X;
+        `, DiagnosticCode.VariableUsedBeforeSet);
+
+        expect(d.length).toBe(0);
+    });
+
+    test('still fires for an unset variable read on the RHS of a SELECT assignment', () => {
+        const d = only(`
+            DECLARE @x INT;
+            DECLARE @y INT;
+            SELECT @x = @y;
+        `, DiagnosticCode.VariableUsedBeforeSet);
+
+        expect(d).toHaveLength(1);
+        expect(d[0].message).toContain('@y');
+    });
+
     test('fires only for the read that precedes the SET, not for reads after it', () => {
         const d = only(`
             DECLARE @x INT;
@@ -977,6 +1009,52 @@ describe('COL001 â€” unknown column', () => {
         `);
         const cols = d.filter(x => x.code === DiagnosticCode.UnknownColumn);
         expect(cols.length).toBe(0);
+    });
+
+    test('fires for unknown column on CTE alias with known output columns', () => {
+        const d = only(`
+            WITH Employees AS (SELECT Id, Name FROM dbo.Employee)
+            SELECT e.MissingColumn
+            FROM Employees e;
+        `, DiagnosticCode.UnknownColumn);
+
+        expect(d.length).toBe(1);
+        expect(d[0].message).toContain('MissingColumn');
+    });
+
+    test('does NOT fire for known column on CTE alias', () => {
+        const d = only(`
+            WITH Employees AS (SELECT Id, Name FROM dbo.Employee)
+            SELECT e.Name
+            FROM Employees e;
+        `, DiagnosticCode.UnknownColumn);
+
+        expect(d.length).toBe(0);
+    });
+
+    test('does NOT fire for chained CTE columns visible in second CTE body', () => {
+        const d = only(`
+            WITH
+                Base AS (SELECT Id, Name FROM dbo.Employee),
+                Filtered AS (SELECT b.Id, b.Name FROM Base b WHERE b.Id > 0)
+            SELECT f.Name
+            FROM Filtered f;
+        `, DiagnosticCode.UnknownColumn);
+
+        expect(d.length).toBe(0);
+    });
+
+    test('does NOT fire for columns accessed via recursive CTE recursive member', () => {
+        const d = only(`
+            WITH rcte AS (
+                SELECT Id, Name FROM dbo.Employee WHERE ManagerId IS NULL
+                UNION ALL
+                SELECT e.Id, e.Name FROM dbo.Employee e JOIN rcte r ON e.ManagerId = r.Id
+            )
+            SELECT * FROM rcte;
+        `, DiagnosticCode.UnknownColumn);
+
+        expect(d.length).toBe(0);
     });
 });
 

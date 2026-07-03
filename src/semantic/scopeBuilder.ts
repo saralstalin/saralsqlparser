@@ -9,6 +9,7 @@ import {
     IfNode,
     SelectNode,
     UpdateNode,
+    UpdateAssignment,
     DeleteNode,
     InsertNode,
     SetNode,
@@ -538,7 +539,7 @@ export class ScopeBuilder {
 
         if (stmt.assignments) {
             for (const assignment of stmt.assignments) {
-                this.visitExpression(assignment.value);
+                this.visitUpdateAssignment(assignment);
             }
         }
 
@@ -790,14 +791,24 @@ export class ScopeBuilder {
         this.pushScope(stmt.start, stmt.end, 'with');
 
         for (const cte of stmt.ctes) {
+            // Visit body before declaring so that:
+            // (a) the CTE cannot see itself in its own anchor branch (issue 8),
+            // (b) earlier CTEs in the chain are already declared and visible here.
+            this.visitQuery(cte.query);
+
+            const columns = this.getQueryOutputColumns(cte.query);
+            const localColumns = columns?.map(name =>
+                this.makeSymbolColumn(name, undefined, cte)
+            );
+
             this.declare({
                 name: cte.name,
                 kind: SymbolKind.CTE,
                 location: cte,
                 references: [],
+                ...(columns?.length ? { columns } : {}),
+                ...(localColumns?.length ? { localColumns } : {}),
             });
-
-            this.visitQuery(cte.query);
         }
 
         this.visitStatement(stmt.body);
@@ -865,7 +876,7 @@ export class ScopeBuilder {
         }
 
         for (const col of stmt.columns) {
-            this.visitExpression(col.expression);
+            this.visitSelectColumnExpression(col.expression);
         }
 
         if (stmt.where) {
@@ -912,6 +923,36 @@ export class ScopeBuilder {
 
         this.popScope();
         this.popScope();
+    }
+
+    private visitSelectColumnExpression(expr: Expression | null | undefined): void {
+        if (
+            expr?.type === 'BinaryExpression' &&
+            expr.operator === '=' &&
+            expr.left.type === 'Variable'
+        ) {
+            this.recordReference(expr.left.name, expr.left, 'write');
+            this.visitExpression(expr.right);
+            return;
+        }
+
+        this.visitExpression(expr);
+    }
+
+    private visitUpdateAssignment(assignment: UpdateAssignment): void {
+        if (assignment.targetKind === 'variable' && assignment.column.startsWith('@')) {
+            this.recordReference(
+                assignment.column,
+                assignment.columnNode ?? assignment,
+                'write'
+            );
+        } else if (assignment.columnNode) {
+            this.visitExpression(assignment.columnNode);
+        }
+
+        if (assignment.value) {
+            this.visitExpression(assignment.value);
+        }
     }
 
     private visitTableReference(ref: TableReference): void {
