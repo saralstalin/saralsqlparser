@@ -522,7 +522,7 @@ export class LineageBuilder {
         this.pushSources();
 
         for (const cte of stmt.ctes) {
-            const cols = this.visitQuery(cte.query, false);
+            const cols = this.visitQuery(cte.query, true);
 
             this.defineSource(cte.name, {
                 name: cte.name,
@@ -555,6 +555,10 @@ export class LineageBuilder {
             for (const ref of stmt.from) {
                 this.registerTableReference(ref);
             }
+        }
+
+        if (emit) {
+            this.recordReadScope('SELECT', stmt, stmt.from ?? []);
         }
 
         const derived: DerivedColumn[] = [];
@@ -660,7 +664,7 @@ export class LineageBuilder {
             const kind = forcedKind ?? 'derived_subquery';
 
             const cols = this.applyAliasColumns(
-                this.visitQuery(expr.query, false),
+                this.visitQuery(expr.query, true),
                 aliasColumns
             );
 
@@ -1391,7 +1395,7 @@ export class LineageBuilder {
     }
 
     private recordReadScope(
-        statement: 'INSERT' | 'UPDATE' | 'DELETE',
+        statement: 'INSERT' | 'UPDATE' | 'DELETE' | 'SELECT',
         location: NodeLocation,
         tableRefs: TableReference[]
     ): void {

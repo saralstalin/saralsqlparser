@@ -117,7 +117,7 @@ export interface ReadScopeSource {
 }
 
 export interface ReadScopeExposure {
-    statement: 'INSERT' | 'UPDATE' | 'DELETE';
+    statement: 'INSERT' | 'UPDATE' | 'DELETE' | 'SELECT';
     location: NodeLocation;
     sources: ReadScopeSource[];
 }

@@ -464,7 +464,8 @@ describe('LineageBuilder', () => {
             FROM B
         `)
         ).toEqual([
-            'Orders.Id -> FinalId'
+            'Orders.Id -> FinalId',
+            'Orders.Id -> OrderId'
         ]);
     });
 
@@ -743,7 +744,8 @@ describe('LineageBuilder', () => {
             FROM B
         `)
         ).toEqual([
-            'Orders.Id -> FinalId'
+            'Orders.Id -> FinalId',
+            'Orders.Id -> OrderId'
         ]);
     });
 

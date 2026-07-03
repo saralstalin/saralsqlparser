@@ -15,7 +15,11 @@
       "Bash(npx jest *)",
       "Bash(npx tsc *)",
       "Bash(git show *)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(node -e \"const m = require\\('./dist/src/index.js'\\); console.log\\(Object.keys\\(m\\).slice\\(0,10\\)\\)\")",
+      "Bash(node -e \"const m = require\\('./dist/src/index.js'\\); console.log\\(Object.keys\\(m\\)\\)\")",
+      "Bash(node \"/c/Users/Nimmy/AppData/Local/Temp/claude/c--Users-Nimmy-source-repos-SaralSQLParser/0c24966b-60ac-42ad-a6f1-72b22c801ee9/scratchpad/repro.js\")",
+      "Bash(node -e \"const {analyze} = require\\('./dist/src/index.js'\\); const r = analyze\\(\\\\\"SELECT Name FROM Employee e;\\\\\"\\); console.log\\(JSON.stringify\\({mutations: r.lineage.mutations.length, readScopes: r.lineage.readScopes.length, resolutions: r.columns.resolutions.length}\\)\\)\")"
     ]
   }
 }
