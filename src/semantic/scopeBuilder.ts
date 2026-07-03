@@ -537,6 +537,23 @@ export class ScopeBuilder {
             }
         }
 
+        // Declare the target table in scope so it's visible at SET/WHERE
+        // positions (e.g. `UPDATE Employee SET ... WHERE Employee.Id = 1`).
+        // FROM-declared aliases take precedence; we only insert the target
+        // when it hasn't already been declared via a FROM alias.
+        if (stmt.target?.type === 'Identifier') {
+            const bindName = stmt.target.parts[stmt.target.parts.length - 1] ?? stmt.target.name;
+            if (!this.current.resolveLocal(bindName)) {
+                this.declare({
+                    name: bindName,
+                    kind: SymbolKind.Alias,
+                    location: stmt.target,
+                    references: [],
+                    metadata: { tableName: stmt.target.name, sourceKind: 'table' }
+                });
+            }
+        }
+
         if (stmt.assignments) {
             for (const assignment of stmt.assignments) {
                 this.visitUpdateAssignment(assignment);
@@ -570,6 +587,19 @@ export class ScopeBuilder {
         if (stmt.from) {
             for (const table of stmt.from) {
                 this.visitTableReference(table);
+            }
+        }
+
+        if (stmt.target?.type === 'Identifier') {
+            const bindName = stmt.target.parts[stmt.target.parts.length - 1] ?? stmt.target.name;
+            if (!this.current.resolveLocal(bindName)) {
+                this.declare({
+                    name: bindName,
+                    kind: SymbolKind.Alias,
+                    location: stmt.target,
+                    references: [],
+                    metadata: { tableName: stmt.target.name, sourceKind: 'table' }
+                });
             }
         }
 

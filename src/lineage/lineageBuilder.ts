@@ -1387,9 +1387,7 @@ export class LineageBuilder {
             targetName,
             targetAlias: source?.alias,
             resolvedSourceName: source?.name,
-            ...(predicateInputs && predicateInputs.length
-                ? { predicateInputs }
-                : {}),
+            predicateInputs: predicateInputs ?? [],
             location: stmt
         });
     }

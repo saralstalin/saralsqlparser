@@ -105,7 +105,7 @@ export interface MutationTarget {
     targetName: string;
     targetAlias?: string;
     resolvedSourceName?: string;
-    predicateInputs?: LineageNode[];
+    predicateInputs: LineageNode[];
     location: NodeLocation;
 }
 
