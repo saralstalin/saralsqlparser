@@ -603,6 +603,51 @@ describe('VAR004 — variable used before SET', () => {
 
         expect(d.length).toBe(0);
     });
+
+    test('does NOT fire when EXEC OUTPUT precedes the read', () => {
+        const d = only(`
+            DECLARE @x INT;
+            EXEC dbo.GetValue @x OUTPUT;
+            SELECT @x;
+        `, DiagnosticCode.VariableUsedBeforeSet);
+
+        expect(d.length).toBe(0);
+    });
+
+    test('does NOT fire when FETCH INTO precedes the read', () => {
+        const d = only(`
+            DECLARE @x INT;
+            DECLARE cur CURSOR FOR SELECT Id FROM dbo.T;
+            OPEN cur;
+            FETCH NEXT FROM cur INTO @x;
+            SELECT @x;
+            CLOSE cur;
+            DEALLOCATE cur;
+        `, DiagnosticCode.VariableUsedBeforeSet);
+
+        expect(d.length).toBe(0);
+    });
+
+    test('fires for every read before the SET, not just the first', () => {
+        const d = only(`
+            DECLARE @x INT;
+            SELECT @x;
+            SELECT @x;
+            SET @x = 5;
+        `, DiagnosticCode.VariableUsedBeforeSet);
+
+        expect(d.length).toBe(2);
+    });
+
+    test('does NOT fire for the implicit self-read in a compound SET (offset-based check is optimistic)', () => {
+        const d = only(`
+            DECLARE @x INT;
+            SET @x += 1;
+            SELECT @x;
+        `, DiagnosticCode.VariableUsedBeforeSet);
+
+        expect(d.length).toBe(0);
+    });
 });
 
 describe('VAR005 — invalid schema-qualified table variable reference', () => {
