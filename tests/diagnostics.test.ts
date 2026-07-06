@@ -584,13 +584,13 @@ describe('VAR004 — variable used before SET', () => {
         expect(d.length).toBe(0);
     });
 
-    test('does NOT fire for table variables (reading before any INSERT is not an error)', () => {
+    test('fires for table variables read before any INSERT/DELETE/OUTPUT populates them', () => {
         const d = only(`
             DECLARE @t TABLE (Id INT);
             SELECT * FROM @t;
         `, DiagnosticCode.VariableUsedBeforeSet);
 
-        expect(d.length).toBe(0);
+        expect(d.length).toBe(1);
     });
 
     test('does NOT fire when a SET inside an IF branch textually precedes the read (conservative, no control-flow analysis)', () => {
@@ -647,6 +647,51 @@ describe('VAR004 — variable used before SET', () => {
         `, DiagnosticCode.VariableUsedBeforeSet);
 
         expect(d.length).toBe(0);
+    });
+
+    test('does NOT fire when INSERT INTO @tbl precedes the read', () => {
+        const d = only(`
+            DECLARE @tbl TABLE (Id INT);
+            INSERT INTO @tbl SELECT Id FROM dbo.Source;
+            SELECT * FROM @tbl;
+        `, DiagnosticCode.VariableUsedBeforeSet);
+
+        expect(d.length).toBe(0);
+    });
+
+    test('does NOT fire when DELETE FROM @tbl precedes INSERT and SELECT in a loop', () => {
+        const d = only(`
+            DECLARE @tbl TABLE (Id INT);
+            WHILE 1 = 1
+            BEGIN
+                DELETE FROM @tbl;
+                INSERT INTO @tbl SELECT Id FROM dbo.Source;
+                SELECT * FROM @tbl;
+            END
+        `, DiagnosticCode.VariableUsedBeforeSet);
+
+        expect(d.length).toBe(0);
+    });
+
+    test('does NOT fire when OUTPUT INTO @tbl precedes the read', () => {
+        const d = only(`
+            DECLARE @tbl TABLE (Id INT);
+            DELETE FROM dbo.Source
+            OUTPUT DELETED.Id INTO @tbl;
+            SELECT * FROM @tbl;
+        `, DiagnosticCode.VariableUsedBeforeSet);
+
+        expect(d.length).toBe(0);
+    });
+
+    test('fires when @tbl is read before any INSERT/DELETE/OUTPUT write', () => {
+        const d = only(`
+            DECLARE @tbl TABLE (Id INT);
+            SELECT * FROM @tbl;
+            INSERT INTO @tbl SELECT Id FROM dbo.Source;
+        `, DiagnosticCode.VariableUsedBeforeSet);
+
+        expect(d.length).toBe(1);
     });
 });
 

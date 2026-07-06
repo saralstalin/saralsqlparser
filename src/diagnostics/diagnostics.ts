@@ -210,7 +210,10 @@ export class DiagnosticEngine {
     private checkVariableUsedBeforeSet(result: ScopeBuilderResult): void {
         this.walkScopes(result.root, (scope) => {
             for (const symbol of scope.getOwnSymbols()) {
-                if (symbol.kind !== SymbolKind.Variable) continue;
+                const isTrackable =
+                    symbol.kind === SymbolKind.Variable ||
+                    (symbol.kind === SymbolKind.Table && symbol.name.startsWith('@'));
+                if (!isTrackable) continue;
 
                 const writeOffsets = symbol.references
                     .filter(r => r.kind === 'write')

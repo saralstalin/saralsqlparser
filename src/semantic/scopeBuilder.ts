@@ -496,7 +496,11 @@ export class ScopeBuilder {
             this.declareOutputPseudoTables(stmt.output);
         }
         if (stmt.table) {
-            this.visitExpression(stmt.table);
+            if (stmt.table.type === 'Identifier' && stmt.table.name.startsWith('@')) {
+                this.recordReference(stmt.table.name, stmt.table, 'write');
+            } else {
+                this.visitExpression(stmt.table);
+            }
         }
 
         if (stmt.values) {
@@ -575,7 +579,11 @@ export class ScopeBuilder {
         }
 
         if (stmt.target) {
-            this.visitExpression(stmt.target);
+            if (stmt.target.type === 'Identifier' && stmt.target.name.startsWith('@')) {
+                this.recordReference(stmt.target.name, stmt.target, 'write');
+            } else {
+                this.visitExpression(stmt.target);
+            }
         }
 
         this.pushScope(stmt.start, stmt.end, 'delete');
@@ -1263,7 +1271,11 @@ export class ScopeBuilder {
         }
 
         if (output.intoTable) {
-            this.visitExpression(output.intoTable);
+            if (output.intoTable.type === 'Identifier' && output.intoTable.name.startsWith('@')) {
+                this.recordReference(output.intoTable.name, output.intoTable, 'write');
+            } else {
+                this.visitExpression(output.intoTable);
+            }
         }
     }
 
