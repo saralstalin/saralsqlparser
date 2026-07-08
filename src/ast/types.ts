@@ -476,6 +476,8 @@ export interface CreateNode extends NodeLocation, Recoverable {
     constraints?: ConstraintNode[];
     indexes?: TableIndexNode[];
     parameters?: ParameterDefinition[];
+    returnVariable?: string;
+    returnColumns?: ColumnDefinition[];
     body?: Statement | Statement[];
     isTableType?: boolean;
     storage?: StorageTargetNode;

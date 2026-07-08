@@ -249,6 +249,61 @@ describe('T-SQL Parser - CREATE TABLE / VIEW / PROCEDURE / FUNCTION / TRIGGER', 
         expect(ret.query?.type).toBe('WithStatement');
     });
 
+    test('should parse multi-statement TVF and capture returnVariable and returnColumns', () => {
+        const sql = `
+            CREATE FUNCTION dbo.GetEmployees(@DeptId INT)
+            RETURNS @result TABLE (Id INT, Name VARCHAR(50))
+            AS
+            BEGIN
+                INSERT INTO @result SELECT Id, Name FROM Employee WHERE DeptId = @DeptId;
+                RETURN;
+            END
+        `;
+
+        const result = new Parser(new Lexer(sql)).parse();
+        const stmt = result.ast.body[0] as CreateNode;
+
+        expect(result.issues).toEqual([]);
+        expect(stmt.objectType).toBe('FUNCTION');
+        expect(stmt.returnVariable).toBe('@result');
+        expect(stmt.returnColumns).toHaveLength(2);
+        expect(stmt.returnColumns![0].name).toBe('Id');
+        expect(stmt.returnColumns![1].name).toBe('Name');
+    });
+
+    test('scalar RETURNS does not set returnVariable', () => {
+        const sql = `
+            CREATE FUNCTION dbo.GetFlag(@Id INT)
+            RETURNS INT
+            AS
+            BEGIN
+                RETURN @Id;
+            END
+        `;
+
+        const result = new Parser(new Lexer(sql)).parse();
+        const stmt = result.ast.body[0] as CreateNode;
+
+        expect(result.issues).toEqual([]);
+        expect(stmt.returnVariable).toBeUndefined();
+        expect(stmt.returnColumns).toBeUndefined();
+    });
+
+    test('inline TVF RETURNS TABLE does not set returnVariable', () => {
+        const sql = `
+            CREATE FUNCTION dbo.fnInline(@Id INT)
+            RETURNS TABLE
+            AS
+            RETURN (SELECT Id, Name FROM Employee WHERE Id = @Id)
+        `;
+
+        const result = new Parser(new Lexer(sql)).parse();
+        const stmt = result.ast.body[0] as CreateNode;
+
+        expect(result.issues).toEqual([]);
+        expect(stmt.returnVariable).toBeUndefined();
+    });
+
     test('should parse trigger and retain body after header clauses', () => {
         const sql = `
             CREATE TRIGGER dbo.trgUsersAudit

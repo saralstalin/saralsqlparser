@@ -807,6 +807,20 @@ export class ScopeBuilder {
                     });
                 }
 
+                if (stmt.returnVariable) {
+                    const localColumns = stmt.returnColumns?.map(c =>
+                        this.makeSymbolColumn(c.name, c.dataType, c)
+                    );
+                    this.declare({
+                        name: stmt.returnVariable,
+                        kind: SymbolKind.Table,
+                        columns: stmt.returnColumns?.map(c => c.name),
+                        ...(localColumns?.length ? { localColumns } : {}),
+                        location: stmt,
+                        references: [],
+                    });
+                }
+
                 if (Array.isArray(stmt.body)) {
                     for (const child of stmt.body) {
                         this.visitStatement(child);

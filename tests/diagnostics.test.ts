@@ -496,6 +496,35 @@ describe('VAR003 — unused parameter', () => {
 
         expect(d).toHaveLength(0);
     });
+
+    test('does NOT fire for the TVF return table variable used in the function body', () => {
+        const d = only(`
+            CREATE FUNCTION dbo.GetEmployees(@DeptId INT)
+            RETURNS @result TABLE (Id INT, Name VARCHAR(50))
+            AS
+            BEGIN
+                INSERT INTO @result SELECT Id, Name FROM Employee WHERE DeptId = @DeptId;
+                RETURN;
+            END
+        `, DiagnosticCode.UndeclaredVariable);
+
+        expect(d).toHaveLength(0);
+    });
+
+    test('does NOT fire for TVF return variable read via SELECT in body', () => {
+        const d = only(`
+            CREATE FUNCTION dbo.GetEmployees(@DeptId INT)
+            RETURNS @result TABLE (Id INT, Name VARCHAR(50))
+            AS
+            BEGIN
+                INSERT INTO @result SELECT Id, Name FROM Employee WHERE DeptId = @DeptId;
+                SELECT * FROM @result;
+                RETURN;
+            END
+        `, DiagnosticCode.UndeclaredVariable);
+
+        expect(d).toHaveLength(0);
+    });
 });
 
 describe('VAR004 — variable used before SET', () => {
@@ -692,6 +721,21 @@ describe('VAR004 — variable used before SET', () => {
         `, DiagnosticCode.VariableUsedBeforeSet);
 
         expect(d.length).toBe(1);
+    });
+
+    test('does NOT fire for TVF return variable when INSERT precedes SELECT', () => {
+        const d = only(`
+            CREATE FUNCTION dbo.Fn(@DeptId INT)
+            RETURNS @result TABLE (Id INT, Name VARCHAR(50))
+            AS
+            BEGIN
+                INSERT INTO @result SELECT Id, Name FROM Employee WHERE DeptId = @DeptId;
+                SELECT * FROM @result;
+                RETURN;
+            END
+        `, DiagnosticCode.VariableUsedBeforeSet);
+
+        expect(d).toHaveLength(0);
     });
 });
 

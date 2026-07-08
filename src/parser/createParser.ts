@@ -737,6 +737,8 @@ export abstract class CreateParser extends ControlFlowParser {
         let constraints: ConstraintNode[] | undefined;
         let indexes: TableIndexNode[] | undefined;
         let parameters: ParameterDefinition[] | undefined;
+        let returnVariable: string | undefined;
+        let returnColumns: ColumnDefinition[] | undefined;
         let body: Statement | Statement[] | undefined;
         let isTableType: boolean | undefined;
         let storage: StorageTargetNode | undefined;
@@ -985,15 +987,37 @@ export abstract class CreateParser extends ControlFlowParser {
                 this.peekKeyword('RETURNS')
             ) {
                 this.consume();
-                endOffset =
-                    this.lastConsumedEnd();
+                endOffset = this.lastConsumedEnd();
 
-                endOffset =
-                    this.skipCreatePreambleUntil([
+                // RETURNS @varName TABLE (col_defs...) — multi-statement TVF
+                const nextTok = this.peek();
+                if (
+                    nextTok &&
+                    nextTok.type === TokenType.Variable
+                ) {
+                    returnVariable = nextTok.value;
+                    this.consume();
+                    endOffset = this.lastConsumedEnd();
+
+                    if (this.peekKeyword('TABLE')) {
+                        this.consume();
+                        endOffset = this.lastConsumedEnd();
+                        try {
+                            const tableDef = this.parseTableColumns();
+                            returnColumns = tableDef.columns;
+                            endOffset = this.lastConsumedEnd();
+                        } catch {
+                            // swallow — return variable is still captured
+                        }
+                    }
+                } else {
+                    // RETURNS scalar_type or RETURNS TABLE (inline TVF) — skip
+                    endOffset = this.skipCreatePreambleUntil([
                         'AS',
                         'BEGIN',
                         'GO'
                     ]);
+                }
             }
 
             if (objectType === 'TRIGGER') {
@@ -1271,6 +1295,7 @@ export abstract class CreateParser extends ControlFlowParser {
             constraints,
             ...(indexes?.length ? { indexes } : {}),
             parameters,
+            ...(returnVariable ? { returnVariable, returnColumns } : {}),
             body,
             isTableType,
             ...(storage ? { storage } : {}),
